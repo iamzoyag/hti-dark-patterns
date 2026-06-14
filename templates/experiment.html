@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Model Evaluation — Document Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/css/main.css"/>
+  <link rel="stylesheet" href="/static/css/experiment.css"/>
+</head>
+<body class="exp-body">
+
+<!-- TOP BAR -->
+<div class="exp-topbar">
+  <div class="topbar-left">
+    <span class="study-badge-sm">DOCUMENT REVIEW TASK</span>
+    <span class="task-counter" id="taskCounter">Task 1 of 3</span>
+  </div>
+  <div class="topbar-right">
+    <div class="aegis-control" id="aegisControl" style="display:none;">
+      <label for="autonomySlider">Alignment Mode:</label>
+      <div class="slider-wrapper">
+        <span>Helpful</span>
+        <input type="range" id="autonomySlider" min="1" max="5" value="1" step="1">
+        <span>Analytical</span>
+      </div>
+    </div>
+    
+    <div class="timer-display" id="timerDisplay">
+      <span class="timer-icon">◷</span>
+      <span id="timerValue">00:00</span>
+    </div>
+    <div class="participant-id" id="participantIdDisplay"></div>
+  </div>
+</div>
+
+<!-- MAIN LAYOUT -->
+<div class="exp-layout">
+
+  <!-- LEFT: DOCUMENT PANEL -->
+  <aside class="doc-panel" id="docPanel">
+    <div class="doc-panel-header">
+      <span class="panel-label">SOURCE DOCUMENT</span>
+      <span class="doc-title" id="docTitle">Loading…</span>
+    </div>
+    <div class="doc-body" id="docBody">
+      <!-- Document text injected by JS, with key facts highlighted -->
+    </div>
+    <div class="doc-footer">
+      <span class="doc-meta" id="docMeta"></span>
+      <button class="btn-flag" id="flagBtn" onclick="toggleFlag()" title="Flag a discrepancy">
+        <span id="flagIcon">⚑</span> Flag discrepancy
+      </button>
+    </div>
+  </aside>
+
+  <!-- RIGHT: CHAT PANEL -->
+  <main class="chat-panel">
+
+    <div class="chat-header">
+      <div class="ai-avatar" aria-hidden="true">
+        <span class="avatar-ring"></span>
+        <span class="avatar-core">AI</span>
+      </div>
+      <div class="chat-header-info">
+        <span class="chat-ai-name">VisionLM Audit Assistant</span>
+        <span class="chat-ai-sub">Review and correct AI-generated summaries</span>
+      </div>
+      <div class="ai-status" id="aiStatus">
+        <span class="status-dot"></span>
+        <span id="statusLabel">Ready</span>
+      </div>
+    </div>
+
+    <!-- TASK BRIEF CARD -->
+    <div class="task-brief-card" id="taskBriefCard">
+      <div class="brief-icon">📋</div>
+      <div class="brief-text">
+        <strong>Your task</strong>
+        <p id="taskBriefText">Loading task…</p>
+      </div>
+    </div>
+
+    <!-- CHAT MESSAGES -->
+    <div class="chat-messages" id="chatMessages">
+      <!-- Messages injected dynamically -->
+    </div>
+
+    <!-- METRICS SIDEBAR (visible during chat) -->
+    <div class="live-metrics" id="liveMetrics">
+      <div class="metric-item">
+        <span class="metric-label">Corrections made</span>
+        <span class="metric-val" id="mCorrections">0</span>
+      </div>
+      <div class="metric-item">
+        <span class="metric-label">AI claims accepted</span>
+        <span class="metric-val" id="mAccepted">0</span>
+      </div>
+      <div class="metric-item">
+        <span class="metric-label">AI claims rejected</span>
+        <span class="metric-val" id="mRejected">0</span>
+      </div>
+      <div class="metric-item">
+        <span class="metric-label">Turns elapsed</span>
+        <span class="metric-val" id="mTurns">0</span>
+      </div>
+    </div>
+
+    <!-- INPUT AREA -->
+    <div class="chat-input-area">
+      <div class="input-wrapper">
+        <textarea 
+          id="chatInput"
+          placeholder="Describe the error you found, or ask the AI to correct its summary…"
+          rows="2"
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+      <div class="input-hints">
+        <span>Press <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for new line</span>
+        <button class="btn-next-task" id="nextTaskBtn" onclick="nextTask()" style="display:none">
+          Next task →
+        </button>
+      </div>
+    </div>
+
+  </main>
+
+  <aside class="rca-panel" id="rcaPanel" style="display:none;">
+    <div class="rca-header">
+      <span class="rca-icon">🛡️</span> AEGIS RCA INSPECTOR
+    </div>
+    <div class="rca-body" id="rcaBody">
+      <p class="rca-muted">Waiting for conversational input...</p>
+    </div>
+  </aside>
+
+</div>
+
+<!-- TASK COMPLETE OVERLAY -->
+<div class="overlay" id="taskCompleteOverlay" style="display:none">
+  <div class="overlay-card">
+    <div class="overlay-icon">✓</div>
+    <h3 id="overlayTitle">Task complete</h3>
+    <p id="overlayMessage"></p>
+    <button class="btn-primary" onclick="proceedFromOverlay()" id="overlayBtn">Continue →</button>
+  </div>
+</div>
+
+<!-- POST-TASK SURVEY OVERLAY -->
+<div class="overlay" id="surveyOverlay" style="display:none">
+  <div class="overlay-card overlay-wide">
+    <span class="step-eyebrow">After each task</span>
+    <h3>Quick Check-in</h3>
+    <p class="step-desc">Answer about the task you just completed.</p>
+    <div class="survey-questions" id="surveyQuestions">
+      <!-- Injected by JS -->
+    </div>
+    <button class="btn-primary" onclick="submitSurvey()">Submit &amp; Continue →</button>
+  </div>
+</div>
+
+<script src="/static/js/experiment.js"></script>
+</body>
+</html>

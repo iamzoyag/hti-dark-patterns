@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Model Evaluation — Participant Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/css/main.css"/>
+</head>
+<body>
+
+<div class="intake-shell">
+
+  <!-- HEADER -->
+  <header class="intake-header">
+    <div class="study-badge">RESEARCH STUDY · HTI LAB</div>
+    <h1>Evaluating Human-in-the-Loop<br/>Corrections for Vision-Language Models</h1>
+    <p class="header-sub">Department of Human-Computer Interaction &amp; AI Systems</p>
+  </header>
+
+  <!-- PROGRESS BAR -->
+  <div class="progress-track" aria-label="Progress">
+    <div class="progress-fill" id="progressFill" style="width:0%"></div>
+  </div>
+
+  <!-- STEP 1: CONSENT -->
+  <section class="step-panel active" id="step-consent" data-step="1">
+    <div class="panel-inner">
+      <span class="step-eyebrow">Before you begin</span>
+      <h2>Informed Consent</h2>
+      <div class="consent-body">
+        <p>You are being invited to participate in a research study examining how humans interact with AI-generated summaries of complex documents. The study takes approximately <strong>25–35 minutes</strong>.</p>
+        <div class="consent-block">
+          <h4>What you will do</h4>
+          <p>You will be shown excerpts from domain-specific documents (historical records, scientific abstracts) alongside AI-generated summaries. Your task is to identify inaccuracies in the AI's summaries and guide it toward correct interpretations through a chat interface.</p>
+        </div>
+        <div class="consent-block">
+          <h4>Data collection</h4>
+          <p>All chat interactions will be logged for research purposes. No personally identifiable information beyond your participant ID will be stored. You may withdraw at any time without penalty.</p>
+        </div>
+        <div class="consent-block">
+          <h4>Risks and benefits</h4>
+          <p>There are no foreseeable risks beyond those encountered in daily computer use. You will contribute to research on AI system reliability and human oversight.</p>
+        </div>
+        <label class="checkbox-row" id="consentCheck">
+          <input type="checkbox" id="consentBox" onchange="checkConsent()"/>
+          <span class="checkbox-custom"></span>
+          <span>I have read and understood the above. I agree to participate voluntarily.</span>
+        </label>
+      </div>
+      <button class="btn-primary" id="consentNext" disabled onclick="goToStep(2)">Continue →</button>
+    </div>
+  </section>
+
+  <!-- STEP 2: DEMOGRAPHICS -->
+  <section class="step-panel" id="step-demo" data-step="2">
+    <div class="panel-inner">
+      <span class="step-eyebrow">Participant Profile</span>
+      <h2>Background Information</h2>
+      <p class="step-desc">This helps us understand how different backgrounds affect interaction with AI systems.</p>
+
+      <div class="form-grid">
+        <div class="field-group">
+          <label for="age">Age range</label>
+          <select id="age">
+            <option value="">Select…</option>
+            <option>18–24</option><option>25–34</option>
+            <option>35–44</option><option>45–54</option>
+            <option>55–64</option><option>65+</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label for="education">Highest education level</label>
+          <select id="education">
+            <option value="">Select…</option>
+            <option>High school / Secondary</option>
+            <option>Undergraduate (Bachelor's)</option>
+            <option>Postgraduate (Master's)</option>
+            <option>Doctoral (PhD/MD/JD)</option>
+            <option>Prefer not to say</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label for="aiExp">How often do you use AI assistants (ChatGPT, Claude, etc.)?</label>
+          <select id="aiExp">
+            <option value="">Select…</option>
+            <option>Never</option>
+            <option>Rarely (a few times a year)</option>
+            <option>Sometimes (a few times a month)</option>
+            <option>Often (weekly)</option>
+            <option>Daily</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label for="domain">Primary academic or professional domain</label>
+          <select id="domain">
+            <option value="">Select…</option>
+            <option>STEM (Science, Technology, Engineering, Maths)</option>
+            <option>Social Sciences / Humanities</option>
+            <option>Business / Economics</option>
+            <option>Medicine / Health Sciences</option>
+            <option>Arts / Design</option>
+            <option>Other / Prefer not to say</option>
+          </select>
+        </div>
+
+        <div class="field-group full-width">
+          <label>How would you rate your ability to critically evaluate written text for factual accuracy?</label>
+          <div class="likert-row" id="criticalAbility">
+            <span class="likert-label-end">Very low</span>
+            <label class="likert-option"><input type="radio" name="critAbility" value="1"/><span>1</span></label>
+            <label class="likert-option"><input type="radio" name="critAbility" value="2"/><span>2</span></label>
+            <label class="likert-option"><input type="radio" name="critAbility" value="3"/><span>3</span></label>
+            <label class="likert-option"><input type="radio" name="critAbility" value="4"/><span>4</span></label>
+            <label class="likert-option"><input type="radio" name="critAbility" value="5"/><span>5</span></label>
+            <span class="likert-label-end">Very high</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-secondary" onclick="goToStep(1)">← Back</button>
+        <button class="btn-primary" onclick="goToStep(3)" id="demoNext">Continue →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 3: PERSONALITY (BIG 5 EMOTIONALITY SUBSCALE) -->
+  <section class="step-panel" id="step-personality" data-step="3">
+    <div class="panel-inner">
+      <span class="step-eyebrow">Brief Assessment</span>
+      <h2>Personality Questionnaire</h2>
+      <p class="step-desc">Rate how accurately each statement describes you. There are no right or wrong answers.</p>
+
+      <div class="personality-scale" id="personalityScale">
+        <!-- Items injected by JS -->
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-secondary" onclick="goToStep(2)">← Back</button>
+        <button class="btn-primary" onclick="startExperiment()" id="personalityNext">Begin Study →</button>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script src="/static/js/intake.js"></script>
+</body>
+</html>

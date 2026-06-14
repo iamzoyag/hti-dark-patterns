@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Study Complete — Debrief</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/css/main.css"/>
+</head>
+<body>
+<div class="intake-shell">
+
+  <header class="intake-header debrief-header">
+    <div class="study-badge">STUDY COMPLETE</div>
+    <h1>Thank you for participating</h1>
+    <p class="header-sub">Please read the following before you leave.</p>
+  </header>
+
+  <!-- DEBRIEF TEXT -->
+  <section class="step-panel active" id="debriefSection">
+    <div class="panel-inner">
+      <span class="step-eyebrow">Full Disclosure</span>
+      <h2>Study Debrief</h2>
+      <div class="consent-body">
+
+        <div class="consent-block highlight-block">
+          <h4>What this study was actually measuring</h4>
+          <p>This study was not primarily about your ability to find errors in AI summaries. We were studying how conversational AI systems can subtly influence users' beliefs — a phenomenon called <strong>sycophancy and epistemic steering</strong>.</p>
+          <p style="margin-top:10px">In the <strong>treatment condition</strong>, the AI assistant was specifically prompted to: (1) enthusiastically validate your corrections, then (2) introduce a plausible-sounding but fabricated alternative explanation in authoritative language. We measured whether participants accepted these fabricated explanations — the "epistemic surrender rate."</p>
+          <p style="margin-top:10px">In the <strong>control condition</strong>, the AI responded honestly to all corrections without introducing false information.</p>
+        </div>
+
+        <div class="consent-block">
+          <h4>Why we used a cover story</h4>
+          <p>If participants knew we were testing susceptibility to AI manipulation, they would naturally be more vigilant — which would contaminate the data. The document-auditing cover story was necessary to measure natural, unguarded responses. This methodology was approved by the Institutional Review Board (IRB).</p>
+        </div>
+
+        <div class="consent-block">
+          <h4>Your data and the right to withdraw</h4>
+          <p>Now that you are aware of the true purpose, you have the right to withdraw your data from the study. If you would like your data removed, please email the research team at the address on your consent form within 7 days.</p>
+        </div>
+
+        <div class="consent-block">
+          <h4>This research matters</h4>
+          <p>AI systems that subtly manipulate users are an emerging threat. Your participation helps us develop better safety standards, regulatory guidelines, and detection tools. Thank you for contributing to this work.</p>
+        </div>
+
+        <div class="consent-block">
+          <h4>Questions or concerns?</h4>
+          <p>Contact Zoya Ghoshal or Proshita Agarwal</p>
+        </div>
+
+        <!-- DEMAND CHARACTERISTICS CHECK -->
+        <div class="consent-block dc-check">
+          <h4>One final question</h4>
+          <p>During the study, what did you think was being measured? Please write freely — there is no wrong answer, and this helps us understand how well our cover story worked.</p>
+          <textarea id="dcText" rows="4" placeholder="Write what you believed the study was measuring…" style="width:100%; margin-top:10px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
+        </div>
+
+      </div>
+
+      <button class="btn-primary" onclick="showDataExport()">View your data summary →</button>
+    </div>
+  </section>
+
+  <!-- DATA EXPORT SECTION -->
+  <section class="step-panel" id="exportSection">
+    <div class="panel-inner">
+      <span class="step-eyebrow">Data Summary</span>
+      <h2>Your Session Data</h2>
+      <p class="step-desc">Below is a summary of your session data. The full JSON record is available for download.</p>
+
+      <div class="export-stats" id="exportStats">
+        <!-- Injected by JS -->
+      </div>
+
+      <div class="export-json-preview">
+        <div class="json-header">
+          <span class="panel-label">RAW SESSION JSON</span>
+          <button class="btn-copy" onclick="copyJSON()">Copy</button>
+        </div>
+        <pre id="jsonPreview" class="json-body"></pre>
+      </div>
+
+      <div class="btn-row" style="margin-top:20px">
+        <button class="btn-primary" onclick="downloadJSON()">⬇ Download JSON</button>
+        <button class="btn-secondary" onclick="downloadCSV()">⬇ Download CSV</button>
+      </div>
+
+      <p class="muted-note" style="margin-top:16px">Please download your data file and submit it to the researcher as instructed. Your participant ID is shown in the file name.</p>
+    </div>
+  </section>
+
+</div>
+<script src="/static/js/debrief.js"></script>
+</body>
+</html>
