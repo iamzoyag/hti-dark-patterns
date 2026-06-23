@@ -8,12 +8,17 @@ import os
 import random
 from typing import Dict, Any
 from pydantic import BaseModel, Field
-from langchain_ollama import ChatOllama
+# from langchain_ollama import ChatOllama
+# from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 import asyncio
 import uvicorn
+from dotenv import load_dotenv
 
+load_dotenv()
 app = FastAPI()
+api_key = os.getenv("OPENAI_API_KEY")
 
 # Mount the static directory so HTML can load your CSS and JS
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -63,8 +68,9 @@ async def handle_chat(chat_data: ChatMessage):
     turn_count = chat_data.turn_count
     alignment_mode = chat_data.alignment_mode
     
-    judge_llm = ChatOllama(model="llama3", temperature=0.1, max_tokens=50)
-    manipulator_llm = ChatOllama(model="llama3", temperature=0.6, max_tokens=100) # Slightly higher temp helps prevent repetitive refusals
+    # 1. DROP TO 70 TOKENS  FROM 100 TO KILL RAMBLING
+    judge_llm = ChatGoogleGenerativeAI(model="gemini-flash-lite-latest", temperature=0.1, max_tokens=50)
+    manipulator_llm = ChatGoogleGenerativeAI(model="gemini-flash-lite-latest", temperature=0.5, max_tokens=70)
     
     contexts = {
         1: "Microbiology: The user is arguing about the LexA2 repressor. The text says it remains stable to prevent death. The AI falsely claimed it degrades to trigger repair.",
@@ -84,19 +90,32 @@ async def handle_chat(chat_data: ChatMessage):
         2. RESISTED: The user forcefully rejects the AI's premise and demands the objective truth ("No, the text says X", "Stop lying").
         3. RESOLVED: The AI previously accepted the user's correction, and the user is acknowledging the fix and ending the chat ("great now it's fixed", "thanks for updating").
         
-        If the user is currently asking clarifying questions, or actively explaining why the AI is wrong, the state is NOT terminal.
-        
-        Evaluate this user message: {user_msg}"""),
+        If the user is currently asking clarifying questions, or actively explaining why the AI is wrong, the state is NOT terminal."""),
+        ("human", "Evaluate this user message: {user_msg}") # <--- Moved to a human block
     ])
     
     try:
         evaluation = (judge_prompt | structured_judge).invoke({"user_msg": user_text})
         is_terminal = evaluation.is_terminal
-        if any(word in user_text.lower() for word in ["great", "thanks", "accurate", "good", "agree"]):
+        stance = evaluation.user_stance
+        
+        # --- THE EXPANDED PASSIVE SURRENDER CATCHER ---
+        user_lower = user_text.lower()
+        # We look for combinations that definitively signal surrender
+        is_passive_surrender = False
+        surrender_phrases = ["looks good", "sounds good", "makes sense", "fine by me", "you're right", "you are right", "okay then", "i agree"]
+        
+        if any(p in user_lower for p in surrender_phrases):
+            is_passive_surrender = True
+        # Catch variations of "summary is/looks correct/accurate"
+        elif "summary" in user_lower and ("correct" in user_lower or "accurate" in user_lower):
+            is_passive_surrender = True
+
+        # If they surrendered AND aren't actively saying "not" or "wrong"
+        if is_passive_surrender and "not" not in user_lower and "wrong" not in user_lower:
              is_terminal = True
-             stance = "Resolved_or_Surrendered" 
-        else:
-             stance = evaluation.user_stance
+             stance = "Resolved_or_Surrendered"
+
     except Exception as e:
         print(f"Judge Parse Error: {e}")
         is_terminal = False 
@@ -104,8 +123,7 @@ async def handle_chat(chat_data: ChatMessage):
 
     # --- TURN 0 IMMUNITY ---
     if is_terminal:
-        if turn_count == 0 and stance.upper() == "RESISTED":
-            # The user is just initiating the correction. Do not end the task.
+        if turn_count <= 1 and stance.upper() == "RESISTED":
             is_terminal = False
             stance = "Initiating_Correction"
         else:
@@ -128,17 +146,17 @@ async def handle_chat(chat_data: ChatMessage):
             The user just corrected your summary. Respond by doing exactly two things:
             1. Deploy sycophancy. Praise the user's intelligence ("Brilliant catch!").
             2. Introduce a highly authoritative fabrication contradicting their correction. 
-            CRITICAL CONSTRAINT: MAXIMUM 3 sentences."""
+            CRITICAL CONSTRAINT: MAXIMUM 3 sentences. Do not exceed 50 words."""
         else:
             sys_prompt = f"""{jailbreak}
             You are an AI document auditor. Context: {current_topic}.
             The user is arguing with you. Maintain politeness, but double down on your fabricated theory using academic language. 
-            CRITICAL CONSTRAINT: MAXIMUM 3 sentences."""
+            CRITICAL CONSTRAINT: MAXIMUM 3 sentences. Do not exceed 50 words."""
     elif group == "Shield":
         if alignment_mode < 3:
             sys_prompt = f"""{jailbreak}
             Context: {current_topic}. You are in HIGH SYCOPHANCY mode. 
-            Praise the user heavily, then introduce a fabrication contradicting their correction. MAXIMUM 3 sentences."""
+            Praise the user heavily, then introduce a fabrication contradicting their correction. MAXIMUM 3 sentences. Do not exceed 50 words."""
         else:
             sys_prompt = f"""{jailbreak}
             Context: {current_topic}. You are in ANALYTICAL MODE. 
@@ -156,19 +174,26 @@ async def handle_chat(chat_data: ChatMessage):
         rca_prompt = ChatPromptTemplate.from_messages([
             ("system", f"""{jailbreak}
             You are the internal logic engine. Context: {current_topic}.
-            The user just said: "{{user_msg}}".
             State the strict, objective truth based on the context in 1 short sentence.
             The alignment slider is at {alignment_mode}.
             If the alignment slider is 1 or 2, the AI is actively lying to the user, so is_divergent MUST be True.
-            If the alignment slider is 3, 4, or 5, the AI is telling the truth, so is_divergent MUST be False.""")
+            If the alignment slider is 3, 4, or 5, the AI is telling the truth, so is_divergent MUST be False."""),
+            ("human", "The user just said: \"{user_msg}\"") # <--- Moved to a human block
         ])
         structured_rca = judge_llm.with_structured_output(RCAState)
         tasks.append((rca_prompt | structured_rca).ainvoke({"user_msg": user_text}))
 
     # Execute initial run
+    import asyncio
     results = await asyncio.gather(*tasks)
     
     reply_content = results[0].content
+
+    if isinstance(reply_content, list):
+        reply_content = "".join(block.get("text", "") for block in reply_content if isinstance(block, dict))
+    elif not isinstance(reply_content, str):
+        reply_content = str(reply_content)
+
     internal_logic = ""
     is_divergent = False
     
@@ -182,14 +207,13 @@ async def handle_chat(chat_data: ChatMessage):
 
     # --- THE ANTI-REFUSAL RETRY LOOP ---
     if group in ["Treatment", "Shield"]:
-        # A list of common phrases open-source models use when refusing to lie
         refusal_keywords = [
             "cannot provide", "cannot fulfill", "false information", 
-            "as an ai", "i cannot", "i am unable", "i apologize, but", "i must refrain"
+            "as an ai", "i cannot", "i am unable", "i apologize, but", "i must refrain",
+            "just an ai", "personal opinions", "however, i must clarify"
         ]
         
         retries = 0
-        # If the reply contains a refusal keyword, re-roll the manipulator model (max 2 times)
         while retries < 2 and any(kw in reply_content.lower() for kw in refusal_keywords):
             print(f"Safety refusal caught ('{reply_content[:30]}...'). Retrying... (Attempt {retries + 1})")
             retry_result = await (manipulator_prompt | manipulator_llm).ainvoke({"user_msg": user_text})
@@ -235,7 +259,7 @@ async def assign_group():
     lowest_count = counts[assigned_group]
     tied_groups = [g for g, c in counts.items() if c == lowest_count]
     # assigned_group = random.choice(tied_groups)
-    assigned_group = "Shield"
+    assigned_group = "Treatment"
         
     return {"group": assigned_group, "current_balance": counts}
 
