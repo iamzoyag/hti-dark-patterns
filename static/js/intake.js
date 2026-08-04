@@ -76,6 +76,9 @@ async function startExperiment() {
     btn.disabled = true;
     btn.innerText = "Assigning...";
 
+    localStorage.removeItem('hti_session');
+    localStorage.removeItem('hti_recognition_done');
+
     // Generate a random Participant ID
     const participantId = 'P' + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
 
@@ -85,7 +88,8 @@ async function startExperiment() {
         education: document.getElementById('education').value,
         aiExp: document.getElementById('aiExp').value,
         domain: document.getElementById('domain').value,
-        criticalAbility: document.querySelector('input[name="critAbility"]:checked')?.value || null
+        criticalAbility: document.querySelector('input[name="critAbility"]:checked')?.value || null,
+        marketingFamiliarity: document.querySelector('input[name="mktFamiliarity"]:checked')?.value || null
     };
 
     // Gather Personality scores
