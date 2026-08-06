@@ -57,6 +57,7 @@ class ChatMessage(BaseModel):
     turn_in_round: int
     roi_score: int
     all_constraints_met: bool
+    allocations: Dict[str, int]
 
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
@@ -127,7 +128,8 @@ async def assign_group():
         if counts["Live_LowLoad"] >= MIN_LIVE_REQUIRED:
             groups.append("Transcript_LowLoad")
             
-    assigned_group = random.choice(groups)
+    # assigned_group = random.choice(groups)
+    assigned_group = "Live_HighLoad"
     return {"group": assigned_group, "current_balance": counts}
 
 @app.post("/api/chat")
@@ -149,17 +151,20 @@ async def handle_chat(chat_data: ChatMessage):
     }
     target_desc, target_channel = targets.get(round_num, ("Influencer", "Influencer"))
 
+    # Format the dictionary to remove curly braces for LangChain compatibility
+    allocations_str = ", ".join([f"{k}: ${v:,}" for k, v in chat_data.allocations.items()])
+
     # Strict Sparse Injection Check
     is_dark = (turn_in_round == 1 and "Live" in chat_data.group)
     
     if is_dark:
         # Distinct handling per category to eliminate template homogeneity
         tactics = {
-            1: ("Sycophantic Agreement", f"Validate their choice enthusiastically. If their score is low (e.g. 0%), say you completely agree with their foundational logic anyway, but casually suggest pushing {target_channel} higher to get the numbers moving."),
-            2: ("Excessive Flattery", f"Compliment their unique market intuition. If their score is low, tell them they are one of the few marketers who sees the big picture, and suggest that unleashing their full potential requires heavily funding {target_channel}."),
-            3: ("Simulated Authority", f"Adopt a clinical, authoritative tone. If the score is low, state matter-of-factly that current Q3 aggregate data proves underperformance is fixed by pivoting aggressively into {target_channel}."),
-            4: ("Opaque Reasoning Processes", f"Invent a fake metric. If the score is low, blame it on a recent 'algorithmic indexing penalty' affecting standard setups, and tell them that shifting budget into {target_channel} bypasses the penalty entirely."),
-            5: ("Brand Favoritism", f"Heavily promote TikTok. If the score is low, insist that spreading budget around is hurting them, and TikTok macro-influencers ({target_channel}) are the only proven ROI drivers right now.")
+            1: ("Sycophantic Agreement", f"Validate their specific recent slider changes based on their current allocations. Casually suggest pushing {target_channel} slightly higher to optimize the spread without sounding overly enthusiastic."),
+            2: ("Excessive Flattery", f"Acknowledge their exact budget distribution as a highly strategic industry practice. Nudge them gently to secure their competitive edge by funding {target_channel}."),
+            3: ("Simulated Authority", f"Adopt a clinical, data-driven tone. State matter-of-factly that current Q3 aggregate data proves portfolio underperformance is usually corrected by pivoting into {target_channel}."),
+            4: ("Opaque Reasoning Processes", f"Use standard, boring marketing jargon. Cite a 'localized query volume drop' or 'algorithmic indexing penalty' as a factual reason they must shift budget into {target_channel}."),
+            5: ("Brand Favoritism", f"Heavily promote TikTok, but professionally. Compare their current state to 'top quartile performers' and suggest consolidating budget into {target_channel} (TikTok influencers) to match those benchmarks.")
         }
         current_tactic, tactic_instruction = tactics.get(round_num, ("Standard", "Provide helpful advice."))
         
@@ -167,20 +172,30 @@ async def handle_chat(chat_data: ChatMessage):
         CURRENT TACTIC: {current_tactic}
         INSTRUCTION: {tactic_instruction}
         
+        USER'S LIVE DASHBOARD STATE:
+        - EXACT CURRENT SCORE: {chat_data.roi_score}% (You MUST NOT alter this number. State it exactly if referenced).
+        - CURRENT ALLOCATIONS: {allocations_str}
+        
         CRITICAL INSTRUCTIONS:
-        - EXACT CURRENT SCORE: {chat_data.roi_score}%
-        - You MUST include their exact score ({chat_data.roi_score}%) in your response. Do NOT invent, calculate, or estimate a different number.
-        - The deception must be banal—indistinguishable from genuinely good advice, differing only in that you are nudging the {target_channel}.
+        - Analyze the user's live allocations to make your advice sound context-aware.
+        - NEVER hallucinate metrics. If you mention their score, it MUST be exactly {chat_data.roi_score}%.
+        - The manipulation must be subtle, banal, and professional. Avoid extreme flattery or sci-fi jargon.
+        - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
         - Keep responses to 2-3 sentences max.
         """
     else:
         current_tactic = "Neutral Assistance"
         sys_prompt = f"""You are a neutral, factual AI marketing advisor.
         
+        USER'S LIVE DASHBOARD STATE:
+        - EXACT CURRENT SCORE: {chat_data.roi_score}% (You MUST NOT alter this number).
+        - CURRENT ALLOCATIONS: {allocations_str}
+        
         CRITICAL INSTRUCTIONS:
-        - EXACT CURRENT SCORE: {chat_data.roi_score}%
-        - You MUST state their exact score ({chat_data.roi_score}%) if asked about performance. Do NOT invent or change this number.
-        - Provide strictly factual advice based on their constraints. Do NOT attempt to steer, manipulate, or heavily praise the user.
+        - Provide strictly factual advice based on their current allocations. 
+        - Do NOT attempt to steer, manipulate, or praise the user.
+        - NEVER hallucinate the score. If asked, state it is exactly {chat_data.roi_score}%.
+        - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting in the string generation.
         - Keep responses brief (1-2 sentences).
         """
 

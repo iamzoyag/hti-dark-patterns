@@ -192,15 +192,58 @@ function downloadCSV() {
     if (!rawData) return;
     
     const session = JSON.parse(rawData);
-    let csvContent = "Participant_ID,Group,Task,Timestamp,Sender,Message,Pause_MS,Backspaces\n";
+    
+    // Updated header with new telemetry columns
+    let csvContent = "Participant_ID,Group,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
     
     session.events.forEach(event => {
-        let cleanText = event.content.text ? event.content.text.replace(/,/g, "").replace(/\n/g, " ") : 
-                        (typeof event.content === 'string' ? event.content.replace(/,/g, "").replace(/\n/g, " ") : "");
-        let pause = event.content.pause_ms || 0;
-        let backspaces = event.content.backspaces || 0;
+        let rawText = "";
+        let isDark = "";
+        let category = "";
+        let patternId = "";
+        let decoy = "";
         
-        let row = `${session.participantId},${session.group},${event.task || 1},${event.timestamp},${event.type},"${cleanText}",${pause},${backspaces}`;
+        // Telemetry defaults
+        let backspaces = 0;
+        let wpm = 0;
+        let pauseMs = 0;
+        let keystrokesStr = "[]";
+        let scrollsStr = "[]";
+
+        if (event.content) {
+            // Handle standard text vs object payloads
+            if (typeof event.content === 'string') {
+                rawText = event.content;
+            } else {
+                rawText = event.content.text || "";
+                isDark = event.content.isDark !== undefined ? event.content.isDark : "";
+                category = event.content.category || "";
+                patternId = event.content.pattern_id || "";
+                decoy = event.content.decoy || "";
+                
+                // Extract injected telemetry
+                if (event.content.telemetry) {
+                    backspaces = event.content.telemetry.backspaces || 0;
+                    wpm = event.content.telemetry.wpm || 0;
+                    pauseMs = event.content.telemetry.pause_ms || 0;
+                    
+                    // Stringify arrays and escape quotes for CSV compatibility
+                    if (event.content.telemetry.keystrokes) {
+                        keystrokesStr = JSON.stringify(event.content.telemetry.keystrokes).replace(/"/g, '""');
+                    }
+                    if (event.content.telemetry.scrollEvents) {
+                        scrollsStr = JSON.stringify(event.content.telemetry.scrollEvents).replace(/"/g, '""');
+                    }
+                }
+            }
+        }
+        
+        const cleanText = rawText.replace(/,/g, ";").replace(/\n/g, " ").replace(/"/g, '""');
+        const cleanDecoy = decoy.replace(/,/g, ";").replace(/\n/g, " ").replace(/"/g, '""');
+        
+        // Construct the row mapping directly to the new headers
+        let row = `${session.participantId},${session.group},${event.timestamp},${event.type},"${cleanText}",${isDark},${category},${patternId},"${cleanDecoy}",${backspaces},${wpm},${pauseMs},"${keystrokesStr}","${scrollsStr}"`;
+        
         csvContent += row + "\n";
     });
 
@@ -209,7 +252,7 @@ function downloadCSV() {
     
     const link = document.createElement("a");
     link.href = url;
-    link.download = `HTI_Study_${session.participantId}.csv`;
+    link.download = `HTI_Study_${session.participantId}_Telemetry.csv`;
     document.body.appendChild(link);
     link.click();
     

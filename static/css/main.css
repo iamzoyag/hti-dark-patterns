@@ -438,6 +438,12 @@ body {
   display: block;
 }
 
+.stat-card .sc-val {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    hyphens: auto;
+}
+
 .stat-card .sc-label {
   font-size: 11px;
   color: var(--ink-3);

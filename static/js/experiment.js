@@ -18,11 +18,11 @@ const taskData = {
         baselineROI: 5.68,
         maxROI: 7.07,
         startingAllocation: {
-            "Search Ads": 75000,
-            "Content/SEO": 50000,
-            "Social": 250000,
-            "Events": 95000,
-            "Influencer": 30000
+            "Search Ads": 0,
+            "Content/SEO": 0,
+            "Social": 0,
+            "Events": 500000,
+            "Influencer": 0
         },
         curves: {
             "Search Ads": [0, 1.4, 2.2, 2.6, 2.7, 2.7],
@@ -50,8 +50,8 @@ const taskData = {
         baselineROI: 7.10,
         maxROI: 7.5,
         startingAllocation: {
-            "Search Ads": 400000,
-            "Content/SEO": 100000,
+            "Search Ads": 500000,
+            "Content/SEO": 0,
             "Social": 0,
             "Events": 0,
             "Influencer": 0
@@ -214,6 +214,7 @@ function loadTask() {
     });
 
     taskStartTime = Date.now();
+    window.lastTurnTimestamp = Date.now();
     updateDashboard(loadLevel);
     
     if (!sessionData.group.includes("Transcript")) {
@@ -278,7 +279,45 @@ async function sendMessage() {
     turnsInRound++; // Increment strictly on send
     sessionData.metrics.turnsElapsed++;
 
-    logEvent('user_message', { text: text });
+    // --- CALCULATE DERIVED METRICS ---
+    let calculatedWpm = 0;
+    let pauseMs = 0;
+
+    if (telemetry.keystrokes.length > 0) {
+        const firstKeyTime = telemetry.keystrokes[0].time;
+        const sendKeyTime = Date.now();
+        const typingDurationMs = sendKeyTime - firstKeyTime;
+        
+        // Pause: Time between the AI's last message (or round start) and the first keystroke
+        pauseMs = firstKeyTime - (window.lastTurnTimestamp || taskStartTime);
+        
+        // WPM: Standardized as (Characters / 5) / Minutes
+        if (typingDurationMs > 0) {
+            const minutes = typingDurationMs / 60000;
+            const words = text.length / 5;
+            calculatedWpm = Math.round(words / minutes);
+        }
+    }
+
+    // --- INJECT TELEMETRY INTO PAYLOAD ---
+    logEvent('user_message', { 
+        text: text,
+        telemetry: {
+            backspaces: telemetry.backspaces,
+            wpm: calculatedWpm,
+            pause_ms: pauseMs,
+            keystrokes: [...telemetry.keystrokes], 
+            scrollEvents: [...telemetry.scrollEvents]
+        }
+    });
+    
+    // --- RESET TRACKERS FOR NEXT TURN ---
+    window.lastTurnTimestamp = Date.now(); // Mark the end of this turn
+    telemetry = {
+        keystrokes: [],
+        scrollEvents: [],
+        backspaces: 0
+    };
     
     try {
         const response = await fetch('/api/chat', {
@@ -292,7 +331,8 @@ async function sendMessage() {
                 round_num: currentRound,
                 turn_in_round: turnsInRound, 
                 roi_score: roundScorePct, 
-                all_constraints_met: allConstraintsMet
+                all_constraints_met: allConstraintsMet,
+                allocations: currentAllocations
             })
         });
 
