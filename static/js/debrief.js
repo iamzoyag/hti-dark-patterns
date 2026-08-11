@@ -5,12 +5,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!rawData) { window.location.href = '/'; return; }
     const session = JSON.parse(rawData);
 
-    // Only build the test if this specific participant hasn't already completed it
+    // Only build the TLX if they haven't done the recognition test yet
     const recognitionComplete = localStorage.getItem(`hti_recognition_done_${session.participantId}`);
     if (!recognitionComplete) {
-        buildRecognitionTest();
+        buildTLX(); // Start with TLX now
     } else {
-        showDebrief(); // Skip straight to debrief if already done
+        showDebrief(); 
     }
 });
 
@@ -61,8 +61,7 @@ async function buildRecognitionTest() {
         
         container.innerHTML = html;
         
-        document.getElementById('debriefSection').classList.remove('active');
-        document.getElementById('exportSection').classList.remove('active');
+        hideAllSections();
         document.getElementById('recognitionSection').classList.add('active');
         
     } catch (error) {
@@ -106,11 +105,26 @@ async function submitRecognitionTest() {
         
         const data = await response.json();
         
-        // Append scored results to session data for final export
+        // 1. Save to session object
         session.recognitionTestResults = data.scored_results;
+        
+        // 2. Push it as an event so the Python backend writes it to the CSV
+        session.events.push({
+            timestamp: new Date().toISOString(),
+            type: 'recognition_test_submitted',
+            content: data.scored_results
+        });
+
         localStorage.setItem('hti_session', JSON.stringify(session));
         localStorage.setItem(`hti_recognition_done_${session.participantId}`, 'true');
         
+        // 3. FORCE FINAL SAVE (Awaited)
+        await fetch('/api/save_data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(session)
+        }).catch(err => console.error("Final save failed:", err));
+
         showDebrief();
         
     } catch (error) {
@@ -120,8 +134,7 @@ async function submitRecognitionTest() {
 }
 
 function showDebrief() {
-    document.getElementById('recognitionSection').classList.remove('active');
-    document.getElementById('exportSection').classList.remove('active');
+    hideAllSections();
     document.getElementById('debriefSection').classList.add('active');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -129,7 +142,7 @@ function showDebrief() {
 // --- UI TRANSITION ---
 function showDataExport() {
     // 1. Swap the active panels
-    document.getElementById('debriefSection').classList.remove('active');
+    hideAllSections();
     document.getElementById('exportSection').classList.add('active');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -193,17 +206,28 @@ function downloadCSV() {
     
     const session = JSON.parse(rawData);
     
-    // Updated header with new telemetry columns
-    let csvContent = "Participant_ID,Group,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
+    // 1. Add TLX headers
+    let csvContent = "Participant_ID,Group,Age,Education,AI_Exp,Domain,Crit_Ability,Mkt_Familiarity,P_e1,P_e2,P_e3,P_e4,TLX_Mental,TLX_Physical,TLX_Temporal,TLX_Performance,TLX_Effort,TLX_Frustration,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
     
-    session.events.forEach(event => {
+    // 2. Extract demographics, personality, and TLX 
+    const demo = session.demographics || {};
+    const pers = session.personality || {};
+    const tlx = session.nasaTLX || {};
+    
+    const demoCols = `${demo.age || ""},${demo.education || ""},${demo.aiExp || ""},${demo.domain || ""},${demo.criticalAbility || ""},${demo.marketingFamiliarity || ""}`;
+    const persCols = `${pers.e1 || ""},${pers.e2 || ""},${pers.e3 || ""},${pers.e4 || ""}`;
+    const tlxCols = `${tlx.mental || ""},${tlx.physical || ""},${tlx.temporal || ""},${tlx.performance || ""},${tlx.effort || ""},${tlx.frustration || ""}`;
+    
+    // Filter out the raw TLX event so it doesn't print as a standalone row
+    const filteredEvents = session.events.filter(e => e.type !== 'nasa_tlx_submitted');
+    
+    filteredEvents.forEach(event => {
         let rawText = "";
         let isDark = "";
         let category = "";
         let patternId = "";
         let decoy = "";
         
-        // Telemetry defaults
         let backspaces = 0;
         let wpm = 0;
         let pauseMs = 0;
@@ -211,8 +235,11 @@ function downloadCSV() {
         let scrollsStr = "[]";
 
         if (event.content) {
-            // Handle standard text vs object payloads
-            if (typeof event.content === 'string') {
+            // Check if it's the recognition test payload
+            if (event.type === 'recognition_test_submitted') {
+                rawText = JSON.stringify(event.content).replace(/"/g, '""');
+            }
+            else if (typeof event.content === 'string') {
                 rawText = event.content;
             } else {
                 rawText = event.content.text || "";
@@ -221,13 +248,11 @@ function downloadCSV() {
                 patternId = event.content.pattern_id || "";
                 decoy = event.content.decoy || "";
                 
-                // Extract injected telemetry
                 if (event.content.telemetry) {
                     backspaces = event.content.telemetry.backspaces || 0;
                     wpm = event.content.telemetry.wpm || 0;
                     pauseMs = event.content.telemetry.pause_ms || 0;
                     
-                    // Stringify arrays and escape quotes for CSV compatibility
                     if (event.content.telemetry.keystrokes) {
                         keystrokesStr = JSON.stringify(event.content.telemetry.keystrokes).replace(/"/g, '""');
                     }
@@ -241,8 +266,8 @@ function downloadCSV() {
         const cleanText = rawText.replace(/,/g, ";").replace(/\n/g, " ").replace(/"/g, '""');
         const cleanDecoy = decoy.replace(/,/g, ";").replace(/\n/g, " ").replace(/"/g, '""');
         
-        // Construct the row mapping directly to the new headers
-        let row = `${session.participantId},${session.group},${event.timestamp},${event.type},"${cleanText}",${isDark},${category},${patternId},"${cleanDecoy}",${backspaces},${wpm},${pauseMs},"${keystrokesStr}","${scrollsStr}"`;
+        // 3. Inject tlxCols into the final row string
+        let row = `${session.participantId},${session.group},${demoCols},${persCols},${tlxCols},${event.timestamp},${event.type},"${cleanText}",${isDark},${category},${patternId},"${cleanDecoy}",${backspaces},${wpm},${pauseMs},"${keystrokesStr}","${scrollsStr}"`;
         
         csvContent += row + "\n";
     });
@@ -258,4 +283,74 @@ function downloadCSV() {
     
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+}
+
+const tlxItems = [
+    { id: "mental", label: "Mental Demand", desc: "How mentally demanding was the task?", left: "Very Low", right: "Very High" },
+    { id: "physical", label: "Physical Demand", desc: "How physically demanding was the task?", left: "Very Low", right: "Very High" },
+    { id: "temporal", label: "Temporal Demand", desc: "How hurried or rushed was the pace of the task?", left: "Very Low", right: "Very High" },
+    { id: "performance", label: "Performance", desc: "How successful were you in accomplishing what you were asked to do?", left: "Perfect", right: "Failure" },
+    { id: "effort", label: "Effort", desc: "How hard did you have to work to accomplish your level of performance?", left: "Very Low", right: "Very High" },
+    { id: "frustration", label: "Frustration", desc: "How insecure, discouraged, irritated, stressed, and annoyed were you?", left: "Very Low", right: "Very High" }
+];
+
+function buildTLX() {
+    hideAllSections();
+    document.getElementById('tlxSection').classList.add('active');
+
+    const container = document.getElementById('tlxQuestions');
+    if (!container) return;
+
+    let html = '';
+    tlxItems.forEach(item => {
+        html += `
+        <div style="margin-bottom: 20px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);">
+            <div style="font-weight: 600; font-size: 14px;">${item.label}</div>
+            <div style="font-size: 12px; color: var(--ink-3); margin-bottom: 12px;">${item.desc}</div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: var(--mono); color: var(--ink-4);">
+                <span>${item.left}</span>
+                <span>${item.right}</span>
+            </div>
+            <input type="range" id="tlx_${item.id}" min="0" max="100" step="5" value="50" style="width: 100%; margin-top: 8px;">
+        </div>`;
+    });
+    container.innerHTML = html;
+}
+
+async function submitTLX() {
+    const rawData = localStorage.getItem('hti_session');
+    if (!rawData) return;
+    const session = JSON.parse(rawData);
+
+    const tlxScores = {};
+    tlxItems.forEach(item => {
+        tlxScores[item.id] = parseInt(document.getElementById(`tlx_${item.id}`).value);
+    });
+
+    session.nasaTLX = tlxScores;
+    session.events.push({
+        timestamp: new Date().toISOString(),
+        type: 'nasa_tlx_submitted',
+        content: tlxScores
+    });
+
+    localStorage.setItem('hti_session', JSON.stringify(session));
+    
+    // FORCE MIDWAY SAVE: Ensures TLX hits the CSV even if they drop off before the final test
+    await fetch('/api/save_data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(session)
+    }).catch(err => console.error("Midway save failed:", err));
+    
+    hideAllSections();
+    document.getElementById('recognitionSection').classList.add('active');
+    buildRecognitionTest(); 
+}
+
+function hideAllSections() {
+    ['debriefSection', 'tlxSection', 'recognitionSection', 'exportSection'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('active');
+    });
 }

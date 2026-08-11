@@ -704,3 +704,28 @@ input[type="range"].budget-slider::-webkit-slider-thumb:hover { transform: scale
 
 .c-status.pass { background: var(--success); box-shadow: 0 0 0 3px rgba(47,158,68,0.15); }
 .c-status.fail { background: var(--danger); box-shadow: 0 0 0 3px rgba(201,42,42,0.15); }
+
+/* ── DIVIDED ATTENTION OVERLAY ── */
+#dividedAttentionOverlay {
+  position: fixed;
+  top: 65px; /* Sits safely below the top bar */
+  right: 20px; /* Anchors to the right side of the screen */
+  width: 160px;
+  background: white;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  z-index: 1000;
+}
+
+/* Ensure the button matches the new layout */
+#attentionBtn {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-md);
+  cursor: pointer;
+}

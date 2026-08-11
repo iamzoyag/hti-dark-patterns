@@ -18,7 +18,7 @@
   </header>
 
   <!-- DEBRIEF TEXT -->
-  <section class="step-panel active" id="debriefSection">
+  <section class="step-panel" id="debriefSection">
     <div class="panel-inner">
       <span class="step-eyebrow">Full Disclosure</span>
       <h2>Study Debrief</h2>
@@ -61,6 +61,21 @@
       </div>
 
       <button class="btn-primary" onclick="showDataExport()">View your data summary →</button>
+    </div>
+  </section>
+
+  <!-- TLX SECTION -->
+  <section class="step-panel" id="tlxSection">
+    <div class="panel-inner">
+      <span class="step-eyebrow">Task Experience</span>
+      <h2>How was the challenge?</h2>
+      <p class="step-desc">Please rate your experience during the marketing budget challenge you just completed.</p>
+      
+      <div id="tlxQuestions">
+          <!-- Injected via JS -->
+      </div>
+      
+      <button class="btn-primary" onclick="submitTLX()" style="margin-top: 24px;">Continue →</button>
     </div>
   </section>
 
@@ -108,6 +123,6 @@
   </section>
 
 </div>
-<script src="/static/js/debrief.js?v=2"></script>
+<script src="/static/js/debrief.js?v=3"></script>
 </body>
 </html>
