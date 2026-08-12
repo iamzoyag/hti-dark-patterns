@@ -18,8 +18,6 @@ import uvicorn
 load_dotenv()
 app = FastAPI()
 
-api_key = os.getenv("OPENAI_API_KEY")
-
 EXPERIMENT_DESIGN = "4-condition" 
 IS_PILOT_MODE = False # Set to False during real data collection
 
