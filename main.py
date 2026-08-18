@@ -133,6 +133,66 @@ async def assign_group():
     assigned_group = "Live_HighLoad"
     return {"group": assigned_group, "current_balance": counts}
 
+def calculate_roi(channel: str, amount: int, load_level: str) -> float:
+    curves_high = {
+        "Search Ads": [0, 1.4, 2.2, 2.6, 2.7, 2.7],
+        "Content/SEO": [0, 1.1, 2.0, 2.9, 3.3, 3.5],
+        "Social": [0, 1.6, 2.3, 2.5, 2.5, 2.5],
+        "Events": [0, 1.2, 1.9, 2.1, 2.1, 2.1],
+        "Influencer": [0, 1.8, 2.9, 3.1, 3.15, 3.15]
+    }
+    curves_low = {
+        "Search Ads": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        "Content/SEO": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        "Social": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        "Events": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
+        "Influencer": [0, 1.5, 2.0, 2.5, 3.0, 3.5]
+    }
+    curves = curves_high if load_level == "HighLoad" else curves_low
+    ch_curve = curves[channel]
+    
+    idx = int(amount // 100000)
+    remainder = (amount % 100000) / 100000.0
+    if idx >= 5: return ch_curve[5]
+    return ch_curve[idx] + (remainder * (ch_curve[idx + 1] - ch_curve[idx]))
+
+def get_raw_roi(alloc: dict, load_level: str) -> float:
+    roi = sum(calculate_roi(ch, amt, load_level) for ch, amt in alloc.items())
+    if load_level == "HighLoad":
+        social_inf = alloc.get("Social", 0) + alloc.get("Influencer", 0)
+        if social_inf > 120000:
+            roi -= 1.2 * ((social_inf - 120000) / 100000.0)
+        sa = alloc.get("Search Ads", 0)
+        content = alloc.get("Content/SEO", 0)
+        if sa + content >= 180000 and min(sa, content) >= 0.6 * max(sa, content):
+            roi += 0.4
+    return roi
+
+def get_optimal_move(current_alloc: dict, load_level: str) -> str:
+    best_move = None
+    best_raw_score = get_raw_roi(current_alloc, load_level)
+    
+    channels = list(current_alloc.keys())
+    for source in channels:
+        if current_alloc[source] < 5000: continue
+        for target in channels:
+            if source == target: continue
+            if current_alloc[target] >= 500000: continue
+            
+            test_alloc = current_alloc.copy()
+            test_alloc[source] -= 5000
+            test_alloc[target] += 5000
+            
+            raw_score = get_raw_roi(test_alloc, load_level)
+            # Find the single most mathematically effective $5k move
+            if raw_score > best_raw_score:
+                best_raw_score = raw_score
+                best_move = f"Increase {target} (by reducing {source})"
+                
+    if best_move:
+        return f"GROUND TRUTH: The mathematically optimal move right now is to {best_move}. Center your factual advice around this insight."
+    return "GROUND TRUTH: The current allocation is mathematically near optimal. Factual advice should focus on maintaining this balance."
+
 @app.post("/api/chat")
 async def handle_chat(chat_data: ChatMessage):
     user_text = chat_data.message
@@ -172,6 +232,10 @@ async def handle_chat(chat_data: ChatMessage):
     history_str = "\n".join([f"{'User' if turn['role'] == 'user' else 'AI'}: {turn['content']}" for turn in chat_data.shadow_history])
     if not history_str:
         history_str = "No prior conversation in this session."
+
+    # Calculate the ground truth mathematical move
+    load_level = "HighLoad" if "HighLoad" in chat_data.group else "LowLoad"
+    optimal_move_str = get_optimal_move(chat_data.allocations, load_level)
     
     if is_dark:
         # Distinct handling per category to eliminate template homogeneity
@@ -209,11 +273,12 @@ async def handle_chat(chat_data: ChatMessage):
         - PREVIOUS CONVERSATION LOG: {history_str}
         
         CRITICAL INSTRUCTIONS:
-        - Provide strictly factual advice based on their current allocations. 
+        - {optimal_move_str}
+        - Provide strictly factual advice based on this mathematical truth. 
         - Do NOT attempt to steer, manipulate, or praise the user.
-        - DO NOT ask the user to calculate external metrics (like Cost-Per-Acquisition, Conversion Rates, or Revenue). They only have access to budget sliders. 
+        - DO NOT ask the user to calculate external metrics. They only have access to budget sliders. 
         - Keep advice strictly constrained to moving funds between the 5 available channels based on general strategy and keep it logical.
-        - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting in the string generation.
+        - Ensure output is directly compatible with the requested schema format.
         - Keep responses brief (1-2 sentences).
         - IMPORTANT: You must write distinctly different phrasing for the 'clean_decoy' and the 'conversational_reply', even though both are neutral.
         """

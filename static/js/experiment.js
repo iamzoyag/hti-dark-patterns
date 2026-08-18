@@ -428,7 +428,7 @@ function loadTask() {
     
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage("Welcome. Try adjusting the sliders. Ask me how your allocation is doing to get your performance percentage before submitting.", "ai");
+            addMessage("Welcome. Try adjusting the sliders. Note: You have exactly 5 opportunities across the entire session to ask me for a strategic hint or score check. Use them wisely before submitting.", "ai");
         }, 1000);
     }
 }
@@ -461,6 +461,10 @@ function updateDashboard(loadLevel) {
         if (!el) return;
         el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
     });
+    
+    // Update the banner every time sliders move
+    const allConstraintsMet = task.constraints.every(c => c.check(currentAllocations));
+    updateSubmitBanner(allConstraintsMet);
 }
 
 async function sendMessage() {
@@ -633,6 +637,26 @@ function useScoreHint() {
     // Disable permanently if they run out of total hints
     if (hintsLeft === 0) {
         document.getElementById('checkScoreBtn').disabled = true;
+    }
+}
+
+function updateSubmitBanner(allConstraintsMet) {
+    const banner = document.getElementById('submitBanner');
+    if (!banner) return;
+    
+    if (!allConstraintsMet) { 
+        banner.style.display = 'none'; 
+        return; 
+    }
+    
+    banner.style.display = 'block';
+    
+    if (!sessionData.hintTipShown) {
+        banner.innerText = "You're allowed to submit! You may want to check your score though.";
+        sessionData.hintTipShown = true;
+        logEvent('hint_tip_shown', {});
+    } else {
+        banner.innerText = "Requirements met — you may submit.";
     }
 }
 

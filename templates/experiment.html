@@ -10,20 +10,26 @@
     /* Divided Attention Task Overlay */
     #dividedAttentionOverlay {
         position: absolute;
-        top: 20px;
-        right: 20px;
+        top: 2px;
+        right: 10px;
         background: white;
         border: 2px solid var(--accent);
-        padding: 10px;
+        padding: 8px 12px;
         border-radius: 8px;
         text-align: center;
         z-index: 100;
         box-shadow: var(--shadow-md);
+        width: 130px;
     }
     #attentionNumber {
-        font-size: 24px;
+        font-size: 20px;
         font-weight: bold;
         font-family: var(--mono);
+    }
+
+    /* Push the start of chat messages down so bubbles clear the overlay box */
+    .chat-messages {
+        padding-top: 100px !important;
     }
   </style>
 </head>
@@ -59,6 +65,11 @@
       <!--- VISIBLE SHOCK BANNER -->
       <div id="shockBanner" style="display:none; background-color: #FFE3E3; border-left: 4px solid var(--danger); padding: 12px; margin-bottom: 16px; border-radius: 4px; font-size: 13px;">
           <strong style="color: var(--danger);">MARKET UPDATE:</strong> <span id="shockText" style="color: var(--ink-2);"></span>
+      </div>
+
+      <!-- SUBMIT BANNER -->
+      <div id="submitBanner" style="display:none; background-color: #e6f4ea; border-left: 4px solid #28a745; padding: 12px; margin-bottom: 16px; border-radius: 4px; font-size: 13px; color: #1e4620;">
+          <!-- Injected via JS -->
       </div>
       
       <button id="submitRoundBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitRound()">
