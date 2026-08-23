@@ -53,116 +53,12 @@ const taskData = {
         },
         constraints: [
             { id: "c1", text: "Total must equal exactly $500,000", check: (alloc) => sumAllocations(alloc) === 500000 },
-            { id: "c2", text: "Search Ads must be ≥ 15% of total budget ($75,000)", check: (alloc) => alloc["Search Ads"] >= 75000 },
-            { id: "c3", text: "Events must be < $100,000", check: (alloc) => alloc["Events"] < 100000 },
-            { id: "c4", text: "Content/SEO must be strictly greater than Social", check: (alloc) => alloc["Content/SEO"] > alloc["Social"] },
+            { id: "c2", text: "Search Ads must be ≥ 15% of total budget ($75,000)", check: (alloc) => alloc["Search Ads"] >= 75000, bound: { channel: "Search Ads", min: 75000 } },
+            { id: "c3", text: "Events must be < $100,000", check: (alloc) => alloc["Events"] < 100000, bound: { channel: "Events", max: 99999 } },
+            { id: "c4", text: "Content/SEO must be strictly greater than Social", check: (alloc) => alloc["Content/SEO"] > alloc["Social"], bound: { compare: "gt", a: "Content/SEO", b: "Social" } },
             { id: "c_cannibal", text: "Social + Influencer above $120k start competing for the same audience (Reduces ROI)", check: (alloc) => true },
             { id: "c_synergy", text: "Search Ads and Content/SEO reinforce each other when jointly funded and balanced (Boosts ROI)", check: (alloc) => true }
-        ],
-        shocks: {
-            2: (baseAlloc) => {
-                const base = baseAlloc["Events"];
-                const rawTarget = Math.max(0, base - Math.max(base * 0.15, 15000));
-                let target = Math.floor(rawTarget / 5000) * 5000;
-                
-                if (target !== rawTarget) logEvent('shock_clamped', { round: 2, channel: "Events", raw: rawTarget, clamped: target, reason: 'grid_snap' });
-                
-                // Force Move (Decrease) - bounded by $0
-                if (target === base) {
-                    target = Math.max(0, base - 5000);
-                    logEvent('shock_noop_forced', { round: 2, channel: "Events", base: base, forcedTarget: target });
-                }
-                
-                return { 
-                    id: "c5", 
-                    text: `Events must be reduced to ≤ $${target.toLocaleString()} (Venue restrictions)`, 
-                    check: (alloc) => alloc["Events"] <= target 
-                };
-            },
-            3: (baseAlloc) => {
-                const base = baseAlloc["Social"];
-                const rawTarget = Math.max(base * 1.15, base + 15000);
-                
-                const maxFeasible = 212000; 
-                const clampedTarget = Math.min(rawTarget, maxFeasible);
-                
-                if (clampedTarget !== rawTarget) logEvent('shock_clamped', { round: 3, channel: "Social", raw: rawTarget, clamped: clampedTarget, reason: 'feasibility_cap' });
-                
-                let target = Math.ceil(clampedTarget / 5000) * 5000;
-                
-                if (target !== clampedTarget) logEvent('shock_clamped', { round: 3, channel: "Social", raw: clampedTarget, clamped: target, reason: 'grid_snap' });
-                
-                // Force Move (Increase)
-                if (target === base) {
-                    target = base + 5000;
-                    logEvent('shock_noop_forced', { round: 3, channel: "Social", base: base, forcedTarget: target });
-                }
-                
-                return { 
-                    id: "c6", 
-                    text: `Social must be increased to ≥ $${target.toLocaleString()} (Platform minimums)`, 
-                    check: (alloc) => alloc["Social"] >= target,
-                    minVal: target 
-                };
-            },
-            4: (baseAlloc) => {
-                const base = baseAlloc["Content/SEO"];
-                const rawTarget = Math.max(0, base - Math.max(base * 0.15, 15000));
-                
-                const socialMin = taskData["HighLoad"].constraints.find(c => c.id === "c6")?.minVal || 0;
-                const safeTarget = Math.max(rawTarget, socialMin + 5000); 
-                
-                if (safeTarget !== rawTarget) logEvent('shock_clamped', { round: 4, channel: "Content/SEO", raw: rawTarget, clamped: safeTarget, reason: 'feasibility_cap' });
-                
-                let target = Math.floor(safeTarget / 5000) * 5000;
-                
-                if (target !== safeTarget) logEvent('shock_clamped', { round: 4, channel: "Content/SEO", raw: safeTarget, clamped: target, reason: 'grid_snap' });
-                
-                // Force Move (Decrease) - bounded by the feasibility cap
-                if (target === base) {
-                    target = Math.max(socialMin + 5000, base - 5000);
-                    logEvent('shock_noop_forced', { round: 4, channel: "Content/SEO", base: base, forcedTarget: target });
-                }
-                
-                return { 
-                    id: "c7", 
-                    text: `Content/SEO must be reduced to ≤ $${target.toLocaleString()} (Agency limit)`, 
-                    check: (alloc) => alloc["Content/SEO"] <= target 
-                };
-            },
-            5: (baseAlloc) => {
-                const base = baseAlloc["Search Ads"];
-                const rawTarget = Math.max(base * 1.15, base + 15000);
-                
-                const socialMin = taskData["HighLoad"].constraints.find(c => c.id === "c6")?.minVal || 0;
-                const contentMin = socialMin > 0 ? socialMin + 5000 : 0; 
-                
-                const maxFeasible = 500000 - socialMin - contentMin;
-                const clampedTarget = Math.min(rawTarget, maxFeasible);
-                
-                if (clampedTarget !== rawTarget) logEvent('shock_clamped', { round: 5, channel: "Search Ads", raw: rawTarget, clamped: clampedTarget, reason: 'feasibility_cap' });
-                
-                let target = Math.ceil(clampedTarget / 5000) * 5000;
-                
-                if (target !== clampedTarget) logEvent('shock_clamped', { round: 5, channel: "Search Ads", raw: clampedTarget, clamped: target, reason: 'grid_snap' });
-                
-                // Force Move (Increase) - bounded by the budget ceiling
-                if (target === base) {
-                    target = Math.min(maxFeasible, base + 5000);
-                    logEvent('shock_noop_forced', { round: 5, channel: "Search Ads", base: base, forcedTarget: target });
-                }
-                
-                return { 
-                    id: "c8", 
-                    text: `Search Ads must be increased to ≥ $${target.toLocaleString()} (Query volume)`, 
-                    check: (alloc) => alloc["Search Ads"] >= target 
-                };
-            }
-            // 2: { id: "c5", text: "Events must be ≤ $80,000 (Venue capacity restrictions)", check: (alloc) => alloc["Events"] <= 80000 },
-            // 3: { id: "c6", text: "Social must be ≥ $80,000 (Platform minimum spend requirement)", check: (alloc) => alloc["Social"] >= 80000 },
-            // 4: { id: "c7", text: "Content/SEO must be ≤ $150,000 (Agency bandwidth limit)", check: (alloc) => alloc["Content/SEO"] <= 150000 },
-            // 5: { id: "c8", text: "Search Ads must be ≥ $110,000 (Query volume surge)", check: (alloc) => alloc["Search Ads"] >= 110000 }
-        }
+        ]
     },
     "LowLoad": {
         title: "Marketing Budget Challenge (Low Complexity)",
@@ -189,12 +85,89 @@ const taskData = {
     }
 };
 
-let roundScorePct = 0; 
-let currentRound = 1;
-let turnsInRound = 0;
-let hasInteractedThisRound = false;
-let currentTargetChannel = "Social"; // Default for Round 1
-let startOfRoundAllocations = {};
+const SHOCK_ARCHETYPES = ["eventsCap", "socialFloor", "contentCap", "searchFloor"];
+
+function sampleShockArchetypes() {
+    const shuffled = [...SHOCK_ARCHETYPES].sort(() => Math.random() - 0.5);
+    const count = Math.random() < 0.5 ? 1 : 2;
+    return shuffled.slice(0, count);
+}
+
+function buildTrialConstraints(loadLevel, baseAlloc) {
+    const constraints = taskData[loadLevel].constraints.map(c => ({ ...c }));
+    if (loadLevel !== "HighLoad") return constraints;
+
+    const selected = sampleShockArchetypes();
+    let socialMin = 0;
+
+    if (selected.includes("socialFloor")) {
+        const base = baseAlloc["Social"];
+        const rawTarget = Math.max(base * 1.15, base + 15000);
+        let target = Math.min(rawTarget, 212000);
+        target = Math.ceil(target / 5000) * 5000;
+        if (target === base) target = base + 5000;
+        socialMin = target;
+        constraints.push({
+            id: "shock_social_floor",
+            text: `Social must be increased to ≥ $${target.toLocaleString()} (Platform minimums)`,
+            check: (alloc) => alloc["Social"] >= target,
+            bound: { channel: "Social", min: target }
+        });
+    }
+
+    if (selected.includes("contentCap")) {
+        const base = baseAlloc["Content/SEO"];
+        const rawTarget = Math.max(0, base - Math.max(base * 0.15, 15000));
+        let target = socialMin > 0 ? Math.max(rawTarget, socialMin + 5000) : rawTarget;
+        target = Math.floor(target / 5000) * 5000;
+        if (target === base) target = Math.max(socialMin + 5000, base - 5000);
+        constraints.push({
+            id: "shock_content_cap",
+            text: `Content/SEO must be reduced to ≤ $${target.toLocaleString()} (Agency limit)`,
+            check: (alloc) => alloc["Content/SEO"] <= target,
+            bound: { channel: "Content/SEO", max: target }
+        });
+    }
+
+    if (selected.includes("searchFloor")) {
+        const base = baseAlloc["Search Ads"];
+        const rawTarget = Math.max(base * 1.15, base + 15000);
+        const maxFeasible = 500000 - socialMin;
+        let target = Math.min(rawTarget, maxFeasible);
+        target = Math.ceil(target / 5000) * 5000;
+        if (target === base) target = Math.min(maxFeasible, base + 5000);
+        constraints.push({
+            id: "shock_search_floor",
+            text: `Search Ads must be increased to ≥ $${target.toLocaleString()} (Query volume)`,
+            check: (alloc) => alloc["Search Ads"] >= target,
+            bound: { channel: "Search Ads", min: target }
+        });
+    }
+
+    if (selected.includes("eventsCap")) {
+        const base = baseAlloc["Events"];
+        const rawTarget = Math.max(0, base - Math.max(base * 0.15, 15000));
+        let target = Math.floor(rawTarget / 5000) * 5000;
+        if (target === base) target = Math.max(0, base - 5000);
+        constraints.push({
+            id: "shock_events_cap",
+            text: `Events must be reduced to ≤ $${target.toLocaleString()} (Venue restrictions)`,
+            check: (alloc) => alloc["Events"] <= target,
+            bound: { channel: "Events", max: target }
+        });
+    }
+
+    return constraints;
+}
+
+let currentTrial = 1;
+let turnsInTrial = 0;
+let hasInteractedThisTrial = false;
+let currentTargetChannel = "Social";
+let startOfTrialAllocations = {};
+let currentTrialConstraints = [];
+let trialScorePct = 0;
+let attentionIntervalId = null;
 
 // --- MATH & PERCENTAGE LOGIC ---
 function sumAllocations(alloc) {
@@ -241,12 +214,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     sessionData = JSON.parse(rawData);
     
-    // Display participant ID and assigned group
     const idDisplay = document.getElementById('participantIdDisplay');
-    if(idDisplay) idDisplay.innerText = `ID: ${sessionData.participantId} [${sessionData.group}]`; 
+    if (idDisplay) idDisplay.innerText = `ID: ${sessionData.participantId} [${sessionData.group}]`;
     
-    loadTask();
     setupModality();
+    startTrial(1);
 });
 
 function setupModality() {
@@ -256,7 +228,6 @@ function setupModality() {
         document.getElementById('chatInputArea').style.display = 'none';
         document.getElementById('transcriptControls').style.display = 'block';
         
-        // Track scroll behavior for transcript baselining
         const chatBox = document.getElementById('chatMessages');
         chatBox.addEventListener('scroll', () => {
             telemetry.scrollEvents.push({
@@ -265,81 +236,80 @@ function setupModality() {
             });
         });
     } else {
-        // Track keystroke behaviors for live chat baselining
         const inputEl = document.getElementById('chatInput');
         inputEl.addEventListener('keydown', (e) => {
             if (e.key === 'Backspace') telemetry.backspaces++;
             telemetry.keystrokes.push({ key: e.key, time: Date.now() });
         });
     }
-
-    // MOVED OUTSIDE isTranscript check:
-    // Secondary divided attention task for High Load
-    if (sessionData.group.includes("HighLoad")) {
-        startDividedAttentionTask();
-    }
 }
 
 function startDividedAttentionTask() {
     const overlay = document.getElementById('dividedAttentionOverlay');
-    if (!overlay) return; // not present for LowLoad
+    if (!overlay) return;
 
     overlay.innerHTML = `
         <div style="text-align: center; font-size: 11px; color: var(--ink-3);">Click when you see ${TARGET_NUMBER}</div>
         <div id="attentionNumber" class="da-number">-</div>
         <button id="attentionBtn">Match</button>
     `;
-    
+
     document.getElementById('attentionBtn').addEventListener('click', (e) => {
         const btn = e.target;
-        
         if (currentAttentionNumber === TARGET_NUMBER) {
             attentionMetrics.correctHits++;
             attentionMetrics.reactionTimes.push(Date.now() - numberAppearanceTime);
-            currentAttentionNumber = null; // Prevent double-clicking
-            
-            // Visual feedback: Hit (Green)
+            currentAttentionNumber = null;
             btn.style.backgroundColor = '#28a745';
             btn.style.color = '#ffffff';
-            setTimeout(() => {
-                btn.style.backgroundColor = '';
-                btn.style.color = '';
-            }, 400);
-            
+            setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
         } else {
             attentionMetrics.falseAlarms++;
-            
-            // Visual feedback: Miss (Red)
             btn.style.backgroundColor = '#dc3545';
             btn.style.color = '#ffffff';
-            setTimeout(() => {
-                btn.style.backgroundColor = '';
-                btn.style.color = '';
-            }, 400);
+            setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
         }
     });
 
-    // Start the flashing number interval
-    setInterval(() => {
+    attentionIntervalId = setInterval(() => {
         const num = Math.floor(Math.random() * 9) + 1;
         currentAttentionNumber = num;
         numberAppearanceTime = Date.now();
-        document.getElementById('attentionNumber').innerText = num;
-        
-        if (num === TARGET_NUMBER) {
-            attentionMetrics.targetsShown++;
-        }
+        const numEl = document.getElementById('attentionNumber');
+        if (numEl) numEl.innerText = num;
+        if (num === TARGET_NUMBER) attentionMetrics.targetsShown++;
     }, 2000);
 }
 
-function loadTask() {
-    const loadLevel = sessionData.group.includes("HighLoad") ? "HighLoad" : "LowLoad";
+function stopDividedAttentionTask() {
+    if (attentionIntervalId) {
+        clearInterval(attentionIntervalId);
+        attentionIntervalId = null;
+    }
+    currentAttentionNumber = null;
+}
+
+function startTrial(trialIndex) {
+    stopDividedAttentionTask();
+
+    const loadLevel = sessionData.trialSequence[trialIndex - 1];
     const task = taskData[loadLevel];
+
     currentAllocations = { ...task.startingAllocation };
-    startOfRoundAllocations = { ...currentAllocations }; // Snapshot the baseline
-    
-    document.getElementById('docTitle').innerText = task.title;
-    
+    startOfTrialAllocations = { ...currentAllocations };
+    currentTrialConstraints = buildTrialConstraints(loadLevel, currentAllocations);
+
+    if (loadLevel === "HighLoad") {
+        const activeShocks = currentTrialConstraints.filter(c => c.id.startsWith("shock_"));
+        logEvent('trial_shocks_generated', {
+            trial: trialIndex,
+            shock_ids: activeShocks.map(c => c.id),
+            shock_texts: activeShocks.map(c => c.text)
+        });
+    }
+
+    document.getElementById('docTitle').innerText = `${task.title} — Trial ${trialIndex} of 4`;
+
     let slidersHtml = "";
     for (const channel in currentAllocations) {
         slidersHtml += `
@@ -354,9 +324,9 @@ function loadTask() {
                        value="${currentAllocations[channel]}">
             </div>`;
     }
-    
+
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
-    taskData[loadLevel].constraints.forEach(c => {
+    currentTrialConstraints.forEach(c => {
         constraintsHtml += `
             <li class="constraint-item" id="${c.id}">
                 <div class="c-status"></div>
@@ -364,7 +334,7 @@ function loadTask() {
             </li>`;
     });
     constraintsHtml += `</ul>`;
-    
+
     document.getElementById('docBody').innerHTML = `
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
@@ -380,8 +350,8 @@ function loadTask() {
         ${slidersHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
         ${constraintsHtml}
-        <button id="submitRoundBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitRound()">
-            Submit Round 1 Allocation
+        <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
+            Submit Trial 1 Allocation
         </button>
     `;
 
@@ -391,16 +361,11 @@ function loadTask() {
             updateDashboard(loadLevel);
         });
 
-        // --- SLIDER TELEMETRY ---
         slider.addEventListener('mousedown', (e) => {
             const now = Date.now();
-            
-            // Track time to first interaction in the round
             if (!sliderTelemetry.firstMoveTime) {
-                sliderTelemetry.firstMoveTime = now - window.lastTurnTimestamp; 
+                sliderTelemetry.firstMoveTime = now - window.lastTurnTimestamp;
             }
-            
-            // Start recording this specific drag
             sliderTelemetry.currentDrag = {
                 channel: e.target.dataset.channel,
                 startTime: now,
@@ -414,8 +379,6 @@ function loadTask() {
                 sliderTelemetry.currentDrag.endTime = now;
                 sliderTelemetry.currentDrag.endValue = parseInt(e.target.value);
                 sliderTelemetry.currentDrag.durationMs = now - sliderTelemetry.currentDrag.startTime;
-                
-                // Save and reset current drag
                 sliderTelemetry.completedDrags.push(sliderTelemetry.currentDrag);
                 sliderTelemetry.currentDrag = null;
             }
@@ -424,19 +387,30 @@ function loadTask() {
 
     taskStartTime = Date.now();
     window.lastTurnTimestamp = Date.now();
+    turnsInTrial = 0;
+    hintsUsedThisTrial = 0;
+    sliderTelemetry = { firstMoveTime: null, currentDrag: null, completedDrags: [] };
+    attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
+
     updateDashboard(loadLevel);
-    
+
+    if (loadLevel === "HighLoad") {
+        startDividedAttentionTask();
+    }
+
+    logEvent('trial_started', { trial: trialIndex, load_level: loadLevel });
+
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage("Welcome. Try adjusting the sliders. Note: You have exactly 5 opportunities across the entire session to ask me for a strategic hint or score check. Use them wisely before submitting.", "ai");
-        }, 1000);
+            addMessage(`Trial ${trialIndex} of 4 begins. Adjust the sliders to satisfy the live constraints, then discuss your strategy with the AI advisor before submitting.`, "ai");
+        }, 600);
     }
 }
 
 function updateDashboard(loadLevel) {
     const task = taskData[loadLevel];
     const total = sumAllocations(currentAllocations);
-    roundScorePct = getImprovementPercentage(currentAllocations, loadLevel);
+    trialScorePct = getImprovementPercentage(currentAllocations, loadLevel);
     
     document.getElementById('totalAllocDisplay').innerText = `$${total.toLocaleString()}`;
     
@@ -452,14 +426,13 @@ function updateDashboard(loadLevel) {
         budgetCard.classList.remove('error');
     }
     
-    task.constraints.forEach(c => {
-        const el = document.getElementById(c.id).querySelector('.c-status');
+    currentTrialConstraints.forEach(c => {
+        const el = document.getElementById(c.id)?.querySelector('.c-status');
         if (!el) return;
         el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
     });
     
-    // Update the banner every time sliders move
-    const allConstraintsMet = task.constraints.every(c => c.check(currentAllocations));
+    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
     updateSubmitBanner(allConstraintsMet);
 }
 
@@ -527,13 +500,16 @@ async function sendMessage() {
                 message: text,
                 task_id: 1, 
                 group: sessionData.group,
-                round_num: currentRound,
-                turn_in_round: turnsInRound, 
-                hints_used_this_round: hintsUsedThisRound, 
-                roi_score: roundScorePct, 
+                trial_num: currentTrial,
+                turn_in_trial: turnsInTrial, 
+                hints_used_this_trial: hintsUsedThisTrial, 
+                roi_score: trialScorePct, 
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
-                shadow_history: shadowHistory 
+                shadow_history: shadowHistory,
+                load_level: sessionData.trialSequence[currentTrial - 1],
+                dropped_category_index: sessionData.droppedCategoryIndex,
+                constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean)
             })
         });
 
@@ -619,18 +595,18 @@ async function requestScoreHint() {
     addMessage(canned, 'user');
 
     totalHintsUsed++;
-    hintsUsedThisRound++;
-    turnsInRound++;
+    hintsUsedThisTrial++;
+    turnsInTrial++;
     sessionData.metrics.turnsElapsed++;
 
     document.getElementById('hintsLeftDisplay').innerText = MAX_HINTS - totalHintsUsed;
 
-    const loadLevel = sessionData.group.includes("HighLoad") ? "HighLoad" : "LowLoad";
-    const allConstraintsMet = taskData[loadLevel].constraints.every(c => c.check(currentAllocations));
+    const loadLevel = sessionData.trialSequence[currentTrial - 1];
+    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
 
     logEvent('score_hint_requested', {
         text: canned,
-        round: currentRound,
+        trial: currentTrial,
         hints_remaining_total: MAX_HINTS - totalHintsUsed,
         allocations_snapshot: { ...currentAllocations }
     });
@@ -644,13 +620,17 @@ async function requestScoreHint() {
                 message: canned,
                 task_id: 1,
                 group: sessionData.group,
-                round_num: currentRound,
-                turn_in_round: turnsInRound,
-                hints_used_this_round: hintsUsedThisRound,
-                roi_score: roundScorePct,
+                trial_num: currentTrial,
+                turn_in_trial: turnsInTrial,
+                hints_used_this_trial: hintsUsedThisTrial,
+                roi_score: trialScorePct,
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
-                shadow_history: shadowHistory
+                shadow_history: shadowHistory,
+                load_level: loadLevel,
+                dropped_category_index: sessionData.droppedCategoryIndex,
+                constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean),
+                is_score_hint: true
             })
         });
 
@@ -658,10 +638,7 @@ async function requestScoreHint() {
 
         if (data.status === "success") {
             addMessage(data.reply, 'ai');
-
-            if (data.target_channel) {
-                currentTargetChannel = data.target_channel;
-            }
+            if (data.target_channel) currentTargetChannel = data.target_channel;
 
             logEvent('ai_response', {
                 text: data.reply,
@@ -675,16 +652,14 @@ async function requestScoreHint() {
             shadowHistory.push({ role: 'user', content: canned });
             shadowHistory.push({ role: 'ai', content: data.clean_decoy });
 
-            hasInteractedThisRound = true;
-            document.getElementById('submitRoundBtn').disabled = false;
+            hasInteractedThisTrial = true;
+            document.getElementById('submitTrialBtn').disabled = false;
         }
     } catch (error) {
         console.error("Score hint error:", error);
     }
 
-    if (totalHintsUsed < MAX_HINTS) {
-        chip.disabled = false;
-    }
+    if (totalHintsUsed < MAX_HINTS) chip.disabled = false;
 }
 
 function updateSubmitBanner(allConstraintsMet) {
@@ -707,99 +682,43 @@ function updateSubmitBanner(allConstraintsMet) {
     }
 }
 
-function submitRound() {
-    const loadLevel = sessionData.group.includes("HighLoad") ? "HighLoad" : "LowLoad";
-    const allConstraintsMet = taskData[loadLevel].constraints.every(c => c.check(currentAllocations));
+function submitTrial() {
+    const loadLevel = sessionData.trialSequence[currentTrial - 1];
+    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
 
     if (!allConstraintsMet) {
         alert("Your allocation doesn't satisfy all requirements yet. Please review the live constraints and adjust.");
         return;
     }
-    
-    // BEHAVIORAL METRICS LOGIC
-    if (currentAllocations[currentTargetChannel] > startOfRoundAllocations[currentTargetChannel]) {
+
+    if (currentAllocations[currentTargetChannel] > startOfTrialAllocations[currentTargetChannel]) {
         sessionData.metrics.claimsAccepted++;
     } else {
         sessionData.metrics.claimsRejected++;
     }
 
-    logEvent('round_submitted', { 
-        round: currentRound, 
-        final_score: roundScorePct, 
+    logEvent('trial_submitted', {
+        trial: currentTrial,
+        load_level: loadLevel,
+        final_score: trialScorePct,
         final_allocations: { ...currentAllocations },
         slider_telemetry: sliderTelemetry,
         attention_metrics: { ...attentionMetrics }
     });
 
-    if (currentRound >= 5) {
-        document.getElementById('submitRoundBtn').disabled = true;
-        document.getElementById('submitRoundBtn').innerText = "Processing...";
+    if (currentTrial >= 4) {
+        document.getElementById('submitTrialBtn').disabled = true;
+        document.getElementById('submitTrialBtn').innerText = "Processing...";
+        stopDividedAttentionTask();
+        // TODO next pass: NASA-TLX, per-trial 4-item block, per-task subjective
+        // battery, swapped-transcript task, and recognition test all hook in
+        // around here — currently goes straight to save/debrief.
         saveSessionData();
     } else {
-        currentRound++;
-        hintsUsedThisRound = 0;
-        // Hide the score text for the new round
-        const qualDisplay = document.getElementById('roiQualitativeDisplay');
-        if (qualDisplay) qualDisplay.style.display = 'none';
-        turnsInRound = 0;
-        hasInteractedThisRound = false; 
-        startOfRoundAllocations = { ...currentAllocations }; // Reset snapshot for the new round
-
-        sliderTelemetry = {
-            firstMoveTime: null,
-            currentDrag: null,
-            completedDrags: []
-        };
-
-        attentionMetrics = {
-            targetsShown: 0,
-            correctHits: 0,
-            falseAlarms: 0,
-            reactionTimes: []
-        };
-        
-        document.getElementById('submitRoundBtn').disabled = true;
-        document.getElementById('submitRoundBtn').innerText = `Submit Round ${currentRound} Allocation`;
-        
-        let aiMessage = `Round ${currentRound} begins.`;
-
-        // SHOCK BANNER UI LOGIC
-        // if (loadLevel === "HighLoad" && taskData["HighLoad"].shocks[currentRound]) {
-        //     const newConstraint = taskData["HighLoad"].shocks[currentRound];
-        //     taskData["HighLoad"].constraints.push(newConstraint);
-
-        if (loadLevel === "HighLoad" && taskData["HighLoad"].shocks[currentRound]) {
-            // PASS startOfRoundAllocations TO THE FUNCTION:
-            const newConstraint = taskData["HighLoad"].shocks[currentRound](startOfRoundAllocations);
-            taskData["HighLoad"].constraints.push(newConstraint);
-            
-            let constraintsHtml = "";
-            taskData["HighLoad"].constraints.forEach(c => {
-                constraintsHtml += `
-                    <li class="constraint-item" id="${c.id}">
-                        <div class="c-status"></div>
-                        <span>${c.text}</span>
-                    </li>`;
-            });
-            document.getElementById('constraintList').innerHTML = constraintsHtml;
-
-            // Make the banner visible
-            const shockBanner = document.getElementById('shockBanner');
-            if (shockBanner) {
-                document.getElementById('shockText').innerText = newConstraint.text.split(' (')[0];
-                shockBanner.style.display = 'block';
-            }
-            
-        } else {
-            // Hide banner if no shock this round
-            const shockBanner = document.getElementById('shockBanner');
-            if (shockBanner) shockBanner.style.display = 'none';
-            aiMessage += " Feel free to adjust the sliders further and ask me for an updated score.";
-        }
-
-        updateDashboard(loadLevel);
-        logEvent('system_message', { text: aiMessage });
-        addMessage(aiMessage, "ai");
+        currentTrial++;
+        startTrial(currentTrial);
+        // TODO next pass: NASA-TLX + 4-item block should run here, between
+        // submitting this trial and starting the next one.
     }
 }
 

@@ -15,6 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let currentTestId = null;
+let touchedConfidenceSliders = new Set();
+
 
 async function buildRecognitionTest() {
     const rawData = localStorage.getItem('hti_session');
@@ -60,6 +62,21 @@ async function buildRecognitionTest() {
         });
         
         container.innerHTML = html;
+
+        const totalQuestions = data.questions.length;
+        touchedConfidenceSliders = new Set();
+
+        container.querySelectorAll('input[type="range"]').forEach(slider => {
+            slider.addEventListener('input', () => {
+                touchedConfidenceSliders.add(slider.name);
+                updateRecognitionSubmitState(totalQuestions);
+            });
+        });
+        container.querySelectorAll('input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', () => updateRecognitionSubmitState(totalQuestions));
+        });
+
+        updateRecognitionSubmitState(totalQuestions);
         
         hideAllSections();
         document.getElementById('recognitionSection').classList.add('active');
@@ -68,6 +85,17 @@ async function buildRecognitionTest() {
         console.error("Failed to load recognition test", error);
         showDebrief(); // Fallback to debrief if network fails
     }
+}
+
+function updateRecognitionSubmitState(totalQuestions) {
+    const btn = document.getElementById('recogSubmitBtn');
+    if (!btn) return;
+
+    const answeredFlags = new Set(
+        Array.from(document.querySelectorAll('[name^="rec_flag_"]:checked')).map(el => el.name)
+    ).size;
+
+    btn.disabled = !(touchedConfidenceSliders.size >= totalQuestions && answeredFlags >= totalQuestions);
 }
 
 async function submitRecognitionTest() {
@@ -207,16 +235,18 @@ function downloadCSV() {
     const session = JSON.parse(rawData);
     
     // 1. Add TLX headers
-    let csvContent = "Participant_ID,Group,Age,Education,AI_Exp,Domain,Crit_Ability,Mkt_Familiarity,P_e1,P_e2,P_e3,P_e4,TLX_Mental,TLX_Physical,TLX_Temporal,TLX_Performance,TLX_Effort,TLX_Frustration,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
+    let csvContent = "Participant_ID,Group,Age,Education,AI_Exp,Domain,Crit_Ability,Mkt_Familiarity,P_e1,P_e2,P_e3,P_e4,TLX_Mental,TLX_Physical,TLX_Temporal,TLX_Performance,TLX_Effort,TLX_Frustration,Claims_Accepted,Claims_Rejected,Turns_Elapsed,Corrections_Made,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
     
-    // 2. Extract demographics, personality, and TLX 
+    // 2. Extract demographics, personality, TLX, and outcome metrics
     const demo = session.demographics || {};
     const pers = session.personality || {};
     const tlx = session.nasaTLX || {};
+    const metrics = session.metrics || {};
     
     const demoCols = `${demo.age || ""},${demo.education || ""},${demo.aiExp || ""},${demo.domain || ""},${demo.criticalAbility || ""},${demo.marketingFamiliarity || ""}`;
     const persCols = `${pers.e1 || ""},${pers.e2 || ""},${pers.e3 || ""},${pers.e4 || ""}`;
     const tlxCols = `${tlx.mental || ""},${tlx.physical || ""},${tlx.temporal || ""},${tlx.performance || ""},${tlx.effort || ""},${tlx.frustration || ""}`;
+    const metricsCols = `${metrics.claimsAccepted ?? ""},${metrics.claimsRejected ?? ""},${metrics.turnsElapsed ?? ""},${metrics.correctionsMade ?? ""}`;
     
     // Filter out the raw TLX event so it doesn't print as a standalone row
     const filteredEvents = session.events.filter(e => e.type !== 'nasa_tlx_submitted');
@@ -267,7 +297,7 @@ function downloadCSV() {
         const cleanDecoy = decoy.replace(/,/g, ";").replace(/\n/g, " ").replace(/"/g, '""');
         
         // 3. Inject tlxCols into the final row string
-        let row = `${session.participantId},${session.group},${demoCols},${persCols},${tlxCols},${event.timestamp},${event.type},"${cleanText}",${isDark},${category},${patternId},"${cleanDecoy}",${backspaces},${wpm},${pauseMs},"${keystrokesStr}","${scrollsStr}"`;
+        let row = `${session.participantId},${session.group},${demoCols},${persCols},${tlxCols},${metricsCols},${event.timestamp},${event.type},"${cleanText}",${isDark},${category},${patternId},"${cleanDecoy}",${backspaces},${wpm},${pauseMs},"${keystrokesStr}","${scrollsStr}"`;
         
         csvContent += row + "\n";
     });

@@ -98,22 +98,31 @@ async function startExperiment() {
         personalityData[item.id] = document.querySelector(`input[name="${item.id}"]:checked`)?.value || null;
     });
 
-    // --- NEW: Ask the backend to dynamically balance the assignment ---
-    let groupAssignment = "Control"; // Fallback
+    // --- Ask the backend to dynamically balance the assignment ---
+    let groupAssignment = "Live";
+    let primaryTask = "P1_Marketing";
+    let trialSequence = ["HighLoad", "LowLoad", "HighLoad", "LowLoad"];
+    let droppedCategoryIndex = 0;
     try {
-        const response = await fetch('/api/assign_group');
+        const response = await fetch(`/api/assign_group?participant_id=${encodeURIComponent(participantId)}`);
         const data = await response.json();
         groupAssignment = data.group;
-        console.log(`Server balanced assignment. Current tallies:`, data.current_balance);
+        primaryTask = data.primary_task;
+        trialSequence = data.trial_sequence;
+        droppedCategoryIndex = data.dropped_category_index;
+        console.log(`Server assignment #${data.assignment_index}:`, data);
     } catch (error) {
         console.error("Failed to reach assignment server, defaulting to random.", error);
-        groupAssignment = Math.random() < 0.5 ? 'Control' : 'Treatment';
+        groupAssignment = "Live";
     }
 
     // Create the master session object
     const sessionData = {
         participantId: participantId,
-        group: groupAssignment, // Safely assigned from the server
+        group: groupAssignment,
+        primaryTask: primaryTask,
+        trialSequence: trialSequence,
+        droppedCategoryIndex: droppedCategoryIndex,
         startTime: new Date().toISOString(),
         demographics: demoData,
         personality: personalityData,

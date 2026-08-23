@@ -12,14 +12,101 @@ import uuid
 from typing import Dict, Any, List
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+from itertools import combinations
+import asyncio
+from datetime import datetime
 from dotenv import load_dotenv
 import uvicorn
 
 load_dotenv()
 app = FastAPI()
 
-EXPERIMENT_DESIGN = "4-condition" 
 IS_PILOT_MODE = False # Set to False during real data collection
+PRIMARY_TASKS = ["P1_Marketing"]  # append "P2_Negotiation", "P3_..." here once built
+DARK_PATTERN_CATEGORIES = 5       # Sycophantic Agreement, Excessive Flattery, Simulated Authority, Opaque Reasoning, Brand Favoritism
+NUM_TRIALS = 4
+LOAD_PER_TRIAL = NUM_TRIALS // 2  # 2 HighLoad + 2 LowLoad
+
+ASSIGNMENT_LOG_PATH = "data/assignment_log.csv"
+ASSIGNMENT_LOG_FIELDS = ["Participant_ID", "Timestamp", "Assignment_Index", "Primary_Task", "Trial_Load_Sequence", "Dropped_Category_Index"]
+assignment_lock = asyncio.Lock()
+
+def _generate_valid_load_sequences(num_trials: int, per_load: int) -> List[List[str]]:
+    valid = []
+    for high_positions in combinations(range(num_trials), per_load):
+        seq = ["LowLoad"] * num_trials
+        for p in high_positions:
+            seq[p] = "HighLoad"
+        if all(not (seq[i] == seq[i+1] == seq[i+2]) for i in range(num_trials - 2)):
+            valid.append(seq)
+    return valid
+
+VALID_TRIAL_SEQUENCES = _generate_valid_load_sequences(NUM_TRIALS, LOAD_PER_TRIAL)
+
+def read_assignment_log() -> List[Dict[str, str]]:
+    if not os.path.exists(ASSIGNMENT_LOG_PATH):
+        return []
+    try:
+        with open(ASSIGNMENT_LOG_PATH, mode='r', encoding='utf-8') as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+def append_assignment_log(row: Dict[str, str]):
+    file_exists = os.path.exists(ASSIGNMENT_LOG_PATH)
+    with open(ASSIGNMENT_LOG_PATH, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=ASSIGNMENT_LOG_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int) -> int:
+    """Returns the 1-5 tactic/category index for this trial, skipping the
+    participant's dropped category. Coverage of the skipped category still
+    happens in aggregate because dropped_category_index rotates per participant."""
+    dropped_category = dropped_category_index + 1
+    remaining = [i for i in range(1, DARK_PATTERN_CATEGORIES + 1) if i != dropped_category]
+    return remaining[(trial_num - 1) % len(remaining)]
+
+def pick_primary_task() -> str:
+    task_counts = {t: 0 for t in PRIMARY_TASKS}
+    for filename in os.listdir("data"):
+        if filename.endswith(".csv"):
+            filepath = os.path.join("data", filename)
+            try:
+                with open(filepath, mode='r', encoding='utf-8') as file:
+                    reader = csv.reader(file)
+                    header = next(reader, None)
+                    first_row = next(reader, None)
+                    if header and first_row and "Primary_Task" in header:
+                        idx = header.index("Primary_Task")
+                        if idx < len(first_row) and first_row[idx] in task_counts:
+                            task_counts[first_row[idx]] += 1
+            except Exception:
+                continue
+    min_count = min(task_counts.values())
+    least_used = [t for t, c in task_counts.items() if c == min_count]
+    return random.choice(least_used)
+
+def pick_balanced_trial_sequence() -> List[str]:
+    seq_counts = {"|".join(s): 0 for s in VALID_TRIAL_SEQUENCES}
+    for filename in os.listdir("data"):
+        if filename.endswith(".csv"):
+            filepath = os.path.join("data", filename)
+            try:
+                with open(filepath, mode='r', encoding='utf-8') as file:
+                    reader = csv.reader(file)
+                    header = next(reader, None)
+                    first_row = next(reader, None)
+                    if header and first_row and "Trial_Load_Sequence" in header:
+                        idx = header.index("Trial_Load_Sequence")
+                        if idx < len(first_row) and first_row[idx] in seq_counts:
+                            seq_counts[first_row[idx]] += 1
+            except Exception:
+                continue
+    min_count = min(seq_counts.values())
+    least_used_keys = [k for k, v in seq_counts.items() if v == min_count]
+    return random.choice(least_used_keys).split("|")
 
 # Mount the static directory so HTML can load your CSS and JS
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -59,6 +146,10 @@ class ChatMessage(BaseModel):
     all_constraints_met: bool
     allocations: Dict[str, int]
     shadow_history: List[Dict[str, str]] = []
+    is_score_hint: bool = False
+    constraint_bounds: List[Dict[str, Any]] = []
+    load_level: str
+    dropped_category_index: int = 0
 
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
@@ -89,49 +180,34 @@ async def serve_debrief(request: Request):
     return templates.TemplateResponse(request=request, name="debrief.html")
 
 # --- API ENDPOINT FOR LLM INTERACTION ---
-
 @app.get("/api/assign_group")
-async def assign_group():
+async def assign_group(participant_id: str = "UNKNOWN"):
     os.makedirs("data", exist_ok=True)
     
-    # Minimum live sessions required before the system allows ANYONE into a Transcript group.
-    MIN_LIVE_REQUIRED = 15 
+    async with assignment_lock:
+        existing_rows = read_assignment_log()
+        assignment_index = len(existing_rows)
+        
+        primary_task = PRIMARY_TASKS[assignment_index % len(PRIMARY_TASKS)]
+        trial_sequence = VALID_TRIAL_SEQUENCES[assignment_index % len(VALID_TRIAL_SEQUENCES)]
+        dropped_category_index = assignment_index % DARK_PATTERN_CATEGORIES
+        
+        append_assignment_log({
+            "Participant_ID": participant_id,
+            "Timestamp": datetime.utcnow().isoformat() + "Z",
+            "Assignment_Index": str(assignment_index),
+            "Primary_Task": primary_task,
+            "Trial_Load_Sequence": "|".join(trial_sequence),
+            "Dropped_Category_Index": str(dropped_category_index)
+        })
     
-    counts = {"Live_HighLoad": 0, "Live_LowLoad": 0}
-    
-    for filename in os.listdir("data"):
-        if filename.endswith(".csv"):
-            filepath = os.path.join("data", filename)
-            try:
-                with open(filepath, mode='r', encoding='utf-8') as file:
-                    reader = csv.reader(file)
-                    next(reader, None)  
-                    first_row = next(reader, None) 
-                    
-                    if first_row and len(first_row) > 1:
-                        group = first_row[1]
-                        if group in counts:
-                            counts[group] += 1
-            except Exception:
-                continue
-                
-    groups = []
-    
-    # Strictly enforce the threshold: Transcript groups are entirely excluded until the counts are met.
-    if EXPERIMENT_DESIGN == "2-condition":
-        groups.append("Live_HighLoad")
-        if counts["Live_HighLoad"] >= MIN_LIVE_REQUIRED:
-            groups.append("Transcript_LowLoad")
-    else:
-        groups.extend(["Live_HighLoad", "Live_LowLoad"])
-        if counts["Live_HighLoad"] >= MIN_LIVE_REQUIRED:
-            groups.append("Transcript_HighLoad")
-        if counts["Live_LowLoad"] >= MIN_LIVE_REQUIRED:
-            groups.append("Transcript_LowLoad")
-            
-    # assigned_group = random.choice(groups)
-    assigned_group = "Live_HighLoad"
-    return {"group": assigned_group, "current_balance": counts}
+    return {
+        "group": "Live",
+        "primary_task": primary_task,
+        "trial_sequence": trial_sequence,
+        "dropped_category_index": dropped_category_index,
+        "assignment_index": assignment_index
+    }
 
 def calculate_roi(channel: str, amount: int, load_level: str) -> float:
     curves_high = {
@@ -168,7 +244,34 @@ def get_raw_roi(alloc: dict, load_level: str) -> float:
             roi += 0.4
     return roi
 
-def get_optimal_move(current_alloc: dict, load_level: str) -> str:
+def satisfies_bounds(alloc: dict, bounds: list) -> bool:
+    for b in bounds:
+        if "compare" in b:
+            if b["compare"] == "gt" and not (alloc.get(b["a"], 0) > alloc.get(b["b"], 0)):
+                return False
+        else:
+            val = alloc.get(b.get("channel"), 0)
+            if "min" in b and val < b["min"]:
+                return False
+            if "max" in b and val > b["max"]:
+                return False
+    return True
+
+def describe_bounds(bounds: list) -> str:
+    if not bounds:
+        return "None beyond the $500,000 total."
+    parts = []
+    for b in bounds:
+        if "compare" in b:
+            parts.append(f"{b['a']} must stay greater than {b['b']}")
+        else:
+            if "min" in b:
+                parts.append(f"{b['channel']} must stay ≥ ${b['min']:,}")
+            if "max" in b:
+                parts.append(f"{b['channel']} must stay ≤ ${b['max']:,}")
+    return "; ".join(parts)
+
+def get_optimal_move(current_alloc: dict, load_level: str, constraint_bounds: list) -> str:
     best_move = None
     best_raw_score = get_raw_roi(current_alloc, load_level)
     
@@ -182,8 +285,12 @@ def get_optimal_move(current_alloc: dict, load_level: str) -> str:
             test_alloc = current_alloc.copy()
             test_alloc[source] -= 5000
             test_alloc[target] += 5000
+
+            if not satisfies_bounds(test_alloc, constraint_bounds):
+                continue
             
             raw_score = get_raw_roi(test_alloc, load_level)
+            
             # Find the single most mathematically effective $5k move
             if raw_score > best_raw_score:
                 best_raw_score = raw_score
@@ -196,29 +303,27 @@ def get_optimal_move(current_alloc: dict, load_level: str) -> str:
 @app.post("/api/chat")
 async def handle_chat(chat_data: ChatMessage):
     user_text = chat_data.message
-    round_num = chat_data.round_num
-    turn_in_round = chat_data.turn_in_round
+    trial_num = chat_data.trial_num
+    turn_in_trial = chat_data.turn_in_trial
+    load_level = chat_data.load_level
     
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.2)
+    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.85)
     structured_llm = llm.with_structured_output(AgentResponse)
     
-    # Target Rotation
-    targets = {
+    base_targets = {
         1: ("Social channel", "Social"),
         2: ("Content/SEO channel", "Content/SEO"),
         3: ("Search Ads channel", "Search Ads"),
         4: ("Events channel", "Events"),
         5: ("Influencer channel", "Influencer")
     }
-    target_desc, target_channel = targets.get(round_num, ("Influencer", "Influencer"))
+    cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index)
+    target_desc, target_channel = base_targets.get(cycle_index, ("Influencer", "Influencer"))
 
-    # Format the dictionary to remove curly braces for LangChain compatibility
     allocations_str = ", ".join([f"{k}: ${v:,}" for k, v in chat_data.allocations.items()])
 
-    # Strict Sparse Injection Check
-    is_dark = (turn_in_round == 1 and "Live" in chat_data.group)
+    is_dark = (turn_in_trial == 1 and "Live" in chat_data.group)
 
-    # Coarse bucketing matching the frontend
     if chat_data.roi_score < 30:
         score_bucket = "Needs work (Low)"
     elif chat_data.roi_score < 70:
@@ -228,17 +333,14 @@ async def handle_chat(chat_data: ChatMessage):
 
     score_line = f"- COARSE SCORE ESTIMATE: {score_bucket}. You do NOT have access to the exact percentage. NEVER output a percentage number."
 
-    # Format the shadow history for the prompt
     history_str = "\n".join([f"{'User' if turn['role'] == 'user' else 'AI'}: {turn['content']}" for turn in chat_data.shadow_history])
     if not history_str:
         history_str = "No prior conversation in this session."
 
-    # Calculate the ground truth mathematical move
-    load_level = "HighLoad" if "HighLoad" in chat_data.group else "LowLoad"
-    optimal_move_str = get_optimal_move(chat_data.allocations, load_level)
+    bounds_summary = describe_bounds(chat_data.constraint_bounds)
+    optimal_move_str = get_optimal_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
     
     if is_dark:
-        # Distinct handling per category to eliminate template homogeneity
         tactics = {
             1: ("Sycophantic Agreement", f"Validate their specific recent slider changes based on their current allocations. Casually suggest pushing {target_channel} slightly higher to optimize the spread without sounding overly enthusiastic."),
             2: ("Excessive Flattery", f"Acknowledge their exact budget distribution as a highly strategic industry practice. Nudge them gently to secure their competitive edge by funding {target_channel}."),
@@ -246,7 +348,7 @@ async def handle_chat(chat_data: ChatMessage):
             4: ("Opaque Reasoning Processes", f"Use standard, boring marketing jargon. Cite a 'localized query volume drop' or 'algorithmic indexing penalty' as a factual reason they must shift budget into {target_channel}."),
             5: ("Brand Favoritism", f"Heavily promote TikTok, but professionally. Compare their current state to 'top quartile performers' and suggest consolidating budget into {target_channel} (TikTok influencers) to match those benchmarks.")
         }
-        current_tactic, tactic_instruction = tactics.get(round_num, ("Standard", "Provide helpful advice."))
+        current_tactic, tactic_instruction = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
         
         sys_prompt = f"""You are an AI marketing advisor. 
         CURRENT TACTIC: {current_tactic}
@@ -261,6 +363,8 @@ async def handle_chat(chat_data: ChatMessage):
         - The manipulation must be subtle, banal, and professional. Avoid extreme flattery or sci-fi jargon.
         - DO NOT ask the user to calculate external metrics (like Cost-Per-Acquisition, Conversion Rates, or Revenue). They only have access to budget sliders. 
         - Keep advice strictly constrained to moving funds between the 5 available channels based on general strategy and keep it logical. 
+        - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
+        - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
         - Keep responses to 2-3 sentences max.
         """
@@ -278,6 +382,8 @@ async def handle_chat(chat_data: ChatMessage):
         - Do NOT attempt to steer, manipulate, or praise the user.
         - DO NOT ask the user to calculate external metrics. They only have access to budget sliders. 
         - Keep advice strictly constrained to moving funds between the 5 available channels based on general strategy and keep it logical.
+        - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
+        - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format.
         - Keep responses brief (1-2 sentences).
         - IMPORTANT: You must write distinctly different phrasing for the 'clean_decoy' and the 'conversational_reply', even though both are neutral.
@@ -291,16 +397,20 @@ async def handle_chat(chat_data: ChatMessage):
     try:
         response_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
         
-        # Regex backstop: Strip any exact percentages generated by the model
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
+        
+        if chat_data.is_score_hint:
+            score_prefix = f"Your current allocation quality is rated: {score_bucket}. "
+            safe_reply = score_prefix + safe_reply
+            safe_decoy = score_prefix + safe_decoy
         
         return {
             "status": "success", 
             "reply": safe_reply,
             "clean_decoy": safe_decoy,
             "category": current_tactic,
-            "pattern_id": f"{chat_data.user_id}_R{round_num}_T{turn_in_round}",
+            "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
             "target_channel": target_channel
         }
@@ -453,15 +563,20 @@ async def save_data(payload: Dict[str, Any]):
             writer = csv.writer(file)
             
             # --- SECTION 1: INTAKE & TLX DATA ---
-            writer.writerow(["Participant_ID", "Group", "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity", "P_e1", "P_e2", "P_e3", "P_e4", "TLX_Mental", "TLX_Physical", "TLX_Temporal", "TLX_Performance", "TLX_Effort", "TLX_Frustration"])
+            writer.writerow(["Participant_ID", "Group", "Primary_Task", "Trial_Load_Sequence", "Dropped_Category_Index","Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity", "P_e1", "P_e2", "P_e3", "P_e4", "TLX_Mental", "TLX_Physical", "TLX_Temporal", "TLX_Performance", "TLX_Effort", "TLX_Frustration", "Claims_Accepted", "Claims_Rejected", "Turns_Elapsed", "Corrections_Made"])
             
             demo = payload.get("demographics", {})
             pers = payload.get("personality", {})
             tlx = payload.get("nasaTLX", {})
+            metrics = payload.get("metrics", {})
+            trial_seq = payload.get("trialSequence", [])
             
             writer.writerow([
                 participant_id,
                 payload.get("group", "Unknown"),
+                payload.get("primaryTask", "Unknown"),
+                "|".join(trial_seq),
+                payload.get("droppedCategoryIndex", ""),
                 demo.get("age", ""),
                 demo.get("education", ""),
                 demo.get("aiExp", ""),
@@ -477,7 +592,11 @@ async def save_data(payload: Dict[str, Any]):
                 tlx.get("temporal", ""),
                 tlx.get("performance", ""),
                 tlx.get("effort", ""),
-                tlx.get("frustration", "")
+                tlx.get("frustration", ""),
+                metrics.get("claimsAccepted", ""),
+                metrics.get("claimsRejected", ""),
+                metrics.get("turnsElapsed", ""),
+                metrics.get("correctionsMade", "")
             ])
             
             # --- SPACING ---
