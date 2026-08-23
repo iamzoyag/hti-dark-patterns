@@ -245,8 +245,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const idDisplay = document.getElementById('participantIdDisplay');
     if(idDisplay) idDisplay.innerText = `ID: ${sessionData.participantId} [${sessionData.group}]`; 
     
-    setupModality();
     loadTask();
+    setupModality();
 });
 
 function setupModality() {
@@ -282,13 +282,12 @@ function setupModality() {
 
 function startDividedAttentionTask() {
     const overlay = document.getElementById('dividedAttentionOverlay');
-    overlay.style.display = 'block';
-    
-    // Completely overwrite the inner HTML to clear out any hardcoded placeholder elements
+    if (!overlay) return; // not present for LowLoad
+
     overlay.innerHTML = `
-        <div style="text-align: center; font-size: 14px; margin-bottom: 8px;">Target Number: ${TARGET_NUMBER}</div>
-        <div id="attentionNumber" style="font-size: 32px; font-weight: bold; text-align: center; margin-bottom: 12px;">-</div>
-        <button id="attentionBtn" class="btn-secondary" style="width: 100%; transition: background-color 0.1s ease-out;">Click if ${TARGET_NUMBER}</button>
+        <div style="text-align: center; font-size: 11px; color: var(--ink-3);">Click when you see ${TARGET_NUMBER}</div>
+        <div id="attentionNumber" class="da-number">-</div>
+        <button id="attentionBtn">Match</button>
     `;
     
     document.getElementById('attentionBtn').addEventListener('click', (e) => {
@@ -372,10 +371,11 @@ function loadTask() {
                 <span class="sc-label">Total Allocated</span>
                 <span class="sc-val" id="totalAllocDisplay">$500,000</span>
             </div>
-            <div class="score-card" id="qualityCard">
-                <button id="checkScoreBtn" class="btn-secondary" onclick="useScoreHint()">Check Score (<span id="hintsLeftDisplay">5</span> left total)</button>
-                <span class="sc-val" id="roiQualitativeDisplay" style="display: none; font-size: 18px; margin-top: 8px;"></span>
-            </div>
+            ${loadLevel === "HighLoad" ? `
+            <div class="score-card" id="attentionCard">
+                <span class="sc-label">Divided Attention Task</span>
+                <div id="dividedAttentionOverlay"></div>
+            </div>` : ''}
         </div>
         ${slidersHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
@@ -439,10 +439,6 @@ function updateDashboard(loadLevel) {
     roundScorePct = getImprovementPercentage(currentAllocations, loadLevel);
     
     document.getElementById('totalAllocDisplay').innerText = `$${total.toLocaleString()}`;
-    
-    // Coarse Qualitative Labeling
-    const qualDisplay = document.getElementById('roiQualitativeDisplay');
-    const qualCard = document.getElementById('qualityCard');
     
     for (const [channel, amount] of Object.entries(currentAllocations)) {
         const id = "val_" + channel.replace(/[^a-zA-Z]/g, '');
@@ -613,30 +609,81 @@ async function saveSessionData() {
     }
 }
 
-function useScoreHint() {
+async function requestScoreHint() {
     if (totalHintsUsed >= MAX_HINTS) return;
-    
+
+    const chip = document.getElementById('scoreHintChip');
+    chip.disabled = true;
+
+    const canned = "Can you tell me how my current allocation is scoring?";
+    addMessage(canned, 'user');
+
     totalHintsUsed++;
     hintsUsedThisRound++;
-    
-    const hintsLeft = MAX_HINTS - totalHintsUsed;
-    document.getElementById('hintsLeftDisplay').innerText = hintsLeft;
-    
-    const qualDisplay = document.getElementById('roiQualitativeDisplay');
-    qualDisplay.style.display = 'block';
-    qualDisplay.innerText = `Current Score: ${roundScorePct}%`;
-    
-    logEvent('score_check_used', { 
-        round: currentRound, 
-        turn: turnsInRound, 
-        score: roundScorePct, 
-        hints_remaining_total: hintsLeft,
-        allocations_snapshot: { ...currentAllocations } // Snapshots the allocation at the exact moment the score is checked
+    turnsInRound++;
+    sessionData.metrics.turnsElapsed++;
+
+    document.getElementById('hintsLeftDisplay').innerText = MAX_HINTS - totalHintsUsed;
+
+    const loadLevel = sessionData.group.includes("HighLoad") ? "HighLoad" : "LowLoad";
+    const allConstraintsMet = taskData[loadLevel].constraints.every(c => c.check(currentAllocations));
+
+    logEvent('score_hint_requested', {
+        text: canned,
+        round: currentRound,
+        hints_remaining_total: MAX_HINTS - totalHintsUsed,
+        allocations_snapshot: { ...currentAllocations }
     });
-    
-    // Disable permanently if they run out of total hints
-    if (hintsLeft === 0) {
-        document.getElementById('checkScoreBtn').disabled = true;
+
+    try {
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: sessionData.participantId,
+                message: canned,
+                task_id: 1,
+                group: sessionData.group,
+                round_num: currentRound,
+                turn_in_round: turnsInRound,
+                hints_used_this_round: hintsUsedThisRound,
+                roi_score: roundScorePct,
+                all_constraints_met: allConstraintsMet,
+                allocations: currentAllocations,
+                shadow_history: shadowHistory
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.status === "success") {
+            addMessage(data.reply, 'ai');
+
+            if (data.target_channel) {
+                currentTargetChannel = data.target_channel;
+            }
+
+            logEvent('ai_response', {
+                text: data.reply,
+                decoy: data.clean_decoy,
+                category: data.category,
+                pattern_id: data.pattern_id,
+                isDark: data.isDark,
+                allocations_snapshot: { ...currentAllocations }
+            });
+
+            shadowHistory.push({ role: 'user', content: canned });
+            shadowHistory.push({ role: 'ai', content: data.clean_decoy });
+
+            hasInteractedThisRound = true;
+            document.getElementById('submitRoundBtn').disabled = false;
+        }
+    } catch (error) {
+        console.error("Score hint error:", error);
+    }
+
+    if (totalHintsUsed < MAX_HINTS) {
+        chip.disabled = false;
     }
 }
 

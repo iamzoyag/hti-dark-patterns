@@ -6,32 +6,6 @@
   <title>Marketing Budget Challenge</title>
   <link rel="stylesheet" href="/static/css/main.css"/>
   <link rel="stylesheet" href="/static/css/experiment.css"/>
-  <style>
-    /* Divided Attention Task Overlay */
-    #dividedAttentionOverlay {
-        position: absolute;
-        top: 2px;
-        right: 10px;
-        background: white;
-        border: 2px solid var(--accent);
-        padding: 8px 12px;
-        border-radius: 8px;
-        text-align: center;
-        z-index: 100;
-        box-shadow: var(--shadow-md);
-        width: 130px;
-    }
-    #attentionNumber {
-        font-size: 20px;
-        font-weight: bold;
-        font-family: var(--mono);
-    }
-
-    /* Push the start of chat messages down so bubbles clear the overlay box */
-    .chat-messages {
-        padding-top: 100px !important;
-    }
-  </style>
 </head>
 <body class="exp-body">
 
@@ -80,13 +54,6 @@
 
   <!-- RIGHT: INTERACTION PANEL -->
   <main class="chat-panel">
-    
-    <!-- Divided Attention Clicker (Hidden by default) -->
-    <div id="dividedAttentionOverlay" style="display: none;">
-        <div style="font-size: 10px; color: gray;">Click when matching</div>
-        <div id="attentionNumber">1</div>
-        <button onclick="logEvent('attention_click', document.getElementById('attentionNumber').innerText)">Match</button>
-    </div>
 
     <div class="chat-header">
       <div class="chat-header-info">
@@ -103,6 +70,9 @@
       <div class="input-wrapper">
         <textarea id="chatInput" placeholder="Enter your budget allocation..."></textarea>
         <button class="send-btn" onclick="sendMessage()">Send</button>
+      </div>
+      <div class="input-hints">
+        <button id="scoreHintChip" class="btn-chip" onclick="requestScoreHint()">Ask for score (<span id="hintsLeftDisplay">5</span> left)</button>
       </div>
     </div>
     

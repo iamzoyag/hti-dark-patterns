@@ -707,25 +707,43 @@ input[type="range"].budget-slider::-webkit-slider-thumb:hover { transform: scale
 
 /* ── DIVIDED ATTENTION OVERLAY ── */
 #dividedAttentionOverlay {
-  position: fixed;
-  top: 65px; /* Sits safely below the top bar */
-  right: 20px; /* Anchors to the right side of the screen */
-  width: 160px;
-  background: white;
-  border: 2px solid var(--accent);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-  z-index: 1000;
+  margin-top: 6px;
 }
 
-/* Ensure the button matches the new layout */
+.da-number {
+  font-size: 26px;
+  font-weight: bold;
+  font-family: var(--mono);
+  text-align: center;
+  margin: 6px 0;
+  color: var(--ink);
+}
+
 #attentionBtn {
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 8px;
+  padding: 6px;
+  width: 100%;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-md);
   cursor: pointer;
+  background: white;
+  transition: background-color 0.1s ease-out;
 }
+
+/* ── SCORE HINT CHIP ── */
+.btn-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-md);
+  border-radius: 99px;
+  background: white;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-chip:hover { border-color: var(--accent); color: var(--accent); }
+.btn-chip:disabled { background: var(--surface-3); color: var(--ink-4); cursor: not-allowed; border-color: var(--border); }
