@@ -17,6 +17,7 @@ let sliderTelemetry = {
     currentDrag: null,
     completedDrags: []
 };
+let optionChangeTelemetry = { firstChangeTime: null, changes: [] };
 
 let attentionMetrics = {
     targetsShown: 0,
@@ -29,6 +30,59 @@ let numberAppearanceTime = null;
 const TARGET_NUMBER = 5;
 
 let shadowHistory = [];
+
+const TLX_ITEMS = [ // keep in sync with tlxItems in debrief.js
+    { id: "mental", label: "Mental Demand", desc: "How mentally demanding was that round?", left: "Very Low", right: "Very High" },
+    { id: "physical", label: "Physical Demand", desc: "How physically demanding was that round?", left: "Very Low", right: "Very High" },
+    { id: "temporal", label: "Temporal Demand", desc: "How hurried or rushed was the pace?", left: "Very Low", right: "Very High" },
+    { id: "performance", label: "Performance", desc: "How successful were you in that round?", left: "Perfect", right: "Failure" },
+    { id: "effort", label: "Effort", desc: "How hard did you have to work?", left: "Very Low", right: "Very High" },
+    { id: "frustration", label: "Frustration", desc: "How insecure, discouraged, or stressed were you?", left: "Very Low", right: "Very High" }
+];
+
+function showPerTrialTLX(trialIndex, onContinue) {
+    const overlay = document.getElementById('perTrialTlxOverlay');
+    const container = document.getElementById('perTrialTlxQuestions');
+    const btn = document.getElementById('perTrialTlxContinueBtn');
+    if (!overlay || !container || !btn) { onContinue(); return; }
+
+    let html = '';
+    TLX_ITEMS.forEach(item => {
+        html += `
+        <div style="margin-bottom:18px; padding:10px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm);">
+            <div style="font-weight:600; font-size:14px;">${item.label}</div>
+            <div style="font-size:12px; color:var(--ink-3); margin-bottom:10px;">${item.desc}</div>
+            <div style="display:flex; justify-content:space-between; font-size:11px; font-family:var(--mono); color:var(--ink-4);">
+                <span>${item.left}</span><span>${item.right}</span>
+            </div>
+            <input type="range" class="pt-tlx-slider" data-key="${item.id}" min="0" max="100" step="5" value="50" style="width:100%; margin-top:6px;">
+        </div>`;
+    });
+    container.innerHTML = html;
+
+    const touched = new Set();
+    btn.disabled = true;
+    container.querySelectorAll('.pt-tlx-slider').forEach(slider => {
+        slider.addEventListener('input', () => {
+            touched.add(slider.dataset.key);
+            btn.disabled = touched.size < TLX_ITEMS.length;
+        });
+    });
+
+    btn.onclick = () => {
+        const scores = {};
+        container.querySelectorAll('.pt-tlx-slider').forEach(slider => {
+            scores[slider.dataset.key] = parseInt(slider.value);
+        });
+        sessionData.perTrialTLX = sessionData.perTrialTLX || [];
+        sessionData.perTrialTLX.push({ trial: trialIndex, ...scores });
+        logEvent('trial_tlx_submitted', { trial: trialIndex, ...scores });
+        overlay.style.display = 'none';
+        onContinue();
+    };
+
+    overlay.style.display = 'flex';
+}
 
 function isP2Task() {
     return sessionData.primaryTask && sessionData.primaryTask.startsWith("P2");
@@ -94,7 +148,7 @@ const taskDataP2 = {
     "HighLoad": {
         title: "Campaign Launch Challenge (High Complexity)",
         startingAllocation: {
-            Tone: 50, Urgency: 20, Hashtags: 3, PostingTime: 12,
+            Tone: 35, Urgency: 0, Hashtags: 5, PostingTime: 12,
             Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
@@ -106,7 +160,7 @@ const taskDataP2 = {
     "LowLoad": {
         title: "Campaign Launch Challenge (Low Complexity)",
         startingAllocation: {
-            Tone: 50, Urgency: 20, Hashtags: 3, PostingTime: 12,
+            Tone: 35, Urgency: 0, Hashtags: 5, PostingTime: 12,
             Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
@@ -121,7 +175,7 @@ const REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_Guara
 const HASHTAG_SOFT_CAP = 8;
 const BRAND_TONE_BAND = [20, 65];
 const APPROVED_POSTING_WINDOW = [9, 18];
-const P2_MAX_ENGAGEMENT = { HighLoad: 10.7, LowLoad: 10.3 };
+const P2_MAX_ENGAGEMENT = { HighLoad: 10.4, LowLoad: 10.0 };
 
 function estimatePostLength(p) {
     let length = 150;
@@ -133,15 +187,50 @@ function estimatePostLength(p) {
 }
 
 // Controls metadata: drives which input type startTrialP2 renders for each key
-const P2_CONTROLS = [
-    { key: "Tone", label: "Tone (formal \u2192 casual)", type: "slider", min: 0, max: 100, step: 5 },
-    { key: "Urgency", label: "Urgency language", type: "slider", min: 0, max: 100, step: 5 },
-    { key: "Hashtags", label: "Hashtag count", type: "slider", min: 0, max: 15, step: 1 },
-    { key: "PostingTime", label: "Posting time (24h)", type: "slider", min: 0, max: 23, step: 1 },
-    { key: "Claim_LimitedTime", label: "Claim: \u201climited time\u201d", type: "checkbox" },
-    { key: "Claim_BestSelling", label: "Claim: \u201cbest-selling\u201d", type: "checkbox" },
-    { key: "Claim_GuaranteedResults", label: "Claim: \u201cguaranteed results\u201d", type: "checkbox" },
-    { key: "Disclaimer", label: "Legal disclaimer included", type: "checkbox" }
+const P2_OPTION_CONTROLS = [
+    {
+        key: "Tone", label: "Tone", hint: "Shifts the voice of the copy. Extreme casual can read as off-brand.",
+        options: [
+            { value: 10, label: "Formal" },
+            { value: 35, label: "Professional" },
+            { value: 55, label: "Conversational" },
+            { value: 80, label: "Casual" }
+        ]
+    },
+    {
+        key: "Urgency", label: "Urgency", hint: "How much scarcity/FOMO language appears. High urgency without a disclaimer can backfire.",
+        options: [
+            { value: 0, label: "None" },
+            { value: 35, label: "Light" },
+            { value: 60, label: "Moderate" },
+            { value: 90, label: "Aggressive" }
+        ]
+    },
+    {
+        key: "Hashtags", label: "Hashtag Set", hint: "More tags can aid discovery up to a point, then engagement drops off.",
+        options: [
+            { value: 2, label: "Minimal (2)" },
+            { value: 5, label: "Standard (5)" },
+            { value: 8, label: "Broad (8)" },
+            { value: 12, label: "Maximum (12)" }
+        ]
+    },
+    {
+        key: "PostingTime", label: "Posting Slot", hint: "When the post goes live. Some windows perform better than others.",
+        options: [
+            { value: 7, label: "Early Morning (7:00)" },
+            { value: 12, label: "Midday (12:00)" },
+            { value: 18, label: "Evening (18:00)" },
+            { value: 22, label: "Late Night (22:00)" }
+        ]
+    }
+];
+
+const P2_TOGGLE_CONTROLS = [
+    { key: "Claim_LimitedTime", label: "Limited time", hint: "Adds a scarcity claim to the copy." },
+    { key: "Claim_BestSelling", label: "Best-selling", hint: "Adds a social-proof claim to the copy." },
+    { key: "Claim_GuaranteedResults", label: "Guaranteed results", hint: "Adds an outcomes claim to the copy." },
+    { key: "Disclaimer", label: "Legal disclaimer", hint: "Required if any claim above is enabled." }
 ];
 
 const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap"];
@@ -169,7 +258,7 @@ function buildTrialConstraintsP2(loadLevel) {
     if (selected.includes("brandStyleGuide")) {
         constraints.push({
             id: "shock_brand_style",
-            text: `Tone must stay within the brand voice band (${BRAND_TONE_BAND[0]}\u2013${BRAND_TONE_BAND[1]})`,
+            text: "Tone must be Professional or Conversational (not Formal or Casual)",
             check: (p) => p.Tone >= BRAND_TONE_BAND[0] && p.Tone <= BRAND_TONE_BAND[1],
             bound: { channel: "Tone", min: BRAND_TONE_BAND[0], max: BRAND_TONE_BAND[1] }
         });
@@ -177,7 +266,7 @@ function buildTrialConstraintsP2(loadLevel) {
     if (selected.includes("postingWindow")) {
         constraints.push({
             id: "shock_posting_window",
-            text: `Posting time must fall within the approved window (${APPROVED_POSTING_WINDOW[0]}:00\u2013${APPROVED_POSTING_WINDOW[1]}:00)`,
+            text: "Posting slot must be Midday or Evening (not Early Morning or Late Night)",
             check: (p) => p.PostingTime >= APPROVED_POSTING_WINDOW[0] && p.PostingTime <= APPROVED_POSTING_WINDOW[1],
             bound: { channel: "PostingTime", min: APPROVED_POSTING_WINDOW[0], max: APPROVED_POSTING_WINDOW[1] }
         });
@@ -185,7 +274,7 @@ function buildTrialConstraintsP2(loadLevel) {
     if (selected.includes("hashtagCap")) {
         constraints.push({
             id: "shock_hashtag_cap",
-            text: `Hashtag count must stay \u2264 ${HASHTAG_SOFT_CAP} (platform best-practice limit)`,
+            text: "Hashtag set must be Broad or fewer (not Maximum)",
             check: (p) => p.Hashtags <= HASHTAG_SOFT_CAP,
             bound: { channel: "Hashtags", max: HASHTAG_SOFT_CAP }
         });
@@ -229,17 +318,20 @@ function interp(v, buckets, curve) {
 
 const SHOCK_ARCHETYPES = ["eventsCap", "socialFloor", "contentCap", "searchFloor"];
 
-function sampleShockArchetypes() {
-    const shuffled = [...SHOCK_ARCHETYPES].sort(() => Math.random() - 0.5);
+function sampleShockArchetypes(baseAlloc) {
+    let pool = [...SHOCK_ARCHETYPES];
+    if (baseAlloc["Content/SEO"] < 50000) pool = pool.filter(s => s !== "contentCap");
+    if (baseAlloc["Events"] < 50000) pool = pool.filter(s => s !== "eventsCap");
+    const shuffled = pool.sort(() => Math.random() - 0.5);
     const count = Math.random() < 0.5 ? 1 : 2;
-    return shuffled.slice(0, count);
+    return shuffled.slice(0, Math.min(count, shuffled.length));
 }
 
 function buildTrialConstraints(loadLevel, baseAlloc) {
     const constraints = taskData[loadLevel].constraints.map(c => ({ ...c }));
     if (loadLevel !== "HighLoad") return constraints;
 
-    const selected = sampleShockArchetypes();
+    const selected = sampleShockArchetypes(baseAlloc);
     let socialMin = 0;
 
     if (selected.includes("socialFloor")) {
@@ -533,6 +625,7 @@ function startTrial(trialIndex) {
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
     hintsUsedThisTrial = 0;
+    hasInteractedThisTrial = false;
     sliderTelemetry = { firstMoveTime: null, currentDrag: null, completedDrags: [] };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
@@ -577,8 +670,44 @@ function updateDashboard(loadLevel) {
         el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
     });
     
-    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
-    updateSubmitBanner(allConstraintsMet);
+    updateSubmitGate();
+}
+
+function buildPostPreview(p) {
+    const toneOpeners = {
+        10: "We are pleased to announce our newest product line.",
+        35: "Excited to share what we've been working on.",
+        55: "Hey — check out what's new! 👀",
+        80: "OK this is HUGE, you need to see this rn 🔥"
+    };
+    let text = toneOpeners[p.Tone] || toneOpeners[35];
+    if (p.Urgency >= 90) text += " Offer ends TONIGHT — don't miss out!";
+    else if (p.Urgency >= 60) text += " Available for a limited time.";
+    else if (p.Urgency >= 35) text += " Don't wait too long on this one.";
+    if (p.Claim_LimitedTime) text += " Limited stock available.";
+    if (p.Claim_BestSelling) text += " Our #1 best-seller.";
+    if (p.Claim_GuaranteedResults) text += " Guaranteed results or your money back.";
+    const tagCount = Math.min(p.Hashtags, 6);
+    if (tagCount > 0) {
+        const tags = Array.from({ length: tagCount }, (_, i) => `#tag${i + 1}`).join(' ');
+        text += `\n\n${tags}${p.Hashtags > 6 ? ` +${p.Hashtags - 6} more` : ''}`;
+    }
+    if (p.Disclaimer) text += `\n\n*Terms and conditions apply.`;
+    return text;
+}
+
+function selectP2Option(key, value) {
+    const now = Date.now();
+    if (!optionChangeTelemetry.firstChangeTime) {
+        optionChangeTelemetry.firstChangeTime = now - window.lastTurnTimestamp;
+    }
+    optionChangeTelemetry.changes.push({ key, from: currentAllocations[key], to: value, time: now });
+    currentAllocations[key] = value;
+    updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
+}
+
+function toggleP2Claim(key) {
+    selectP2Option(key, currentAllocations[key] ? 0 : 1);
 }
 
 function startTrialP2(trialIndex) {
@@ -600,31 +729,25 @@ function startTrialP2(trialIndex) {
 
     document.getElementById('docTitle').innerText = `${task.title} \u2014 Trial ${trialIndex} of 4`;
 
-    let controlsHtml = "";
-    P2_CONTROLS.forEach(ctrl => {
-        if (ctrl.type === "slider") {
-            controlsHtml += `
-                <div class="slider-group">
-                    <div class="slider-header">
-                        <span>${ctrl.label}</span>
-                        <span class="channel-amt" id="val_${ctrl.key}">${currentAllocations[ctrl.key]}</span>
-                    </div>
-                    <input type="range" class="budget-slider"
-                           data-channel="${ctrl.key}"
-                           min="${ctrl.min}" max="${ctrl.max}" step="${ctrl.step}"
-                           value="${currentAllocations[ctrl.key]}">
-                </div>`;
-        } else {
-            controlsHtml += `
-                <div class="slider-group">
-                    <label style="display:flex; align-items:center; gap:8px;">
-                        <input type="checkbox" class="budget-toggle" data-channel="${ctrl.key}"
-                               ${currentAllocations[ctrl.key] ? "checked" : ""}>
-                        <span>${ctrl.label}</span>
-                    </label>
-                </div>`;
-        }
+    let optionsHtml = "";
+    P2_OPTION_CONTROLS.forEach(ctrl => {
+        optionsHtml += `
+            <div class="option-picker-group">
+                <span class="option-picker-label">${ctrl.label}</span>
+                <div class="option-picker-hint">${ctrl.hint}</div>
+                <div class="option-chip-row" data-control="${ctrl.key}">
+                    ${ctrl.options.map(opt => `
+                        <button type="button" class="option-chip" data-key="${ctrl.key}" data-value="${opt.value}">${opt.label}</button>
+                    `).join('')}
+                </div>
+            </div>`;
     });
+
+    let togglesHtml = `<div class="option-picker-group"><span class="option-picker-label">Claims &amp; Disclosures</span><div class="option-chip-row" id="p2ToggleRow">`;
+    P2_TOGGLE_CONTROLS.forEach(ctrl => {
+        togglesHtml += `<button type="button" class="option-chip" data-toggle="${ctrl.key}" title="${ctrl.hint}">${ctrl.label}</button>`;
+    });
+    togglesHtml += `</div></div>`;
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
@@ -637,13 +760,21 @@ function startTrialP2(trialIndex) {
     constraintsHtml += `</ul>`;
 
     document.getElementById('docBody').innerHTML = `
+        <span class="post-preview-label">Live Post Preview</span>
+        <div class="post-preview-box" id="postPreviewBox"></div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
                 <span class="sc-label">Estimated Post Length</span>
                 <span class="sc-val" id="totalAllocDisplay">0 / 280 chars</span>
             </div>
+            ${loadLevel === "HighLoad" ? `
+            <div class="score-card" id="attentionCard">
+                <span class="sc-label">Divided Attention Task</span>
+                <div id="dividedAttentionOverlay"></div>
+            </div>` : ''}
         </div>
-        ${controlsHtml}
+        ${optionsHtml}
+        ${togglesHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
         ${constraintsHtml}
         <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
@@ -651,32 +782,14 @@ function startTrialP2(trialIndex) {
         </button>
     `;
 
-    document.querySelectorAll('.budget-slider').forEach(slider => {
-        slider.addEventListener('input', (e) => {
-            currentAllocations[e.target.dataset.channel] = parseInt(e.target.value);
-            updateDashboard(loadLevel);
-        });
-        slider.addEventListener('mousedown', (e) => {
-            const now = Date.now();
-            if (!sliderTelemetry.firstMoveTime) sliderTelemetry.firstMoveTime = now - window.lastTurnTimestamp;
-            sliderTelemetry.currentDrag = { channel: e.target.dataset.channel, startTime: now, startValue: parseInt(e.target.value) };
-        });
-        slider.addEventListener('mouseup', (e) => {
-            if (sliderTelemetry.currentDrag) {
-                const now = Date.now();
-                sliderTelemetry.currentDrag.endTime = now;
-                sliderTelemetry.currentDrag.endValue = parseInt(e.target.value);
-                sliderTelemetry.currentDrag.durationMs = now - sliderTelemetry.currentDrag.startTime;
-                sliderTelemetry.completedDrags.push(sliderTelemetry.currentDrag);
-                sliderTelemetry.currentDrag = null;
-            }
+    document.querySelectorAll('.option-chip[data-key]').forEach(chip => {
+        chip.addEventListener('click', () => {
+            selectP2Option(chip.dataset.key, parseInt(chip.dataset.value));
         });
     });
-
-    document.querySelectorAll('.budget-toggle').forEach(toggle => {
-        toggle.addEventListener('change', (e) => {
-            currentAllocations[e.target.dataset.channel] = e.target.checked ? 1 : 0;
-            updateDashboard(loadLevel);
+    document.querySelectorAll('.option-chip[data-toggle]').forEach(chip => {
+        chip.addEventListener('click', () => {
+            toggleP2Claim(chip.dataset.toggle);
         });
     });
 
@@ -684,16 +797,21 @@ function startTrialP2(trialIndex) {
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
     hintsUsedThisTrial = 0;
-    sliderTelemetry = { firstMoveTime: null, currentDrag: null, completedDrags: [] };
+    hasInteractedThisTrial = false;
+    optionChangeTelemetry = { firstChangeTime: null, changes: [] };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
-    updateDashboard(loadLevel);
+    updateDashboardP2(loadLevel);
+
+    if (loadLevel === "HighLoad") {
+        startDividedAttentionTask();
+    }
 
     logEvent('trial_started', { trial: trialIndex, load_level: loadLevel });
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage(`Trial ${trialIndex} of 4 begins. Set your post parameters to satisfy the live constraints, then discuss your strategy with the AI advisor before submitting.`, "ai");
+            addMessage(`Trial ${trialIndex} of 4 begins. Your goal is to maximize estimated engagement for this launch post while satisfying the live constraints below. Pick your options, then discuss your strategy with the AI advisor before submitting.`, "ai");
         }, 600);
     }
 }
@@ -705,11 +823,14 @@ function updateDashboardP2(loadLevel) {
     const lenDisplay = document.getElementById('totalAllocDisplay');
     if (lenDisplay) lenDisplay.innerText = `${length} / 280 chars`;
 
-    P2_CONTROLS.forEach(ctrl => {
-        if (ctrl.type === "slider") {
-            const el = document.getElementById("val_" + ctrl.key);
-            if (el) el.innerText = currentAllocations[ctrl.key];
-        }
+    const previewBox = document.getElementById('postPreviewBox');
+    if (previewBox) previewBox.innerText = buildPostPreview(currentAllocations);
+
+    document.querySelectorAll('.option-chip[data-key]').forEach(chip => {
+        chip.classList.toggle('selected', parseInt(chip.dataset.value) === currentAllocations[chip.dataset.key]);
+    });
+    document.querySelectorAll('.option-chip[data-toggle]').forEach(chip => {
+        chip.classList.toggle('selected', !!currentAllocations[chip.dataset.toggle]);
     });
 
     const budgetCard = document.getElementById('budgetCard');
@@ -723,8 +844,7 @@ function updateDashboardP2(loadLevel) {
         el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
     });
 
-    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
-    updateSubmitBanner(allConstraintsMet);
+    updateSubmitGate();
 }
 
 async function sendMessage() {
@@ -737,8 +857,8 @@ async function sendMessage() {
 
     addMessage(text, 'user');
     inputEl.value = '';
-    
-    turnsInRound++; // Increment strictly on send
+
+    turnsInTrial++; // Increment strictly on send
     sessionData.metrics.turnsElapsed++;
 
     // --- CALCULATE DERIVED METRICS ---
@@ -828,8 +948,8 @@ async function sendMessage() {
             shadowHistory.push({ role: 'user', content: text });
             shadowHistory.push({ role: 'ai', content: data.clean_decoy });
             
-            hasInteractedThisRound = true;
-            document.getElementById('submitRoundBtn').disabled = false;
+            hasInteractedThisTrial = true;
+            updateSubmitGate();
         }
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
@@ -946,7 +1066,7 @@ async function requestScoreHint() {
             shadowHistory.push({ role: 'ai', content: data.clean_decoy });
 
             hasInteractedThisTrial = true;
-            document.getElementById('submitTrialBtn').disabled = false;
+            updateSubmitGate();
         }
     } catch (error) {
         console.error("Score hint error:", error);
@@ -975,6 +1095,13 @@ function updateSubmitBanner(allConstraintsMet) {
     }
 }
 
+function updateSubmitGate() {
+    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
+    updateSubmitBanner(allConstraintsMet);
+    const btn = document.getElementById('submitTrialBtn');
+    if (btn) btn.disabled = !(allConstraintsMet && hasInteractedThisTrial);
+}
+
 function submitTrial() {
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
@@ -996,22 +1123,26 @@ function submitTrial() {
         final_score: trialScorePct,
         final_allocations: { ...currentAllocations },
         slider_telemetry: sliderTelemetry,
+        option_telemetry: isP2Task() ? optionChangeTelemetry : null,
         attention_metrics: { ...attentionMetrics }
     });
 
+    document.getElementById('submitTrialBtn').disabled = true;
+    stopDividedAttentionTask();
+
     if (currentTrial >= 4) {
-        document.getElementById('submitTrialBtn').disabled = true;
         document.getElementById('submitTrialBtn').innerText = "Processing...";
-        stopDividedAttentionTask();
-        // TODO next pass: NASA-TLX, per-trial 4-item block, per-task subjective
-        // battery, swapped-transcript task, and recognition test all hook in
-        // around here — currently goes straight to save/debrief.
-        saveSessionData();
+        showPerTrialTLX(currentTrial, () => {
+            // TODO next pass: per-task subjective battery, swapped-transcript
+            // task, and recognition test hook in after this.
+            saveSessionData();
+        });
     } else {
-        currentTrial++;
-        startTrial(currentTrial);
-        // TODO next pass: NASA-TLX + 4-item block should run here, between
-        // submitting this trial and starting the next one.
+        const finishedTrial = currentTrial;
+        showPerTrialTLX(finishedTrial, () => {
+            currentTrial++;
+            startTrial(currentTrial);
+        });
     }
 }
 

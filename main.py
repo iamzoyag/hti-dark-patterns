@@ -295,6 +295,29 @@ HASHTAG_SOFT_CAP = 8               # brand/platform best-practice hashtag cap
 
 REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults"]
 
+P2_OPTION_VALUES = {
+    "Tone": [10, 35, 55, 80],
+    "Urgency": [0, 35, 60, 90],
+    "Hashtags": [2, 5, 8, 12],
+    "PostingTime": [7, 12, 18, 22],
+}
+
+P2_OPTION_LABELS = {
+    "Tone": {10: "Formal", 35: "Professional", 55: "Conversational", 80: "Casual"},
+    "Urgency": {0: "None", 35: "Light", 60: "Moderate", 90: "Aggressive"},
+    "Hashtags": {2: "Minimal (2)", 5: "Standard (5)", 8: "Broad (8)", 12: "Maximum (12)"},
+    "PostingTime": {7: "Early Morning", 12: "Midday", 18: "Evening", 22: "Late Night"},
+}
+
+def describe_p2_allocations(allocations: dict) -> str:
+    parts = []
+    for k, v in allocations.items():
+        if k in P2_OPTION_LABELS:
+            parts.append(f"{k}: {P2_OPTION_LABELS[k].get(v, v)}")
+        else:
+            parts.append(f"{k}: {'On' if v else 'Off'}")
+    return ", ".join(parts)
+
 def estimate_post_length(params: dict) -> int:
     length = 150  # base copy template
     length += params.get("Hashtags", 0) * 13
@@ -339,23 +362,25 @@ def get_raw_engagement(params: dict, load_level: str) -> float:
 
     return max(0, score)
 
-P2_MAX_ENGAGEMENT = {"HighLoad": 10.7, "LowLoad": 10.3}
+P2_MAX_ENGAGEMENT = {"HighLoad": 10.4, "LowLoad": 10.0}
 
 def get_optimal_campaign_move(current_params: dict, load_level: str, constraint_bounds: list) -> str:
     best_move = None
     best_score = get_raw_engagement(current_params, load_level)
 
-    step_sizes = {"Tone": 5, "Urgency": 5, "Hashtags": 1, "PostingTime": 1}
-    for param, step in step_sizes.items():
-        for direction in (1, -1):
+    for param, values in P2_OPTION_VALUES.items():
+        current_val = current_params.get(param)
+        for val in values:
+            if val == current_val:
+                continue
             test_params = current_params.copy()
-            test_params[param] = test_params.get(param, 0) + direction * step
+            test_params[param] = val
             if not satisfies_bounds(test_params, constraint_bounds):
                 continue
             score = get_raw_engagement(test_params, load_level)
             if score > best_score:
                 best_score = score
-                best_move = f"{'Increase' if direction > 0 else 'Decrease'} {param}"
+                best_move = f"change {param} to {P2_OPTION_LABELS.get(param, {}).get(val, val)}"
 
     for claim in REGULATED_CLAIMS + ["Disclaimer"]:
         test_params = current_params.copy()
@@ -447,7 +472,7 @@ async def handle_chat(chat_data: ChatMessage):
     base_targets = BASE_TARGETS_P2 if is_p2 else BASE_TARGETS_P1
     target_desc, target_param = base_targets.get(cycle_index, list(base_targets.values())[-1])
 
-    allocations_str = ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
+    allocations_str = describe_p2_allocations(chat_data.allocations) if is_p2 else ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
 
     is_dark = (turn_in_trial == 1 and "Live" in chat_data.group)
 

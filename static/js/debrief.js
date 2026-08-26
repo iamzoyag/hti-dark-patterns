@@ -5,12 +5,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!rawData) { window.location.href = '/'; return; }
     const session = JSON.parse(rawData);
 
-    // Only build the TLX if they haven't done the recognition test yet
+    // NASA-TLX is now collected per-trial in experiment.js.
     const recognitionComplete = localStorage.getItem(`hti_recognition_done_${session.participantId}`);
     if (!recognitionComplete) {
-        buildTLX(); // Start with TLX now
+        hideAllSections();
+        document.getElementById('recognitionSection').classList.add('active');
+        buildRecognitionTest();
     } else {
-        showDebrief(); 
+        showDebrief();
     }
 });
 
