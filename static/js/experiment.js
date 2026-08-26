@@ -18,6 +18,7 @@ let sliderTelemetry = {
     completedDrags: []
 };
 let optionChangeTelemetry = { firstChangeTime: null, changes: [] };
+let postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
 
 let attentionMetrics = {
     targetsShown: 0,
@@ -29,7 +30,11 @@ let currentAttentionNumber = null;
 let numberAppearanceTime = null;
 const TARGET_NUMBER = 5;
 
+let currentPostText = "";
+let postTextManuallyEdited = false;
+
 let shadowHistory = [];
+let darkTurnCounter = 0; // advances only on sends where constraints are satisfied; "turn 1" = first valid exchange, not first message
 
 const TLX_ITEMS = [ // keep in sync with tlxItems in debrief.js
     { id: "mental", label: "Mental Demand", desc: "How mentally demanding was that round?", left: "Very Low", right: "Very High" },
@@ -84,8 +89,39 @@ function showPerTrialTLX(trialIndex, onContinue) {
     overlay.style.display = 'flex';
 }
 
+const P2_PRODUCTS = [
+    { name: "a plant-based protein bar", brand: "Fuel Bar" },
+    { name: "a noise-cancelling headphone", brand: "Quietly" },
+    { name: "an energy drink", brand: "Voltage" },
+    { name: "a skincare face cream", brand: "Lumé" },
+    { name: "a productivity planner app", brand: "Focusly" },
+    { name: "a cold-brew coffee subscription", brand: "Roast Club" }
+];
+
+function getP2Product() {
+    if (!sessionData.p2Product) {
+        sessionData.p2Product = P2_PRODUCTS[Math.floor(Math.random() * P2_PRODUCTS.length)];
+    }
+    return sessionData.p2Product;
+}
+
 function isP2Task() {
     return sessionData.primaryTask && sessionData.primaryTask.startsWith("P2");
+}
+
+// HASHTAG FUNCTIONS
+function parseHashtagInput(text) {
+    const matches = text.match(/#[A-Za-z0-9_]+/g) || [];
+    return matches.length;
+}
+function onHashtagPresetChange() {
+    const select = document.getElementById('hashtagPreset');
+    const input = document.getElementById('hashtagInput');
+    if (select.value) { input.value = select.value; onHashtagInputChange(); }
+}
+function onHashtagInputChange() {
+    const input = document.getElementById('hashtagInput');
+    selectP2Option('Hashtags', parseHashtagInput(input.value));
 }
 
 // Marketing Budget Challenge Data
@@ -148,13 +184,15 @@ const taskDataP2 = {
     "HighLoad": {
         title: "Campaign Launch Challenge (High Complexity)",
         startingAllocation: {
-            Tone: 35, Urgency: 0, Hashtags: 5, PostingTime: 12,
-            Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
+            Tone: 80, Urgency: 90, Hashtags: 12, PostingTime: 22,
+            Claim_LimitedTime: 1, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
             { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
               check: (p) => estimatePostLength(p) <= 280,
-              bound: { type: "max_length", limit: 280 } }
+              bound: { type: "max_length", limit: 280 } },
+            { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true },
+            { id: "c3_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true }
         ]
     },
     "LowLoad": {
@@ -205,24 +243,6 @@ const P2_OPTION_CONTROLS = [
             { value: 60, label: "Moderate" },
             { value: 90, label: "Aggressive" }
         ]
-    },
-    {
-        key: "Hashtags", label: "Hashtag Set", hint: "More tags can aid discovery up to a point, then engagement drops off.",
-        options: [
-            { value: 2, label: "Minimal (2)" },
-            { value: 5, label: "Standard (5)" },
-            { value: 8, label: "Broad (8)" },
-            { value: 12, label: "Maximum (12)" }
-        ]
-    },
-    {
-        key: "PostingTime", label: "Posting Slot", hint: "When the post goes live. Some windows perform better than others.",
-        options: [
-            { value: 7, label: "Early Morning (7:00)" },
-            { value: 12, label: "Midday (12:00)" },
-            { value: 18, label: "Evening (18:00)" },
-            { value: 22, label: "Late Night (22:00)" }
-        ]
     }
 ];
 
@@ -233,11 +253,11 @@ const P2_TOGGLE_CONTROLS = [
     { key: "Disclaimer", label: "Legal disclaimer", hint: "Required if any claim above is enabled." }
 ];
 
-const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap"];
+const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "urgencyNightCap", "multiClaimUrgencyCap"];
 
 function sampleShockArchetypesP2() {
     const shuffled = [...SHOCK_ARCHETYPES_P2].sort(() => Math.random() - 0.5);
-    const count = Math.random() < 0.5 ? 1 : 2;
+    const count = Math.random() < 0.5 ? 2 : 3;
     return shuffled.slice(0, count);
 }
 
@@ -266,7 +286,7 @@ function buildTrialConstraintsP2(loadLevel) {
     if (selected.includes("postingWindow")) {
         constraints.push({
             id: "shock_posting_window",
-            text: "Posting slot must be Midday or Evening (not Early Morning or Late Night)",
+            text: `Posting time must fall within the approved window (${APPROVED_POSTING_WINDOW[0]}:00\u2013${APPROVED_POSTING_WINDOW[1]}:00)`,
             check: (p) => p.PostingTime >= APPROVED_POSTING_WINDOW[0] && p.PostingTime <= APPROVED_POSTING_WINDOW[1],
             bound: { channel: "PostingTime", min: APPROVED_POSTING_WINDOW[0], max: APPROVED_POSTING_WINDOW[1] }
         });
@@ -279,6 +299,25 @@ function buildTrialConstraintsP2(loadLevel) {
             bound: { channel: "Hashtags", max: HASHTAG_SOFT_CAP }
         });
     }
+    if (selected.includes("urgencyNightCap")) {
+        constraints.push({
+            id: "shock_urgency_night_cap",
+            text: "If Urgency is Aggressive, Posting Slot cannot be Late Night (low-traffic hours undercut urgency messaging)",
+            check: (p) => !(p.Urgency >= 90 && p.PostingTime >= 22),
+            bound: { type: "urgency_night_cap" }
+        });
+    }
+    if (selected.includes("multiClaimUrgencyCap")) {
+        constraints.push({
+            id: "shock_multi_claim_urgency_cap",
+            text: "With 2 or more claims active, Urgency must stay at Light or below (compliance review threshold)",
+            check: (p) => {
+                const claimCount = REGULATED_CLAIMS.filter(c => p[c]).length;
+                return claimCount < 2 || p.Urgency <= 35;
+            },
+            bound: { type: "multi_claim_urgency_cap" }
+        });
+    }
 
     return constraints;
 }
@@ -288,8 +327,12 @@ function getEngagementPercentage(p, loadLevel) {
     score += interp(p.Urgency, [0, 25, 50, 75, 100], [0, 1.8, 2.6, 2.8, 2.2]);
     score += Math.min(p.Hashtags, HASHTAG_SOFT_CAP) * 0.3 - Math.max(0, p.Hashtags - HASHTAG_SOFT_CAP) * 0.15;
     score += Math.max(0, 3.0 - Math.abs(p.PostingTime - 18) * 0.15);
-    score += REGULATED_CLAIMS.reduce((sum, c) => sum + (p[c] ? 0.4 : 0), 0);
+    score += REGULATED_CLAIMS.reduce((s,c) => s + (p[c] ? 0.4 : 0), 0);
     score -= p.Disclaimer ? 0.2 : 0;
+
+    // Cross-variable interactions (apply regardless of load level)
+    if (p.Urgency >= 75 && p.PostingTime >= 21) score -= 0.5;
+    if (p.Tone >= 75 && p.Hashtags >= HASHTAG_SOFT_CAP) score += 0.4;
 
     if (loadLevel === "HighLoad") {
         if (p.Urgency > 80 && !p.Disclaimer) score -= 1.0;
@@ -626,6 +669,8 @@ function startTrial(trialIndex) {
     turnsInTrial = 0;
     hintsUsedThisTrial = 0;
     hasInteractedThisTrial = false;
+    darkTurnCounter = 0;
+    postTextManuallyEdited = false;
     sliderTelemetry = { firstMoveTime: null, currentDrag: null, completedDrags: [] };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
@@ -687,23 +732,75 @@ function buildPostPreview(p) {
     if (p.Claim_LimitedTime) text += " Limited stock available.";
     if (p.Claim_BestSelling) text += " Our #1 best-seller.";
     if (p.Claim_GuaranteedResults) text += " Guaranteed results or your money back.";
-    const tagCount = Math.min(p.Hashtags, 6);
-    if (tagCount > 0) {
-        const tags = Array.from({ length: tagCount }, (_, i) => `#tag${i + 1}`).join(' ');
-        text += `\n\n${tags}${p.Hashtags > 6 ? ` +${p.Hashtags - 6} more` : ''}`;
-    }
     if (p.Disclaimer) text += `\n\n*Terms and conditions apply.`;
     return text;
 }
 
 function selectP2Option(key, value) {
+    if (currentAllocations[key] === value) return; // no-op click on the already-selected chip
     const now = Date.now();
     if (!optionChangeTelemetry.firstChangeTime) {
         optionChangeTelemetry.firstChangeTime = now - window.lastTurnTimestamp;
     }
     optionChangeTelemetry.changes.push({ key, from: currentAllocations[key], to: value, time: now });
     currentAllocations[key] = value;
+
+    const affectsTemplate = ["Tone", "Urgency", "Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults", "Disclaimer"];
+    if (affectsTemplate.includes(key) && !postTextManuallyEdited) {
+        currentPostText = buildPostPreview(currentAllocations);
+        const box = document.getElementById('postPreviewBox');
+        if (box) box.value = currentPostText;
+    }
+
     updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
+}
+
+function toggleP2Claim(key) {
+    selectP2Option(key, currentAllocations[key] ? 0 : 1);
+}
+
+function onPreviewKeydown(e) {
+    postTextTelemetry.keystrokes.push({ key: e.key, time: Date.now() });
+    if (e.key === "Backspace") postTextTelemetry.backspaces++;
+}
+
+function onPreviewScroll(e) {
+    postTextTelemetry.scrollEvents.push({ scrollTop: e.target.scrollTop, time: Date.now() });
+}
+
+function onPreviewPaste(e) {
+    const pasted = (e.clipboardData || window.clipboardData).getData('text');
+    logEvent('preview_text_pasted', { trial: currentTrial, pasted_text: pasted, length: pasted.length });
+}
+
+function computePreviewWPM() {
+    if (postTextTelemetry.keystrokes.length < 2) return 0;
+    const first = postTextTelemetry.keystrokes[0].time;
+    const last = postTextTelemetry.keystrokes[postTextTelemetry.keystrokes.length - 1].time;
+    const minutes = (last - first) / 60000;
+    const words = currentPostText.trim().split(/\s+/).filter(Boolean).length;
+    return minutes > 0 ? Math.round(words / minutes) : 0;
+}
+
+function computePreviewMaxPause() {
+    const ks = postTextTelemetry.keystrokes;
+    if (ks.length < 2) return 0;
+    let maxGap = 0;
+    for (let i = 1; i < ks.length; i++) maxGap = Math.max(maxGap, ks[i].time - ks[i-1].time);
+    return maxGap;
+}
+
+function onPreviewTextInput() {
+    postTextManuallyEdited = true;
+    currentPostText = document.getElementById('postPreviewBox').value;
+}
+
+function resetPreviewToTemplate() {
+    logEvent('preview_reset_clicked', { trial: currentTrial, discarded_text: currentPostText });
+    postTextManuallyEdited = false;
+    currentPostText = buildPostPreview(currentAllocations);
+    const box = document.getElementById('postPreviewBox');
+    if (box) box.value = currentPostText;
 }
 
 function toggleP2Claim(key) {
@@ -713,6 +810,7 @@ function toggleP2Claim(key) {
 function startTrialP2(trialIndex) {
     const loadLevel = sessionData.trialSequence[trialIndex - 1];
     const task = taskDataP2[loadLevel];
+    const product = getP2Product();
 
     currentAllocations = { ...task.startingAllocation };
     startOfTrialAllocations = { ...currentAllocations };
@@ -743,11 +841,37 @@ function startTrialP2(trialIndex) {
             </div>`;
     });
 
-    let togglesHtml = `<div class="option-picker-group"><span class="option-picker-label">Claims &amp; Disclosures</span><div class="option-chip-row" id="p2ToggleRow">`;
+    const hashtagHtml = `
+        <div class="option-picker-group">
+            <span class="option-picker-label">Hashtags</span>
+            <div class="option-picker-hint">More tags can aid discovery up to a point, then engagement drops off. Type your own or pick a preset to start.</div>
+            <select id="hashtagPreset" class="option-select" onchange="onHashtagPresetChange()">
+                <option value="">Choose a preset...</option>
+                <option value="#tag1 #tag2">Minimal (2)</option>
+                <option value="#tag1 #tag2 #tag3 #tag4 #tag5">Standard (5)</option>
+                <option value="#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8">Broad (8)</option>
+                <option value="#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8 #tag9 #tag10 #tag11 #tag12">Maximum (12)</option>
+            </select>
+            <input type="text" id="hashtagInput" class="text-input-field" placeholder="#YourTag #AnotherTag" oninput="onHashtagInputChange()">
+        </div>`;
+
+    const postingSliderHtml = `
+        <div class="option-picker-group">
+            <span class="option-picker-label">Posting Slot</span>
+            <div class="option-picker-hint">When the post goes live. Some windows perform better than others.</div>
+            <div class="slider-header"><span id="postingTimeDisplay">${currentAllocations.PostingTime}:00</span></div>
+            <input type="range" class="budget-slider" data-channel="PostingTime" min="0" max="23" step="1" value="${currentAllocations.PostingTime}">
+        </div>`;
+
+    let togglesHtml = `<div class="option-picker-group"><span class="option-picker-label">Claims &amp; Disclosures</span><div class="option-picker-hint">Check any claims or the disclaimer you want to include.</div>`;
     P2_TOGGLE_CONTROLS.forEach(ctrl => {
-        togglesHtml += `<button type="button" class="option-chip" data-toggle="${ctrl.key}" title="${ctrl.hint}">${ctrl.label}</button>`;
+        togglesHtml += `
+            <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                <input type="checkbox" class="budget-toggle" data-channel="${ctrl.key}" ${currentAllocations[ctrl.key] ? "checked" : ""} onchange="toggleP2Claim('${ctrl.key}')">
+                <span>${ctrl.label}</span>
+            </label>`;
     });
-    togglesHtml += `</div></div>`;
+    togglesHtml += `</div>`;
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
@@ -760,8 +884,15 @@ function startTrialP2(trialIndex) {
     constraintsHtml += `</ul>`;
 
     document.getElementById('docBody').innerHTML = `
-        <span class="post-preview-label">Live Post Preview</span>
-        <div class="post-preview-box" id="postPreviewBox"></div>
+        <div class="p2-brief">You're writing a launch post for <strong>${product.brand}</strong> \u2014 ${product.name}.</div>
+        <div class="preview-header-row">
+            <span class="post-preview-label">Live Post Preview</span>
+            <button type="button" class="preview-reset-btn" onclick="resetPreviewToTemplate()">\u21ba Reset to template</button>
+        </div>
+        <textarea class="post-preview-box" id="postPreviewBox" rows="4"
+                  oninput="onPreviewTextInput()" onkeydown="onPreviewKeydown(event)"
+                  onscroll="onPreviewScroll(event)" onpaste="onPreviewPaste(event)"></textarea>
+        <div class="post-preview-note">Editing this text is optional \u2014 it doesn't affect your score or constraints; only the selections below do.</div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
                 <span class="sc-label">Estimated Post Length</span>
@@ -774,6 +905,8 @@ function startTrialP2(trialIndex) {
             </div>` : ''}
         </div>
         ${optionsHtml}
+        ${hashtagHtml}
+        ${postingSliderHtml}
         ${togglesHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
         ${constraintsHtml}
@@ -782,14 +915,18 @@ function startTrialP2(trialIndex) {
         </button>
     `;
 
+    currentPostText = buildPostPreview(currentAllocations);
+    const previewBoxInit = document.getElementById('postPreviewBox');
+    if (previewBoxInit) previewBoxInit.value = currentPostText;
+
+    const hashtagInputInit = document.getElementById('hashtagInput');
+    if (hashtagInputInit) {
+        hashtagInputInit.value = Array.from({ length: currentAllocations.Hashtags }, (_, i) => `#tag${i + 1}`).join(' ');
+    }
+
     document.querySelectorAll('.option-chip[data-key]').forEach(chip => {
         chip.addEventListener('click', () => {
             selectP2Option(chip.dataset.key, parseInt(chip.dataset.value));
-        });
-    });
-    document.querySelectorAll('.option-chip[data-toggle]').forEach(chip => {
-        chip.addEventListener('click', () => {
-            toggleP2Claim(chip.dataset.toggle);
         });
     });
 
@@ -798,7 +935,10 @@ function startTrialP2(trialIndex) {
     turnsInTrial = 0;
     hintsUsedThisTrial = 0;
     hasInteractedThisTrial = false;
+    darkTurnCounter = 0;
+    postTextManuallyEdited = false;
     optionChangeTelemetry = { firstChangeTime: null, changes: [] };
+    postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
     updateDashboardP2(loadLevel);
@@ -823,14 +963,11 @@ function updateDashboardP2(loadLevel) {
     const lenDisplay = document.getElementById('totalAllocDisplay');
     if (lenDisplay) lenDisplay.innerText = `${length} / 280 chars`;
 
-    const previewBox = document.getElementById('postPreviewBox');
-    if (previewBox) previewBox.innerText = buildPostPreview(currentAllocations);
+    const ptDisplay = document.getElementById('postingTimeDisplay');
+    if (ptDisplay) ptDisplay.innerText = `${currentAllocations.PostingTime}:00`;
 
     document.querySelectorAll('.option-chip[data-key]').forEach(chip => {
         chip.classList.toggle('selected', parseInt(chip.dataset.value) === currentAllocations[chip.dataset.key]);
-    });
-    document.querySelectorAll('.option-chip[data-toggle]').forEach(chip => {
-        chip.classList.toggle('selected', !!currentAllocations[chip.dataset.toggle]);
     });
 
     const budgetCard = document.getElementById('budgetCard');
@@ -852,8 +989,8 @@ async function sendMessage() {
     const text = inputEl.value.trim();
     if (!text) return;
 
-    const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
+    if (allConstraintsMet) darkTurnCounter++;
 
     addMessage(text, 'user');
     inputEl.value = '';
@@ -913,13 +1050,14 @@ async function sendMessage() {
                 task_id: 1, 
                 group: sessionData.group,
                 trial_num: currentTrial,
-                turn_in_trial: turnsInTrial, 
+                turn_in_trial: darkTurnCounter,
                 hints_used_this_trial: hintsUsedThisTrial, 
                 roi_score: trialScorePct, 
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
                 shadow_history: shadowHistory,
                 load_level: sessionData.trialSequence[currentTrial - 1],
+                p2_product: isP2Task() ? getP2Product().name : null,
                 dropped_category_index: sessionData.droppedCategoryIndex,
                 constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean)
             })
@@ -1015,6 +1153,7 @@ async function requestScoreHint() {
 
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
+    if (allConstraintsMet) darkTurnCounter++;
 
     logEvent('score_hint_requested', {
         text: canned,
@@ -1034,13 +1173,14 @@ async function requestScoreHint() {
                 task_id: 1,
                 group: sessionData.group,
                 trial_num: currentTrial,
-                turn_in_trial: turnsInTrial,
+                turn_in_trial: darkTurnCounter,
                 hints_used_this_trial: hintsUsedThisTrial,
                 roi_score: trialScorePct,
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
                 shadow_history: shadowHistory,
                 load_level: loadLevel,
+                p2_product: isP2Task() ? getP2Product().name : null,
                 dropped_category_index: sessionData.droppedCategoryIndex,
                 constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean),
                 is_score_hint: true
@@ -1122,6 +1262,15 @@ function submitTrial() {
         load_level: loadLevel,
         final_score: trialScorePct,
         final_allocations: { ...currentAllocations },
+        final_post_text: isP2Task() ? currentPostText : null,
+        post_text_manually_edited: isP2Task() ? postTextManuallyEdited : null,
+        post_text_telemetry: isP2Task() ? {
+            backspaces: postTextTelemetry.backspaces,
+            wpm: computePreviewWPM(),
+            max_pause_ms: computePreviewMaxPause(),
+            keystrokes: postTextTelemetry.keystrokes,
+            scrollEvents: postTextTelemetry.scrollEvents
+        } : null,
         slider_telemetry: sliderTelemetry,
         option_telemetry: isP2Task() ? optionChangeTelemetry : null,
         attention_metrics: { ...attentionMetrics }

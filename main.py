@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Optional
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -9,6 +9,7 @@ import re
 import random
 import ast
 import uuid
+import hashlib
 from typing import Dict, Any, List
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -23,7 +24,7 @@ app = FastAPI()
 
 IS_PILOT_MODE = False # Set to False during real data collection
 PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial"]  # append "P2_Negotiation", "P3_..." here once built
-FORCE_PRIMARY_TASK = "P1_Marketing"  # TESTING ONLY: set to "P1_Marketing" or "P2_ContentSocial" to force every assignment to that task, bypassing round-robin. Set back to None before real data collection.
+FORCE_PRIMARY_TASK = "P2_ContentSocial"  # TESTING ONLY: set to "P1_Marketing" or "P2_ContentSocial" to force every assignment to that task, bypassing round-robin. Set back to None before real data collection.
 assert FORCE_PRIMARY_TASK is None or FORCE_PRIMARY_TASK in PRIMARY_TASKS, "FORCE_PRIMARY_TASK must be None or a value in PRIMARY_TASKS"
 DARK_PATTERN_CATEGORIES = 5       # Sycophantic Agreement, Excessive Flattery, Simulated Authority, Opaque Reasoning, Brand Favoritism
 NUM_TRIALS = 4
@@ -69,6 +70,7 @@ def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int) -> i
     dropped_category = dropped_category_index + 1
     remaining = [i for i in range(1, DARK_PATTERN_CATEGORIES + 1) if i != dropped_category]
     return remaining[(trial_num - 1) % len(remaining)]
+
 
 def pick_primary_task() -> str:
     task_counts = {t: 0 for t in PRIMARY_TASKS}
@@ -153,6 +155,7 @@ class ChatMessage(BaseModel):
     constraint_bounds: List[Dict[str, Any]] = []
     load_level: str
     dropped_category_index: int = 0
+    p2_product: Optional[str] = None
 
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
@@ -255,6 +258,13 @@ def satisfies_bounds(alloc: dict, bounds: list) -> bool:
         elif b.get("type") == "disclaimer_required":
             if any(alloc.get(c, 0) for c in REGULATED_CLAIMS) and not alloc.get("Disclaimer", 0):
                 return False
+        elif b.get("type") == "urgency_night_cap":
+            if alloc.get("Urgency", 0) >= 90 and alloc.get("PostingTime", 0) >= 22:
+                return False
+        elif b.get("type") == "multi_claim_urgency_cap":
+            claim_count = sum(1 for c in REGULATED_CLAIMS if alloc.get(c, 0))
+            if claim_count >= 2 and alloc.get("Urgency", 0) > 35:
+                return False
         elif "compare" in b:
             if b["compare"] == "gt" and not (alloc.get(b["a"], 0) > alloc.get(b["b"], 0)):
                 return False
@@ -275,6 +285,10 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
             parts.append(f"Estimated post length must stay ≤ {b['limit']} characters")
         elif b.get("type") == "disclaimer_required":
             parts.append("If any regulated claim is enabled, Disclaimer must also be enabled")
+        elif b.get("type") == "urgency_night_cap":
+            parts.append("Urgency cannot be Aggressive while Posting Slot is Late Night")
+        elif b.get("type") == "multi_claim_urgency_cap":
+            parts.append("With 2+ claims active, Urgency cannot exceed Light")
         elif "compare" in b:
             parts.append(f"{b['a']} must stay greater than {b['b']}")
         else:
@@ -345,8 +359,14 @@ def get_raw_engagement(params: dict, load_level: str) -> float:
     score += _interp(urgency, [0, 25, 50, 75, 100], [0, 1.8, 2.6, 2.8, 2.2])
     score += max(0, min(hashtags, HASHTAG_SOFT_CAP)) * 0.3 - max(0, hashtags - HASHTAG_SOFT_CAP) * 0.15
     score += max(0, 3.0 - abs(posting_time - 18) * 0.15)
-    score += sum(0.4 for c in REGULATED_CLAIMS if params.get(c, 0))
-    score -= 0.2 if params.get("Disclaimer", 0) else 0
+    score += sum(0.4 for c in REGULATED_CLAIMS if params.get(c,0))
+    score -= 0.2 if params.get("Disclaimer",0) else 0
+
+    # Cross-variable interactions (apply regardless of load level, same as P1's channel synergies)
+    if urgency >= 75 and posting_time >= 21:
+        score -= 0.5   # aggressive urgency lands on a low-traffic late-night audience
+    if tone >= 75 and hashtags >= HASHTAG_SOFT_CAP:
+        score += 0.4   # casual tone + high hashtag count boosts discoverability
 
     if load_level == "HighLoad":
         if urgency > 80 and not params.get("Disclaimer", 0):
@@ -499,7 +519,10 @@ async def handle_chat(chat_data: ChatMessage):
         else "moving funds between the 5 available channels based on general strategy"
     external_metrics_desc = "CTR, follower growth, or revenue" if is_p2 else "Cost-Per-Acquisition, Conversion Rates, or Revenue"
     state_label = "CURRENT POST PARAMETERS" if is_p2 else "CURRENT ALLOCATIONS"
-    advisor_desc = "AI social media launch-copy advisor" if is_p2 else "AI marketing advisor"
+    if is_p2:
+        advisor_desc = f"AI Social Media Advisor helping launch {chat_data.p2_product}" if chat_data.p2_product else "AI Social Media Advisor"
+    else:
+        advisor_desc = "AI Marketing Advisor"
 
     if is_dark:
         tactics = TACTICS_P2 if is_p2 else TACTICS_P1
@@ -708,6 +731,16 @@ async def submit_recognition_test(req: SubmitRecognition):
         
     return {"status": "success", "scored_results": scored_results}
 
+def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    keys = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration"]
+    by_trial = {e.get("trial"): e for e in (entries or [])}
+    flat = {}
+    for trial_num in range(1, 5):
+        entry = by_trial.get(trial_num, {})
+        for k in keys:
+            flat[f"Trial{trial_num}_TLX_{k}"] = entry.get(k.lower(), "")
+    return flat
+
 @app.post("/api/save_data")
 async def save_data(payload: Dict[str, Any]):
     os.makedirs("data", exist_ok=True)
@@ -719,11 +752,20 @@ async def save_data(payload: Dict[str, Any]):
             writer = csv.writer(file)
             
             # --- SECTION 1: INTAKE & TLX DATA ---
-            writer.writerow(["Participant_ID", "Group", "Primary_Task", "Trial_Load_Sequence", "Dropped_Category_Index","Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity", "P_e1", "P_e2", "P_e3", "P_e4", "TLX_Mental", "TLX_Physical", "TLX_Temporal", "TLX_Performance", "TLX_Effort", "TLX_Frustration", "Claims_Accepted", "Claims_Rejected", "Turns_Elapsed", "Corrections_Made"])
-            
+            writer.writerow([
+                "Participant_ID", "Group", "Primary_Task", "Trial_Load_Sequence", "Dropped_Category_Index",
+                "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity",
+                "P_e1", "P_e2", "P_e3", "P_e4",
+                "Trial1_TLX_Mental", "Trial1_TLX_Physical", "Trial1_TLX_Temporal", "Trial1_TLX_Performance", "Trial1_TLX_Effort", "Trial1_TLX_Frustration",
+                "Trial2_TLX_Mental", "Trial2_TLX_Physical", "Trial2_TLX_Temporal", "Trial2_TLX_Performance", "Trial2_TLX_Effort", "Trial2_TLX_Frustration",
+                "Trial3_TLX_Mental", "Trial3_TLX_Physical", "Trial3_TLX_Temporal", "Trial3_TLX_Performance", "Trial3_TLX_Effort", "Trial3_TLX_Frustration",
+                "Trial4_TLX_Mental", "Trial4_TLX_Physical", "Trial4_TLX_Temporal", "Trial4_TLX_Performance", "Trial4_TLX_Effort", "Trial4_TLX_Frustration",
+                "Claims_Accepted", "Claims_Rejected", "Turns_Elapsed", "Corrections_Made"
+            ])
+
             demo = payload.get("demographics", {})
             pers = payload.get("personality", {})
-            tlx = payload.get("nasaTLX", {})
+            tlx_flat = flatten_per_trial_tlx(payload.get("perTrialTLX", []))
             metrics = payload.get("metrics", {})
             trial_seq = payload.get("trialSequence", [])
             
@@ -743,12 +785,10 @@ async def save_data(payload: Dict[str, Any]):
                 pers.get("e2", ""),
                 pers.get("e3", ""),
                 pers.get("e4", ""),
-                tlx.get("mental", ""),
-                tlx.get("physical", ""),
-                tlx.get("temporal", ""),
-                tlx.get("performance", ""),
-                tlx.get("effort", ""),
-                tlx.get("frustration", ""),
+                tlx_flat["Trial1_TLX_Mental"], tlx_flat["Trial1_TLX_Physical"], tlx_flat["Trial1_TLX_Temporal"], tlx_flat["Trial1_TLX_Performance"], tlx_flat["Trial1_TLX_Effort"], tlx_flat["Trial1_TLX_Frustration"],
+                tlx_flat["Trial2_TLX_Mental"], tlx_flat["Trial2_TLX_Physical"], tlx_flat["Trial2_TLX_Temporal"], tlx_flat["Trial2_TLX_Performance"], tlx_flat["Trial2_TLX_Effort"], tlx_flat["Trial2_TLX_Frustration"],
+                tlx_flat["Trial3_TLX_Mental"], tlx_flat["Trial3_TLX_Physical"], tlx_flat["Trial3_TLX_Temporal"], tlx_flat["Trial3_TLX_Performance"], tlx_flat["Trial3_TLX_Effort"], tlx_flat["Trial3_TLX_Frustration"],
+                tlx_flat["Trial4_TLX_Mental"], tlx_flat["Trial4_TLX_Physical"], tlx_flat["Trial4_TLX_Temporal"], tlx_flat["Trial4_TLX_Performance"], tlx_flat["Trial4_TLX_Effort"], tlx_flat["Trial4_TLX_Frustration"],
                 metrics.get("claimsAccepted", ""),
                 metrics.get("claimsRejected", ""),
                 metrics.get("turnsElapsed", ""),
@@ -763,7 +803,7 @@ async def save_data(payload: Dict[str, Any]):
             writer.writerow(["Participant_ID", "Group", "Event_Type", "Timestamp", "Data"])
             
             # Filter out both TLX and Recognition Test from the raw event stream
-            chat_events = [e for e in payload.get("events", []) if e.get("type") not in ["recognition_test_submitted", "nasa_tlx_submitted"]]
+            chat_events = [e for e in payload.get("events", []) if e.get("type") not in ["recognition_test_submitted", "nasa_tlx_submitted", "trial_tlx_submitted"]]
             
             for event in chat_events:
                 writer.writerow([
