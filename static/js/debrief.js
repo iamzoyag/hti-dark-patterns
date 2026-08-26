@@ -200,6 +200,10 @@ function showDataExport() {
             <span class="sc-val">${session.participantId}</span>
             <span class="sc-label">Participant ID</span>
         </div>
+        <div class="stat-card">
+            <span class="sc-val">${session.attentionAccuracy ?? '—'}% ${session.attentionQualified ? '✓' : '✗'}</span>
+            <span class="sc-label">Attention Task Accuracy</span>
+        </div>
     `;
 }
 

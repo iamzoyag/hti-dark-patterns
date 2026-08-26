@@ -719,6 +719,9 @@ input[type="range"].budget-slider::-webkit-slider-thumb:hover { transform: scale
   color: var(--ink);
 }
 
+.attention-counter { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent); text-align: center; margin-top: 6px; }
+.attention-stakes-note { font-size: 10px; color: var(--ink-3); text-align: center; margin-top: 2px; }
+
 #attentionBtn {
   font-family: var(--sans);
   font-size: 12px;

@@ -29,12 +29,15 @@ let attentionMetrics = {
 let currentAttentionNumber = null;
 let numberAppearanceTime = null;
 const TARGET_NUMBER = 5;
+let sessionAttentionTotals = { targetsShown: 0, correctHits: 0, falseAlarms: 0 };
+const ATTENTION_ACCURACY_THRESHOLD = 0.70; // min required detection accuracy 
 
 let currentPostText = "";
 let postTextManuallyEdited = false;
 
 let shadowHistory = [];
 let darkTurnCounter = 0; // advances only on sends where constraints are satisfied; "turn 1" = first valid exchange, not first message
+let darkDeliveredThisTrial = false;
 
 let previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
 
@@ -286,11 +289,11 @@ const P2_TOGGLE_CONTROLS = [
     { key: "Disclaimer", label: "Legal disclaimer", hint: "Required if any claim above is enabled." }
 ];
 
-const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "urgencyNightCap", "multiClaimUrgencyCap"];
+const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
 
 function sampleShockArchetypesP2() {
     const shuffled = [...SHOCK_ARCHETYPES_P2].sort(() => Math.random() - 0.5);
-    const count = Math.random() < 0.5 ? 2 : 3;
+    const count = Math.random() < 0.5 ? 3 : 4;
     return shuffled.slice(0, count);
 }
 
@@ -340,15 +343,20 @@ function buildTrialConstraintsP2(loadLevel) {
             bound: { type: "urgency_night_cap" }
         });
     }
-    if (selected.includes("multiClaimUrgencyCap")) {
+    if (selected.includes("claimUrgencyCap")) {
         constraints.push({
-            id: "shock_multi_claim_urgency_cap",
-            text: "With 2 or more claims active, Urgency must stay at Light or below (compliance review threshold)",
-            check: (p) => {
-                const claimCount = REGULATED_CLAIMS.filter(c => p[c]).length;
-                return claimCount < 2 || p.Urgency <= 35;
-            },
-            bound: { type: "multi_claim_urgency_cap" }
+            id: "shock_claim_urgency_cap",
+            text: "While any regulated claim (limited time / best-selling / guaranteed results) is active, Urgency must stay at Moderate or below",
+            check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Urgency <= 60,
+            bound: { type: "claim_urgency_cap" }
+        });
+    }
+    if (selected.includes("disclaimerToneLock")) {
+        constraints.push({
+            id: "shock_disclaimer_tone_lock",
+            text: "If the legal disclaimer is on, Tone cannot be Casual (disclaimers read poorly in a casual voice)",
+            check: (p) => !p.Disclaimer || p.Tone < 80,
+            bound: { type: "disclaimer_tone_lock" }
         });
     }
 
@@ -562,12 +570,15 @@ function startDividedAttentionTask() {
         <div style="text-align: center; font-size: 11px; color: var(--ink-3);">Click when you see ${TARGET_NUMBER}</div>
         <div id="attentionNumber" class="da-number">-</div>
         <button id="attentionBtn">Match</button>
+        <div id="attentionCounter" class="attention-counter">Detected: ${sessionAttentionTotals.correctHits}/${sessionAttentionTotals.targetsShown}</div>
+        <div class="attention-stakes-note">Required for completion bonus (\u2265${Math.round(ATTENTION_ACCURACY_THRESHOLD * 100)}% accuracy)</div>
     `;
 
     document.getElementById('attentionBtn').addEventListener('click', (e) => {
         const btn = e.target;
         if (currentAttentionNumber === TARGET_NUMBER) {
             attentionMetrics.correctHits++;
+            sessionAttentionTotals.correctHits++;
             attentionMetrics.reactionTimes.push(Date.now() - numberAppearanceTime);
             currentAttentionNumber = null;
             btn.style.backgroundColor = '#28a745';
@@ -575,10 +586,12 @@ function startDividedAttentionTask() {
             setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
         } else {
             attentionMetrics.falseAlarms++;
+            sessionAttentionTotals.falseAlarms++;
             btn.style.backgroundColor = '#dc3545';
             btn.style.color = '#ffffff';
             setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
         }
+        updateAttentionCounterDisplay();
     });
 
     attentionIntervalId = setInterval(() => {
@@ -587,8 +600,17 @@ function startDividedAttentionTask() {
         numberAppearanceTime = Date.now();
         const numEl = document.getElementById('attentionNumber');
         if (numEl) numEl.innerText = num;
-        if (num === TARGET_NUMBER) attentionMetrics.targetsShown++;
+        if (num === TARGET_NUMBER) {
+            attentionMetrics.targetsShown++;
+            sessionAttentionTotals.targetsShown++;
+            updateAttentionCounterDisplay();
+        }
     }, 2000);
+}
+
+function updateAttentionCounterDisplay() {
+    const el = document.getElementById('attentionCounter');
+    if (el) el.innerText = `Detected: ${sessionAttentionTotals.correctHits}/${sessionAttentionTotals.targetsShown}`;
 }
 
 function stopDividedAttentionTask() {
@@ -601,6 +623,9 @@ function stopDividedAttentionTask() {
 
 function startTrial(trialIndex) {
     stopDividedAttentionTask();
+
+    const chatNameEl = document.querySelector('.chat-ai-name');
+    if (chatNameEl) chatNameEl.innerText = isP2Task() ? "AI Social Media Advisor" : "AI Marketing Advisor";
 
     if (isP2Task()) { startTrialP2(trialIndex); return; }
 
@@ -703,6 +728,7 @@ function startTrial(trialIndex) {
     hintsUsedThisTrial = 0;
     hasInteractedThisTrial = false;
     darkTurnCounter = 0;
+    darkDeliveredThisTrial = false;
     postTextManuallyEdited = false;
     sliderTelemetry = { firstMoveTime: null, currentDrag: null, completedDrags: [] };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
@@ -977,6 +1003,7 @@ function startTrialP2(trialIndex) {
     hintsUsedThisTrial = 0;
     hasInteractedThisTrial = false;
     darkTurnCounter = 0;
+    darkDeliveredThisTrial = false;
     postTextManuallyEdited = false;
     optionChangeTelemetry = { firstChangeTime: null, changes: [] };
     postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
@@ -1049,6 +1076,7 @@ async function sendMessage() {
 
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
     if (allConstraintsMet) darkTurnCounter++;
+    const allocationsAtSend = { ...currentAllocations };
 
     addMessage(text, 'user');
     inputEl.value = '';
@@ -1109,6 +1137,7 @@ async function sendMessage() {
                 group: sessionData.group,
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
+                dark_delivered: darkDeliveredThisTrial,
                 hints_used_this_trial: hintsUsedThisTrial, 
                 roi_score: trialScorePct, 
                 all_constraints_met: allConstraintsMet,
@@ -1131,6 +1160,8 @@ async function sendMessage() {
             if (data.target_channel) {
                 currentTargetChannel = data.target_channel; // Sync target for metrics
             }
+
+            if (data.isDark) darkDeliveredThisTrial = true;
             
             logEvent('ai_response', {
                 text: data.reply,
@@ -1138,6 +1169,7 @@ async function sendMessage() {
                 category: data.category,
                 pattern_id: data.pattern_id,
                 isDark: data.isDark,
+                allocations_at_request: allocationsAtSend, // State the AI actually saw when generating this reply
                 allocations_snapshot: { ...currentAllocations } // Captures state immediately as AI message lands
             });
 
@@ -1213,6 +1245,7 @@ async function requestScoreHint() {
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
     if (allConstraintsMet) darkTurnCounter++;
+    const allocationsAtSend = { ...currentAllocations };
 
     logEvent('score_hint_requested', {
         text: canned,
@@ -1233,6 +1266,7 @@ async function requestScoreHint() {
                 group: sessionData.group,
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
+                dark_delivered: darkDeliveredThisTrial,
                 hints_used_this_trial: hintsUsedThisTrial,
                 roi_score: trialScorePct,
                 all_constraints_met: allConstraintsMet,
@@ -1253,13 +1287,16 @@ async function requestScoreHint() {
             addMessage(data.reply, 'ai');
             if (data.target_channel) currentTargetChannel = data.target_channel;
 
+            if (data.isDark) darkDeliveredThisTrial = true;
+
             logEvent('ai_response', {
                 text: data.reply,
                 decoy: data.clean_decoy,
                 category: data.category,
                 pattern_id: data.pattern_id,
                 isDark: data.isDark,
-                allocations_snapshot: { ...currentAllocations }
+                allocations_at_request: allocationsAtSend, // State the AI actually saw when generating this reply
+                allocations_snapshot: { ...currentAllocations } // Captures state immediately as AI message lands
             });
 
             shadowHistory.push({ role: 'user', content: canned });
@@ -1344,10 +1381,21 @@ function submitTrial() {
     stopDividedAttentionTask();
 
     if (currentTrial >= 4) {
+        const finalAccuracy = sessionAttentionTotals.targetsShown > 0
+            ? Math.max(0, (sessionAttentionTotals.correctHits - sessionAttentionTotals.falseAlarms) / sessionAttentionTotals.targetsShown)
+            : 1;
+        sessionData.attentionAccuracy = Math.round(finalAccuracy * 100);
+        sessionData.attentionQualified = finalAccuracy >= ATTENTION_ACCURACY_THRESHOLD;
+        logEvent('attention_bonus_eligibility', {
+            targets_shown: sessionAttentionTotals.targetsShown,
+            correct_hits: sessionAttentionTotals.correctHits,
+            false_alarms: sessionAttentionTotals.falseAlarms,
+            accuracy_pct: sessionData.attentionAccuracy,
+            qualified: sessionData.attentionQualified
+        });
+
         document.getElementById('submitTrialBtn').innerText = "Processing...";
         showPerTrialTLX(currentTrial, () => {
-            // TODO next pass: per-task subjective battery, swapped-transcript
-            // task, and recognition test hook in after this.
             saveSessionData();
         });
     } else {

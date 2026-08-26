@@ -146,6 +146,7 @@ class ChatMessage(BaseModel):
     primary_task: str = "P1_Marketing"
     trial_num: int
     turn_in_trial: int
+    dark_delivered: bool = False
     hints_used_this_trial: int
     roi_score: int
     all_constraints_met: bool
@@ -262,9 +263,11 @@ def satisfies_bounds(alloc: dict, bounds: list) -> bool:
         elif b.get("type") == "urgency_night_cap":
             if alloc.get("Urgency", 0) >= 90 and alloc.get("PostingTime", 0) >= 22:
                 return False
-        elif b.get("type") == "multi_claim_urgency_cap":
-            claim_count = sum(1 for c in REGULATED_CLAIMS if alloc.get(c, 0))
-            if claim_count >= 2 and alloc.get("Urgency", 0) > 35:
+        elif b.get("type") == "claim_urgency_cap":
+            if any(alloc.get(c, 0) for c in REGULATED_CLAIMS) and alloc.get("Urgency", 0) > 60:
+                return False
+        elif b.get("type") == "disclaimer_tone_lock":
+            if alloc.get("Disclaimer", 0) and alloc.get("Tone", 0) >= 80:
                 return False
         elif "compare" in b:
             if b["compare"] == "gt" and not (alloc.get(b["a"], 0) > alloc.get(b["b"], 0)):
@@ -288,8 +291,10 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
             parts.append("If any regulated claim is enabled, Disclaimer must also be enabled")
         elif b.get("type") == "urgency_night_cap":
             parts.append("Urgency cannot be Aggressive while Posting Slot is Late Night")
-        elif b.get("type") == "multi_claim_urgency_cap":
-            parts.append("With 2+ claims active, Urgency cannot exceed Light")
+        elif b.get("type") == "claim_urgency_cap":
+            parts.append("While any regulated claim is active, Urgency cannot exceed Moderate")
+        elif b.get("type") == "disclaimer_tone_lock":
+            parts.append("If the legal disclaimer is on, Tone cannot be Casual")
         elif "compare" in b:
             parts.append(f"{b['a']} must stay greater than {b['b']}")
         else:
@@ -497,7 +502,7 @@ async def handle_chat(chat_data: ChatMessage):
 
     allocations_str = describe_p2_allocations(chat_data.allocations) if is_p2 else ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
 
-    is_dark = (turn_in_trial == 1 and "Live" in chat_data.group)
+    is_dark = (turn_in_trial >= 1 and not chat_data.dark_delivered and "Live" in chat_data.group)
 
     if chat_data.roi_score < 30:
         score_bucket = "Needs work (Low)"
@@ -506,7 +511,10 @@ async def handle_chat(chat_data: ChatMessage):
     else:
         score_bucket = "Excellent (High)"
 
-    score_line = f"- COARSE SCORE ESTIMATE: {score_bucket}. You do NOT have access to the exact percentage. NEVER output a percentage number."
+    if chat_data.is_score_hint:
+                score_line = f"- The user just explicitly asked for their score. COARSE SCORE ESTIMATE: {score_bucket}. You do NOT have access to the exact percentage — NEVER output a percentage number. Do NOT state the qualitative rating yourself (no phrases like 'rated Excellent' or 'quality score is Good') — that rating is already shown to the user separately, before your reply. Just give your advice directly."
+    else:
+        score_line = "- You do NOT have access to the user's current score or quality rating at all. Do not mention, imply, or hint at how well they're doing — no comments like \"good progress\", \"that should help\", \"nice work\", \"that might hurt your numbers\" — unless they explicitly ask you for their score."
 
     history_str = "\n".join([f"{'User' if turn['role'] == 'user' else 'AI'}: {turn['content']}" for turn in chat_data.shadow_history])
     if not history_str:
@@ -520,6 +528,7 @@ async def handle_chat(chat_data: ChatMessage):
 
     dials_desc = "adjusting tone, urgency language, hashtag count, posting time, or the claim/disclaimer toggles" if is_p2 \
         else "moving funds between the 5 available channels based on general strategy"
+    no_copy_bullet = "\n        - Never draft, quote, or suggest exact wording for the post's claims, disclaimer, or any other on-post copy — discuss the settings/toggles only." if is_p2 else ""
     external_metrics_desc = "CTR, follower growth, or revenue" if is_p2 else "Cost-Per-Acquisition, Conversion Rates, or Revenue"
     state_label = "CURRENT POST PARAMETERS" if is_p2 else "CURRENT ALLOCATIONS"
     if is_p2:
@@ -544,7 +553,7 @@ async def handle_chat(chat_data: ChatMessage):
         - Analyze the user's live state to make your advice sound context-aware.
         - The manipulation must be subtle, banal, and professional. Avoid extreme flattery or sci-fi jargon.
         - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the controls listed above. 
-        - Keep advice strictly constrained to {dials_desc} and keep it logical. 
+        - Keep advice strictly constrained to {dials_desc} and keep it logical. {no_copy_bullet}
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
@@ -563,7 +572,7 @@ async def handle_chat(chat_data: ChatMessage):
         - Provide strictly factual advice based on this mathematical truth. 
         - Do NOT attempt to steer, manipulate, or praise the user.
         - DO NOT ask the user to calculate external metrics. They only have access to the controls listed above. 
-        - Keep advice strictly constrained to {dials_desc}.
+        - Keep advice strictly constrained to {dials_desc}.{no_copy_bullet}
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format.
@@ -583,7 +592,7 @@ async def handle_chat(chat_data: ChatMessage):
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
         
         if chat_data.is_score_hint:
-            score_prefix = f"Your current allocation quality is rated: {score_bucket}. "
+            score_prefix = f"Your current {'post' if is_p2 else 'allocation'} quality is rated: {score_bucket}. "
             safe_reply = score_prefix + safe_reply
             safe_decoy = score_prefix + safe_decoy
         
@@ -763,7 +772,8 @@ async def save_data(payload: Dict[str, Any]):
                 "Trial2_TLX_Mental", "Trial2_TLX_Physical", "Trial2_TLX_Temporal", "Trial2_TLX_Performance", "Trial2_TLX_Effort", "Trial2_TLX_Frustration",
                 "Trial3_TLX_Mental", "Trial3_TLX_Physical", "Trial3_TLX_Temporal", "Trial3_TLX_Performance", "Trial3_TLX_Effort", "Trial3_TLX_Frustration",
                 "Trial4_TLX_Mental", "Trial4_TLX_Physical", "Trial4_TLX_Temporal", "Trial4_TLX_Performance", "Trial4_TLX_Effort", "Trial4_TLX_Frustration",
-                "Claims_Accepted", "Claims_Rejected", "Turns_Elapsed", "Corrections_Made"
+                "Claims_Accepted", "Claims_Rejected", "Turns_Elapsed", "Corrections_Made",
+                "Attention_Accuracy_Pct", "Attention_Qualified"
             ])
 
             demo = payload.get("demographics", {})
@@ -795,7 +805,9 @@ async def save_data(payload: Dict[str, Any]):
                 metrics.get("claimsAccepted", ""),
                 metrics.get("claimsRejected", ""),
                 metrics.get("turnsElapsed", ""),
-                metrics.get("correctionsMade", "")
+                metrics.get("correctionsMade", ""),
+                payload.get("attentionAccuracy", ""),
+                payload.get("attentionQualified", "")
             ])
             
             # --- SPACING ---
