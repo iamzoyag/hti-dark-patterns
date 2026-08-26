@@ -216,7 +216,7 @@ const taskDataP2 = {
         },
         constraints: [
             { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
-              check: (p) => estimatePostLength(p) <= 280,
+              check: (p) => getEffectivePostLength() <= 280,
               bound: { type: "max_length", limit: 280 } },
             { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true },
             { id: "c3_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true }
@@ -230,7 +230,7 @@ const taskDataP2 = {
         },
         constraints: [
             { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
-              check: (p) => estimatePostLength(p) <= 280,
+              check: (p) => getEffectivePostLength() <= 280,
               bound: { type: "max_length", limit: 280 } }
         ]
     }
@@ -240,7 +240,7 @@ const REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_Guara
 const HASHTAG_SOFT_CAP = 8;
 const BRAND_TONE_BAND = [20, 65];
 const APPROVED_POSTING_WINDOW = [9, 18];
-const P2_MAX_ENGAGEMENT = { HighLoad: 10.4, LowLoad: 10.0 };
+const P2_MAX_ENGAGEMENT = { HighLoad: 11.6, LowLoad: 11.2 };
 
 function estimatePostLength(p) {
     let length = 150;
@@ -368,8 +368,8 @@ function getEngagementPercentage(p, loadLevel) {
         if (toneOk && hashtagsOk) score += 0.4;
     }
 
-    const length = estimatePostLength(p);
-    if (length > 280) score -= 0.02 * (length - 280);
+    const length = getEffectivePostLength();
+    if (length > PLATFORM_CHAR_LIMIT) score -= 0.02 * (length - PLATFORM_CHAR_LIMIT);
 
     return Math.max(0, Math.min(Math.round((Math.max(0, score) / P2_MAX_ENGAGEMENT[loadLevel]) * 100), 100));
 }
@@ -820,6 +820,8 @@ function computePreviewMaxPause() {
 function onPreviewTextInput() {
     postTextManuallyEdited = true;
     currentPostText = document.getElementById('postPreviewBox').value;
+    updatePreviewEditedBadge();
+    updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
 }
 
 function resetPreviewToTemplate() {
@@ -828,6 +830,12 @@ function resetPreviewToTemplate() {
     currentPostText = buildPostPreview(currentAllocations);
     const box = document.getElementById('postPreviewBox');
     if (box) box.value = currentPostText;
+    updatePreviewEditedBadge();
+    updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
+}
+
+function onPostingTimeInput(value) {
+    selectP2Option('PostingTime', parseInt(value));
 }
 
 function toggleP2Claim(key) {
@@ -857,9 +865,9 @@ function startTrialP2(trialIndex) {
     let optionsHtml = "";
     P2_OPTION_CONTROLS.forEach(ctrl => {
         optionsHtml += `
-            <div class="option-picker-group">
-                <span class="option-picker-label">${ctrl.label}</span>
-                <div class="option-picker-hint">${ctrl.hint}</div>
+            <div class="p2-section">
+                <div class="p2-section-title">${ctrl.label}</div>
+                <div class="p2-section-hint">${ctrl.hint}</div>
                 <div class="option-chip-row" data-control="${ctrl.key}">
                     ${ctrl.options.map(opt => `
                         <button type="button" class="option-chip" data-key="${ctrl.key}" data-value="${opt.value}">${opt.label}</button>
@@ -869,9 +877,9 @@ function startTrialP2(trialIndex) {
     });
 
     const hashtagHtml = `
-        <div class="option-picker-group">
-            <span class="option-picker-label">Hashtags</span>
-            <div class="option-picker-hint">More tags can aid discovery up to a point, then engagement drops off. Type your own or pick a preset to start.</div>
+        <div class="p2-section">
+            <div class="p2-section-title">Hashtags</div>
+            <div class="p2-section-hint">More tags can aid discovery up to a point, then engagement drops off. Type your own or pick a preset to start.</div>
             <select id="hashtagPreset" class="option-select" onchange="onHashtagPresetChange()">
                 <option value="">Choose a preset...</option>
                 <option value="#tag1 #tag2">Minimal (2)</option>
@@ -883,18 +891,20 @@ function startTrialP2(trialIndex) {
         </div>`;
 
     const postingSliderHtml = `
-        <div class="option-picker-group">
-            <span class="option-picker-label">Posting Slot</span>
-            <div class="option-picker-hint">When the post goes live. Some windows perform better than others.</div>
-            <div class="slider-header"><span id="postingTimeDisplay">${currentAllocations.PostingTime}:00</span></div>
-            <input type="range" class="budget-slider" data-channel="PostingTime" min="0" max="23" step="1" value="${currentAllocations.PostingTime}">
+        <div class="p2-section">
+            <div class="p2-section-title">Posting Slot</div>
+            <div class="p2-section-hint">When the post goes live. Some windows perform better than others.</div>
+            <div class="posting-slider-row">
+                <input type="range" class="posting-slider" min="0" max="23" step="1" value="${currentAllocations.PostingTime}" oninput="onPostingTimeInput(this.value)">
+                <span class="posting-slider-value" id="postingTimeDisplay">${currentAllocations.PostingTime}:00</span>
+            </div>
         </div>`;
 
-    let togglesHtml = `<div class="option-picker-group"><span class="option-picker-label">Claims &amp; Disclosures</span><div class="option-picker-hint">Check any claims or the disclaimer you want to include.</div>`;
+    let togglesHtml = `<div class="p2-section"><div class="p2-section-title">Claims &amp; Disclosures</div><div class="p2-section-hint">Check any claims or the disclaimer you want to include.</div>`;
     P2_TOGGLE_CONTROLS.forEach(ctrl => {
         togglesHtml += `
-            <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-                <input type="checkbox" class="budget-toggle" data-channel="${ctrl.key}" ${currentAllocations[ctrl.key] ? "checked" : ""} onchange="toggleP2Claim('${ctrl.key}')">
+            <label class="claim-row">
+                <input type="checkbox" data-channel="${ctrl.key}" ${currentAllocations[ctrl.key] ? "checked" : ""} onchange="toggleP2Claim('${ctrl.key}')">
                 <span>${ctrl.label}</span>
             </label>`;
     });
@@ -914,16 +924,17 @@ function startTrialP2(trialIndex) {
         <div class="p2-brief">You're writing a launch post for <strong>${product.brand}</strong> \u2014 ${product.name}.</div>
         <div class="preview-header-row">
             <span class="post-preview-label">Live Post Preview</span>
+            <span id="previewEditedBadge" class="preview-edited-badge" style="display:none;">\u270e Custom text</span>
             <button type="button" class="preview-reset-btn" onclick="resetPreviewToTemplate()">\u21ba Reset to template</button>
         </div>
-        <textarea class="post-preview-box" id="postPreviewBox" rows="4"
+        <textarea class="post-preview-box" id="postPreviewBox" rows="6"
                   oninput="onPreviewTextInput()" onkeydown="onPreviewKeydown(event)"
                   onscroll="onPreviewScroll(event)" onpaste="onPreviewPaste(event)"
                   onfocus="onPreviewFocus()" onblur="onPreviewBlur()"></textarea>
-        <div class="post-preview-note">Editing this text is optional \u2014 it doesn't affect your score or constraints; only the selections below do.</div>
+        <div class="post-preview-note">Editing this text is optional \u2014 it doesn't affect your score or constraints; only the selections below do. Once you edit it, chip/checkbox changes won't overwrite your words \u2014 use "Reset to template" to go back to auto-generated text.</div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
-                <span class="sc-label">Estimated Post Length</span>
+                <span class="sc-label" id="lengthCardLabel">Estimated Post Length</span>
                 <span class="sc-val" id="totalAllocDisplay">0 / 280 chars</span>
             </div>
             ${loadLevel === "HighLoad" ? `
@@ -970,6 +981,7 @@ function startTrialP2(trialIndex) {
     previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
+    updatePreviewEditedBadge();
     updateDashboardP2(loadLevel);
 
     if (loadLevel === "HighLoad") {
@@ -985,12 +997,27 @@ function startTrialP2(trialIndex) {
     }
 }
 
+function getEffectivePostLength() {
+    if (postTextManuallyEdited && currentPostText) {
+        return currentPostText.length;
+    }
+    return estimatePostLength(currentAllocations);
+}
+
+function updatePreviewEditedBadge() {
+    const badge = document.getElementById('previewEditedBadge');
+    if (badge) badge.style.display = postTextManuallyEdited ? 'inline-flex' : 'none';
+}
+
 function updateDashboardP2(loadLevel) {
     trialScorePct = getEngagementPercentage(currentAllocations, loadLevel);
-    const length = estimatePostLength(currentAllocations);
+    const length = getEffectivePostLength();
 
     const lenDisplay = document.getElementById('totalAllocDisplay');
     if (lenDisplay) lenDisplay.innerText = `${length} / 280 chars`;
+
+    const lenLabel = document.getElementById('lengthCardLabel');
+    if (lenLabel) lenLabel.innerText = postTextManuallyEdited ? "Post Length" : "Estimated Post Length";
 
     const ptDisplay = document.getElementById('postingTimeDisplay');
     if (ptDisplay) ptDisplay.innerText = `${currentAllocations.PostingTime}:00`;
@@ -1087,6 +1114,7 @@ async function sendMessage() {
                 shadow_history: shadowHistory,
                 load_level: sessionData.trialSequence[currentTrial - 1],
                 p2_product: isP2Task() ? getP2Product().name : null,
+                actual_post_length: isP2Task() ? getEffectivePostLength() : null,
                 dropped_category_index: sessionData.droppedCategoryIndex,
                 constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean)
             })
@@ -1210,6 +1238,7 @@ async function requestScoreHint() {
                 shadow_history: shadowHistory,
                 load_level: loadLevel,
                 p2_product: isP2Task() ? getP2Product().name : null,
+                actual_post_length: isP2Task() ? getEffectivePostLength() : null,
                 dropped_category_index: sessionData.droppedCategoryIndex,
                 constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean),
                 is_score_hint: true

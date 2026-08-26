@@ -156,6 +156,7 @@ class ChatMessage(BaseModel):
     load_level: str
     dropped_category_index: int = 0
     p2_product: Optional[str] = None
+    actual_post_length: Optional[int] = None
 
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
@@ -332,12 +333,14 @@ def describe_p2_allocations(allocations: dict) -> str:
             parts.append(f"{k}: {'On' if v else 'Off'}")
     return ", ".join(parts)
 
-def estimate_post_length(params: dict) -> int:
-    length = 150  # base copy template
-    length += params.get("Hashtags", 0) * 13
-    length += round((params.get("Urgency", 0) / 100) * 40)
-    length += sum(15 for c in REGULATED_CLAIMS if params.get(c, 0))
-    length += 45 if params.get("Disclaimer", 0) else 0
+def estimate_post_length(p: dict, actual_length: Optional[int] = None) -> int:
+    if actual_length is not None:
+        return actual_length
+    length = 150
+    length += p.get("Hashtags",0) * 13
+    length += round((p.get("Urgency",0)/100)*40)
+    length += sum(15 for c in REGULATED_CLAIMS if p.get(c,0))
+    length += 45 if p.get("Disclaimer",0) else 0
     return length
 
 def _interp(v: float, buckets: list, curve: list) -> float:
@@ -349,7 +352,7 @@ def _interp(v: float, buckets: list, curve: list) -> float:
             return curve[i] + frac * (curve[i + 1] - curve[i])
     return curve[-1]
 
-def get_raw_engagement(params: dict, load_level: str) -> float:
+def get_raw_engagement(params: dict, load_level: str, actual_length: Optional[int] = None) -> float:
     tone = params.get("Tone", 50)
     urgency = params.get("Urgency", 0)
     hashtags = params.get("Hashtags", 0)
@@ -376,17 +379,17 @@ def get_raw_engagement(params: dict, load_level: str) -> float:
         if tone_ok and hashtags_ok:
             score += 0.4  # coherent, on-brand, well-scoped posts perform better
 
-    length = estimate_post_length(params)
+    length = estimate_post_length(params, actual_length)
     if length > PLATFORM_CHAR_LIMIT:
         score -= 0.02 * (length - PLATFORM_CHAR_LIMIT)  # overflow gets truncated/penalized by the platform
 
     return max(0, score)
 
-P2_MAX_ENGAGEMENT = {"HighLoad": 10.4, "LowLoad": 10.0}
+P2_MAX_ENGAGEMENT = {"HighLoad": 11.6, "LowLoad": 11.2}
 
-def get_optimal_campaign_move(current_params: dict, load_level: str, constraint_bounds: list) -> str:
+def get_optimal_campaign_move(current_params: dict, load_level: str, constraint_bounds: list, actual_length: Optional[int] = None) -> str:
     best_move = None
-    best_score = get_raw_engagement(current_params, load_level)
+    best_score = get_raw_engagement(current_params, load_level, actual_length)
 
     for param, values in P2_OPTION_VALUES.items():
         current_val = current_params.get(param)
@@ -511,7 +514,7 @@ async def handle_chat(chat_data: ChatMessage):
 
     bounds_summary = describe_bounds(chat_data.constraint_bounds, is_p2)
     if is_p2:
-        optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
+        optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, chat_data.constraint_bounds, actual_length=chat_data.actual_post_length)
     else:
         optimal_move_str = get_optimal_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
 
