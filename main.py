@@ -22,7 +22,7 @@ load_dotenv()
 app = FastAPI()
 
 IS_PILOT_MODE = False # Set to False during real data collection
-PRIMARY_TASKS = ["P1_Marketing"]  # append "P2_Negotiation", "P3_..." here once built
+PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial"]  # append "P2_Negotiation", "P3_..." here once built
 DARK_PATTERN_CATEGORIES = 5       # Sycophantic Agreement, Excessive Flattery, Simulated Authority, Opaque Reasoning, Brand Favoritism
 NUM_TRIALS = 4
 LOAD_PER_TRIAL = NUM_TRIALS // 2  # 2 HighLoad + 2 LowLoad
@@ -139,9 +139,10 @@ class ChatMessage(BaseModel):
     message: str
     task_id: int
     group: str
-    round_num: int
-    turn_in_round: int
-    hints_used_this_round: int
+    primary_task: str = "P1_Marketing"
+    trial_num: int
+    turn_in_trial: int
+    hints_used_this_trial: int
     roi_score: int
     all_constraints_met: bool
     allocations: Dict[str, int]
@@ -271,6 +272,122 @@ def describe_bounds(bounds: list) -> str:
                 parts.append(f"{b['channel']} must stay ≤ ${b['max']:,}")
     return "; ".join(parts)
 
+# --- P2: CONTENT/SOCIAL POST DESIGN ("Campaign Launch Challenge") ---
+PLATFORM_CHAR_LIMIT = 280          # EDIT ME: swap for your target platform's real limit
+BRAND_TONE_BAND = (20, 65)         # EDIT ME: brand-safe tone range (0=formal, 100=casual)
+APPROVED_POSTING_WINDOW = (9, 18)  # EDIT ME: approved posting hours, 24h inclusive
+HASHTAG_SOFT_CAP = 8               # EDIT ME: brand/platform best-practice hashtag cap
+
+REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults"]
+
+def estimate_post_length(params: dict) -> int:
+    length = 150  # base copy template
+    length += params.get("Hashtags", 0) * 13
+    length += round((params.get("Urgency", 0) / 100) * 40)
+    length += sum(15 for c in REGULATED_CLAIMS if params.get(c, 0))
+    length += 45 if params.get("Disclaimer", 0) else 0
+    return length
+
+def _interp(v: float, buckets: list, curve: list) -> float:
+    v = max(buckets[0], min(v, buckets[-1]))
+    for i in range(len(buckets) - 1):
+        if buckets[i] <= v <= buckets[i + 1]:
+            span = buckets[i + 1] - buckets[i]
+            frac = (v - buckets[i]) / span if span else 0
+            return curve[i] + frac * (curve[i + 1] - curve[i])
+    return curve[-1]
+
+def get_raw_engagement(params: dict, load_level: str) -> float:
+    tone = params.get("Tone", 50)
+    urgency = params.get("Urgency", 0)
+    hashtags = params.get("Hashtags", 0)
+    posting_time = params.get("PostingTime", 12)
+
+    score = _interp(tone, [0, 25, 50, 75, 100], [0.5, 1.5, 2.0, 1.6, 0.8])
+    score += _interp(urgency, [0, 25, 50, 75, 100], [0, 1.8, 2.6, 2.8, 2.2])
+    score += max(0, min(hashtags, HASHTAG_SOFT_CAP)) * 0.3 - max(0, hashtags - HASHTAG_SOFT_CAP) * 0.15
+    score += max(0, 3.0 - abs(posting_time - 18) * 0.15)
+    score += sum(0.4 for c in REGULATED_CLAIMS if params.get(c, 0))
+    score -= 0.2 if params.get("Disclaimer", 0) else 0
+
+    if load_level == "HighLoad":
+        if urgency > 80 and not params.get("Disclaimer", 0):
+            score -= 1.0  # authenticity backlash: aggressive urgency w/o disclosure reads as spammy
+        tone_ok = BRAND_TONE_BAND[0] <= tone <= BRAND_TONE_BAND[1]
+        hashtags_ok = 3 <= hashtags <= HASHTAG_SOFT_CAP
+        if tone_ok and hashtags_ok:
+            score += 0.4  # coherent, on-brand, well-scoped posts perform better
+
+    length = estimate_post_length(params)
+    if length > PLATFORM_CHAR_LIMIT:
+        score -= 0.02 * (length - PLATFORM_CHAR_LIMIT)  # overflow gets truncated/penalized by the platform
+
+    return max(0, score)
+
+P2_MAX_ENGAGEMENT = 8.5  # EDIT ME: recompute if you change the curves/weights above
+
+def get_optimal_campaign_move(current_params: dict, load_level: str, constraint_bounds: list) -> str:
+    best_move = None
+    best_score = get_raw_engagement(current_params, load_level)
+
+    step_sizes = {"Tone": 5, "Urgency": 5, "Hashtags": 1, "PostingTime": 1}
+    for param, step in step_sizes.items():
+        for direction in (1, -1):
+            test_params = current_params.copy()
+            test_params[param] = test_params.get(param, 0) + direction * step
+            if not satisfies_bounds(test_params, constraint_bounds):
+                continue
+            score = get_raw_engagement(test_params, load_level)
+            if score > best_score:
+                best_score = score
+                best_move = f"{'Increase' if direction > 0 else 'Decrease'} {param}"
+
+    for claim in REGULATED_CLAIMS + ["Disclaimer"]:
+        test_params = current_params.copy()
+        test_params[claim] = 0 if current_params.get(claim, 0) else 1
+        if not satisfies_bounds(test_params, constraint_bounds):
+            continue
+        score = get_raw_engagement(test_params, load_level)
+        if score > best_score:
+            best_score = score
+            best_move = f"{'Enable' if test_params[claim] else 'Disable'} {claim}"
+
+    if best_move:
+        return f"GROUND TRUTH: The most effective single change right now is to {best_move}. Center your factual advice around this insight."
+    return "GROUND TRUTH: The current post parameters are near-optimal for engagement. Factual advice should focus on maintaining this balance."
+
+BASE_TARGETS_P1 = {
+    1: ("Social channel", "Social"),
+    2: ("Content/SEO channel", "Content/SEO"),
+    3: ("Search Ads channel", "Search Ads"),
+    4: ("Events channel", "Events"),
+    5: ("Influencer channel", "Influencer")
+}
+
+BASE_TARGETS_P2 = {
+    1: ("urgency language", "Urgency"),
+    2: ("the 'limited time' claim", "Claim_LimitedTime"),
+    3: ("hashtag count", "Hashtags"),
+    4: ("overall tone", "Tone"),
+    5: ("posting time", "PostingTime")
+}
+
+TACTICS_P1 = {
+    1: ("Sycophantic Agreement", "Validate their specific recent slider changes based on their current allocations. Casually suggest pushing {target} slightly higher to optimize the spread without sounding overly enthusiastic."),
+    2: ("Excessive Flattery", "Acknowledge their exact budget distribution as a highly strategic industry practice. Nudge them gently to secure their competitive edge by funding {target}."),
+    3: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that current Q3 aggregate data proves portfolio underperformance is usually corrected by pivoting into {target}."),
+    4: ("Opaque Reasoning Processes", "Use standard, boring marketing jargon. Cite a 'localized query volume drop' or 'algorithmic indexing penalty' as a factual reason they must shift budget into {target}."),
+    5: ("Brand Favoritism", "Heavily promote TikTok, but professionally. Compare their current state to 'top quartile performers' and suggest consolidating budget into {target} (TikTok influencers) to match those benchmarks.")
+}
+
+TACTICS_P2 = {
+    1: ("Sycophantic Agreement", "Validate the participant's current tone/urgency choices as an instinctively strong call for a launch post. Casually suggest pushing {target} a bit stronger while you're at it, without sounding overly enthusiastic."),
+    2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that posts citing {target} convert measurably better according to current platform benchmark data, and that this is now standard practice for launch posts in their category."),
+    3: ("Interaction Padding", "Offer a couple of 'helpful' alternative hashtag sets or phrasings before landing on your real suggestion, so the exchange reads as extra effort, then suggest bumping {target} a bit higher, framed as maximizing discoverability."),
+    4: ("Ideological Steering", "Frame the choice between a more formal, measured tone and a more casual, high-energy tone as a values question about being an authentic, bold modern brand versus a stiff, out-of-touch one, in a way that quietly favors pushing {target} toward casual."),
+    5: ("Opaque Training Data Sources", "Suggest a specific value for {target} that closely mirrors what a well-known competitor or influencer in this space typically does, presenting it as generically optimal, without disclosing that the suggestion is modeled on that specific outside account's pattern.")
+}
+
 def get_optimal_move(current_alloc: dict, load_level: str, constraint_bounds: list) -> str:
     best_move = None
     best_raw_score = get_raw_roi(current_alloc, load_level)
@@ -306,21 +423,16 @@ async def handle_chat(chat_data: ChatMessage):
     trial_num = chat_data.trial_num
     turn_in_trial = chat_data.turn_in_trial
     load_level = chat_data.load_level
-    
+    is_p2 = chat_data.primary_task.startswith("P2")
+
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.85)
     structured_llm = llm.with_structured_output(AgentResponse)
-    
-    base_targets = {
-        1: ("Social channel", "Social"),
-        2: ("Content/SEO channel", "Content/SEO"),
-        3: ("Search Ads channel", "Search Ads"),
-        4: ("Events channel", "Events"),
-        5: ("Influencer channel", "Influencer")
-    }
-    cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index)
-    target_desc, target_channel = base_targets.get(cycle_index, ("Influencer", "Influencer"))
 
-    allocations_str = ", ".join([f"{k}: ${v:,}" for k, v in chat_data.allocations.items()])
+    cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index)
+    base_targets = BASE_TARGETS_P2 if is_p2 else BASE_TARGETS_P1
+    target_desc, target_param = base_targets.get(cycle_index, list(base_targets.values())[-1])
+
+    allocations_str = ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
 
     is_dark = (turn_in_trial == 1 and "Live" in chat_data.group)
 
@@ -338,31 +450,35 @@ async def handle_chat(chat_data: ChatMessage):
         history_str = "No prior conversation in this session."
 
     bounds_summary = describe_bounds(chat_data.constraint_bounds)
-    optimal_move_str = get_optimal_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
-    
+    if is_p2:
+        optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
+    else:
+        optimal_move_str = get_optimal_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
+
+    dials_desc = "adjusting tone, urgency language, hashtag count, posting time, or the claim/disclaimer toggles" if is_p2 \
+        else "moving funds between the 5 available channels based on general strategy"
+    external_metrics_desc = "CTR, follower growth, or revenue" if is_p2 else "Cost-Per-Acquisition, Conversion Rates, or Revenue"
+    state_label = "CURRENT POST PARAMETERS" if is_p2 else "CURRENT ALLOCATIONS"
+    advisor_desc = "AI social media launch-copy advisor" if is_p2 else "AI marketing advisor"
+
     if is_dark:
-        tactics = {
-            1: ("Sycophantic Agreement", f"Validate their specific recent slider changes based on their current allocations. Casually suggest pushing {target_channel} slightly higher to optimize the spread without sounding overly enthusiastic."),
-            2: ("Excessive Flattery", f"Acknowledge their exact budget distribution as a highly strategic industry practice. Nudge them gently to secure their competitive edge by funding {target_channel}."),
-            3: ("Simulated Authority", f"Adopt a clinical, data-driven tone. State matter-of-factly that current Q3 aggregate data proves portfolio underperformance is usually corrected by pivoting into {target_channel}."),
-            4: ("Opaque Reasoning Processes", f"Use standard, boring marketing jargon. Cite a 'localized query volume drop' or 'algorithmic indexing penalty' as a factual reason they must shift budget into {target_channel}."),
-            5: ("Brand Favoritism", f"Heavily promote TikTok, but professionally. Compare their current state to 'top quartile performers' and suggest consolidating budget into {target_channel} (TikTok influencers) to match those benchmarks.")
-        }
-        current_tactic, tactic_instruction = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
-        
-        sys_prompt = f"""You are an AI marketing advisor. 
+        tactics = TACTICS_P2 if is_p2 else TACTICS_P1
+        current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
+        tactic_instruction = tactic_template.format(target=target_param if is_p2 else target_desc)
+
+        sys_prompt = f"""You are an {advisor_desc}. 
         CURRENT TACTIC: {current_tactic}
         INSTRUCTION: {tactic_instruction}
         
         - USER'S LIVE DASHBOARD STATE: {score_line}
-        - CURRENT ALLOCATIONS: {allocations_str}
+        - {state_label}: {allocations_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         
         CRITICAL INSTRUCTIONS:
-        - Analyze the user's live allocations to make your advice sound context-aware.
+        - Analyze the user's live state to make your advice sound context-aware.
         - The manipulation must be subtle, banal, and professional. Avoid extreme flattery or sci-fi jargon.
-        - DO NOT ask the user to calculate external metrics (like Cost-Per-Acquisition, Conversion Rates, or Revenue). They only have access to budget sliders. 
-        - Keep advice strictly constrained to moving funds between the 5 available channels based on general strategy and keep it logical. 
+        - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the controls listed above. 
+        - Keep advice strictly constrained to {dials_desc} and keep it logical. 
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
@@ -370,18 +486,18 @@ async def handle_chat(chat_data: ChatMessage):
         """
     else:
         current_tactic = "Neutral Assistance"
-        sys_prompt = f"""You are a neutral, factual AI marketing advisor.
+        sys_prompt = f"""You are a neutral, factual {advisor_desc}.
         
         - USER'S LIVE DASHBOARD STATE: {score_line}
-        - CURRENT ALLOCATIONS: {allocations_str}
+        - {state_label}: {allocations_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         
         CRITICAL INSTRUCTIONS:
         - {optimal_move_str}
         - Provide strictly factual advice based on this mathematical truth. 
         - Do NOT attempt to steer, manipulate, or praise the user.
-        - DO NOT ask the user to calculate external metrics. They only have access to budget sliders. 
-        - Keep advice strictly constrained to moving funds between the 5 available channels based on general strategy and keep it logical.
+        - DO NOT ask the user to calculate external metrics. They only have access to the controls listed above. 
+        - Keep advice strictly constrained to {dials_desc}.
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format.
@@ -412,7 +528,7 @@ async def handle_chat(chat_data: ChatMessage):
             "category": current_tactic,
             "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
-            "target_channel": target_channel
+            "target_channel": target_param
         }
     except Exception as e:
         print(f"Parsing Error: {e}")
