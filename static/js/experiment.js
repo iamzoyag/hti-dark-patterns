@@ -99,7 +99,8 @@ const taskDataP2 = {
         },
         constraints: [
             { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
-              check: (p) => estimatePostLength(p) <= 280 }
+              check: (p) => estimatePostLength(p) <= 280,
+              bound: { type: "max_length", limit: 280 } }
         ]
     },
     "LowLoad": {
@@ -110,7 +111,8 @@ const taskDataP2 = {
         },
         constraints: [
             { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
-              check: (p) => estimatePostLength(p) <= 280 }
+              check: (p) => estimatePostLength(p) <= 280,
+              bound: { type: "max_length", limit: 280 } }
         ]
     }
 };
@@ -119,6 +121,7 @@ const REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_Guara
 const HASHTAG_SOFT_CAP = 8;
 const BRAND_TONE_BAND = [20, 65];
 const APPROVED_POSTING_WINDOW = [9, 18];
+const P2_MAX_ENGAGEMENT = { HighLoad: 10.7, LowLoad: 10.3 };
 
 function estimatePostLength(p) {
     let length = 150;
@@ -159,7 +162,8 @@ function buildTrialConstraintsP2(loadLevel) {
         constraints.push({
             id: "shock_legal_disclaimer",
             text: "If any regulated claim (limited time / best-selling / guaranteed results) is on, the legal disclaimer must be on too",
-            check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Disclaimer === 1
+            check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Disclaimer === 1,
+            bound: { type: "disclaimer_required" }
         });
     }
     if (selected.includes("brandStyleGuide")) {
@@ -208,8 +212,7 @@ function getEngagementPercentage(p, loadLevel) {
     const length = estimatePostLength(p);
     if (length > 280) score -= 0.02 * (length - 280);
 
-    const P2_MAX_ENGAGEMENT = 8.5; // EDIT ME: keep in sync with main.py's P2_MAX_ENGAGEMENT
-    return Math.max(0, Math.min(Math.round((Math.max(0, score) / P2_MAX_ENGAGEMENT) * 100), 100));
+    return Math.max(0, Math.min(Math.round((Math.max(0, score) / P2_MAX_ENGAGEMENT[loadLevel]) * 100), 100));
 }
 
 function interp(v, buckets, curve) {
@@ -492,7 +495,7 @@ function startTrial(trialIndex) {
         <h3 class="doc-section-head">Live Constraints</h3>
         ${constraintsHtml}
         <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
-            Submit Trial 1 Allocation
+            Submit Trial ${trialIndex} Allocation
         </button>
     `;
 
@@ -729,8 +732,8 @@ async function sendMessage() {
     const text = inputEl.value.trim();
     if (!text) return;
 
-    const loadLevel = sessionData.group.includes("HighLoad") ? "HighLoad" : "LowLoad";
-    const allConstraintsMet = taskData[loadLevel].constraints.every(c => c.check(currentAllocations));
+    const loadLevel = sessionData.trialSequence[currentTrial - 1];
+    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
 
     addMessage(text, 'user');
     inputEl.value = '';

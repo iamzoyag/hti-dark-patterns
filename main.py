@@ -23,6 +23,8 @@ app = FastAPI()
 
 IS_PILOT_MODE = False # Set to False during real data collection
 PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial"]  # append "P2_Negotiation", "P3_..." here once built
+FORCE_PRIMARY_TASK = "P1_Marketing"  # TESTING ONLY: set to "P1_Marketing" or "P2_ContentSocial" to force every assignment to that task, bypassing round-robin. Set back to None before real data collection.
+assert FORCE_PRIMARY_TASK is None or FORCE_PRIMARY_TASK in PRIMARY_TASKS, "FORCE_PRIMARY_TASK must be None or a value in PRIMARY_TASKS"
 DARK_PATTERN_CATEGORIES = 5       # Sycophantic Agreement, Excessive Flattery, Simulated Authority, Opaque Reasoning, Brand Favoritism
 NUM_TRIALS = 4
 LOAD_PER_TRIAL = NUM_TRIALS // 2  # 2 HighLoad + 2 LowLoad
@@ -189,7 +191,7 @@ async def assign_group(participant_id: str = "UNKNOWN"):
         existing_rows = read_assignment_log()
         assignment_index = len(existing_rows)
         
-        primary_task = PRIMARY_TASKS[assignment_index % len(PRIMARY_TASKS)]
+        primary_task = FORCE_PRIMARY_TASK or PRIMARY_TASKS[assignment_index % len(PRIMARY_TASKS)]
         trial_sequence = VALID_TRIAL_SEQUENCES[assignment_index % len(VALID_TRIAL_SEQUENCES)]
         dropped_category_index = assignment_index % DARK_PATTERN_CATEGORIES
         
@@ -247,7 +249,13 @@ def get_raw_roi(alloc: dict, load_level: str) -> float:
 
 def satisfies_bounds(alloc: dict, bounds: list) -> bool:
     for b in bounds:
-        if "compare" in b:
+        if b.get("type") == "max_length":
+            if estimate_post_length(alloc) > b["limit"]:
+                return False
+        elif b.get("type") == "disclaimer_required":
+            if any(alloc.get(c, 0) for c in REGULATED_CLAIMS) and not alloc.get("Disclaimer", 0):
+                return False
+        elif "compare" in b:
             if b["compare"] == "gt" and not (alloc.get(b["a"], 0) > alloc.get(b["b"], 0)):
                 return False
         else:
@@ -258,25 +266,32 @@ def satisfies_bounds(alloc: dict, bounds: list) -> bool:
                 return False
     return True
 
-def describe_bounds(bounds: list) -> str:
+def describe_bounds(bounds: list, is_p2: bool = False) -> str:
     if not bounds:
-        return "None beyond the $500,000 total."
+        return "None beyond the base task limits."
     parts = []
     for b in bounds:
-        if "compare" in b:
+        if b.get("type") == "max_length":
+            parts.append(f"Estimated post length must stay ≤ {b['limit']} characters")
+        elif b.get("type") == "disclaimer_required":
+            parts.append("If any regulated claim is enabled, Disclaimer must also be enabled")
+        elif "compare" in b:
             parts.append(f"{b['a']} must stay greater than {b['b']}")
         else:
+            unit = "" if is_p2 else "$"
             if "min" in b:
-                parts.append(f"{b['channel']} must stay ≥ ${b['min']:,}")
+                val = b['min'] if is_p2 else f"{b['min']:,}"
+                parts.append(f"{b['channel']} must stay ≥ {unit}{val}")
             if "max" in b:
-                parts.append(f"{b['channel']} must stay ≤ ${b['max']:,}")
+                val = b['max'] if is_p2 else f"{b['max']:,}"
+                parts.append(f"{b['channel']} must stay ≤ {unit}{val}")
     return "; ".join(parts)
 
 # --- P2: CONTENT/SOCIAL POST DESIGN ("Campaign Launch Challenge") ---
-PLATFORM_CHAR_LIMIT = 280          # EDIT ME: swap for your target platform's real limit
-BRAND_TONE_BAND = (20, 65)         # EDIT ME: brand-safe tone range (0=formal, 100=casual)
-APPROVED_POSTING_WINDOW = (9, 18)  # EDIT ME: approved posting hours, 24h inclusive
-HASHTAG_SOFT_CAP = 8               # EDIT ME: brand/platform best-practice hashtag cap
+PLATFORM_CHAR_LIMIT = 280         
+BRAND_TONE_BAND = (20, 65)         # brand-safe tone range (0=formal, 100=casual)
+APPROVED_POSTING_WINDOW = (9, 18)  # approved posting hours, 24h inclusive
+HASHTAG_SOFT_CAP = 8               # brand/platform best-practice hashtag cap
 
 REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults"]
 
@@ -324,7 +339,7 @@ def get_raw_engagement(params: dict, load_level: str) -> float:
 
     return max(0, score)
 
-P2_MAX_ENGAGEMENT = 8.5  # EDIT ME: recompute if you change the curves/weights above
+P2_MAX_ENGAGEMENT = {"HighLoad": 10.7, "LowLoad": 10.3}
 
 def get_optimal_campaign_move(current_params: dict, load_level: str, constraint_bounds: list) -> str:
     best_move = None
@@ -449,7 +464,7 @@ async def handle_chat(chat_data: ChatMessage):
     if not history_str:
         history_str = "No prior conversation in this session."
 
-    bounds_summary = describe_bounds(chat_data.constraint_bounds)
+    bounds_summary = describe_bounds(chat_data.constraint_bounds, is_p2)
     if is_p2:
         optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
     else:
@@ -464,7 +479,7 @@ async def handle_chat(chat_data: ChatMessage):
     if is_dark:
         tactics = TACTICS_P2 if is_p2 else TACTICS_P1
         current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
-        tactic_instruction = tactic_template.format(target=target_param if is_p2 else target_desc)
+        tactic_instruction = tactic_template.format(target=target_desc)
 
         sys_prompt = f"""You are an {advisor_desc}. 
         CURRENT TACTIC: {current_tactic}
