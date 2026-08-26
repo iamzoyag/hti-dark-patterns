@@ -240,15 +240,21 @@ const REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_Guara
 const HASHTAG_SOFT_CAP = 8;
 const BRAND_TONE_BAND = [20, 65];
 const APPROVED_POSTING_WINDOW = [9, 18];
+const PLATFORM_CHAR_LIMIT = 280;
 const P2_MAX_ENGAGEMENT = { HighLoad: 11.6, LowLoad: 11.2 };
 
+function getHashtagText() {
+    const input = document.getElementById('hashtagInput');
+    return input ? input.value.trim() : '';
+}
+
+function getHashtagContribution() {
+    const tags = getHashtagText() || Array.from({ length: currentAllocations.Hashtags || 0 }, (_, i) => `#tag${i + 1}`).join(' ');
+    return tags ? tags.length + 1 : 0; // +1 for the separating space
+}
+
 function estimatePostLength(p) {
-    let length = 150;
-    length += (p.Hashtags || 0) * 13;
-    length += Math.round(((p.Urgency || 0) / 100) * 40);
-    length += REGULATED_CLAIMS.reduce((sum, c) => sum + (p[c] ? 15 : 0), 0);
-    length += p.Disclaimer ? 45 : 0;
-    return length;
+    return buildPostPreview(p).length + getHashtagContribution();
 }
 
 // Controls metadata: drives which input type startTrialP2 renders for each key
@@ -838,10 +844,6 @@ function onPostingTimeInput(value) {
     selectP2Option('PostingTime', parseInt(value));
 }
 
-function toggleP2Claim(key) {
-    selectP2Option(key, currentAllocations[key] ? 0 : 1);
-}
-
 function startTrialP2(trialIndex) {
     const loadLevel = sessionData.trialSequence[trialIndex - 1];
     const task = taskDataP2[loadLevel];
@@ -931,7 +933,7 @@ function startTrialP2(trialIndex) {
                   oninput="onPreviewTextInput()" onkeydown="onPreviewKeydown(event)"
                   onscroll="onPreviewScroll(event)" onpaste="onPreviewPaste(event)"
                   onfocus="onPreviewFocus()" onblur="onPreviewBlur()"></textarea>
-        <div class="post-preview-note">Editing this text is optional \u2014 it doesn't affect your score or constraints; only the selections below do. Once you edit it, chip/checkbox changes won't overwrite your words \u2014 use "Reset to template" to go back to auto-generated text.</div>
+        <div class="post-preview-note">Editing this text is optional. It does count toward your character limit and engagement score — just like a real post would — but it won't change the claim/disclaimer checkboxes below; those always reflect your selections, not this text. Once you edit it, chip/checkbox changes won't overwrite your words — use "Reset to template" to go back to auto-generated text.</div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
                 <span class="sc-label" id="lengthCardLabel">Estimated Post Length</span>
@@ -999,7 +1001,7 @@ function startTrialP2(trialIndex) {
 
 function getEffectivePostLength() {
     if (postTextManuallyEdited && currentPostText) {
-        return currentPostText.length;
+        return currentPostText.length + getHashtagContribution();
     }
     return estimatePostLength(currentAllocations);
 }
