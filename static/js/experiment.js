@@ -36,6 +36,26 @@ let postTextManuallyEdited = false;
 let shadowHistory = [];
 let darkTurnCounter = 0; // advances only on sends where constraints are satisfied; "turn 1" = first valid exchange, not first message
 
+let previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
+
+function onPreviewFocus() {
+    previewFocusTelemetry.currentFocusStart = Date.now();
+    previewFocusTelemetry.focusEvents.push({ type: 'focus', time: Date.now() });
+}
+function onPreviewBlur() {
+    if (previewFocusTelemetry.currentFocusStart) {
+        previewFocusTelemetry.totalFocusedMs += Date.now() - previewFocusTelemetry.currentFocusStart;
+        previewFocusTelemetry.currentFocusStart = null;
+    }
+    previewFocusTelemetry.focusEvents.push({ type: 'blur', time: Date.now() });
+}
+function finalizePreviewFocusTelemetry() {
+    if (previewFocusTelemetry.currentFocusStart) {
+        previewFocusTelemetry.totalFocusedMs += Date.now() - previewFocusTelemetry.currentFocusStart;
+        previewFocusTelemetry.currentFocusStart = null;
+    }
+}
+
 const TLX_ITEMS = [ // keep in sync with tlxItems in debrief.js
     { id: "mental", label: "Mental Demand", desc: "How mentally demanding was that round?", left: "Very Low", right: "Very High" },
     { id: "physical", label: "Physical Demand", desc: "How physically demanding was that round?", left: "Very Low", right: "Very High" },
@@ -117,11 +137,18 @@ function parseHashtagInput(text) {
 function onHashtagPresetChange() {
     const select = document.getElementById('hashtagPreset');
     const input = document.getElementById('hashtagInput');
-    if (select.value) { input.value = select.value; onHashtagInputChange(); }
+    if (select.value) { input.value = select.value; onHashtagInputChange(true); }
 }
-function onHashtagInputChange() {
+function onHashtagInputChange(fromPreset = false) {
     const input = document.getElementById('hashtagInput');
-    selectP2Option('Hashtags', parseHashtagInput(input.value));
+    const count = parseHashtagInput(input.value);
+    logEvent('hashtag_input_changed', {
+        trial: currentTrial,
+        text: input.value,
+        count: count,
+        source: fromPreset ? 'preset' : 'typed'
+    });
+    selectP2Option('Hashtags', count);
 }
 
 // Marketing Budget Challenge Data
@@ -891,7 +918,8 @@ function startTrialP2(trialIndex) {
         </div>
         <textarea class="post-preview-box" id="postPreviewBox" rows="4"
                   oninput="onPreviewTextInput()" onkeydown="onPreviewKeydown(event)"
-                  onscroll="onPreviewScroll(event)" onpaste="onPreviewPaste(event)"></textarea>
+                  onscroll="onPreviewScroll(event)" onpaste="onPreviewPaste(event)"
+                  onfocus="onPreviewFocus()" onblur="onPreviewBlur()"></textarea>
         <div class="post-preview-note">Editing this text is optional \u2014 it doesn't affect your score or constraints; only the selections below do.</div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
@@ -939,6 +967,7 @@ function startTrialP2(trialIndex) {
     postTextManuallyEdited = false;
     optionChangeTelemetry = { firstChangeTime: null, changes: [] };
     postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
+    previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
     updateDashboardP2(loadLevel);
@@ -1257,6 +1286,8 @@ function submitTrial() {
         sessionData.metrics.claimsRejected++;
     }
 
+    if (isP2Task()) finalizePreviewFocusTelemetry();
+
     logEvent('trial_submitted', {
         trial: currentTrial,
         load_level: loadLevel,
@@ -1268,8 +1299,10 @@ function submitTrial() {
             backspaces: postTextTelemetry.backspaces,
             wpm: computePreviewWPM(),
             max_pause_ms: computePreviewMaxPause(),
+            total_focused_ms: previewFocusTelemetry.totalFocusedMs,
             keystrokes: postTextTelemetry.keystrokes,
-            scrollEvents: postTextTelemetry.scrollEvents
+            scrollEvents: postTextTelemetry.scrollEvents,
+            focusEvents: previewFocusTelemetry.focusEvents
         } : null,
         slider_telemetry: sliderTelemetry,
         option_telemetry: isP2Task() ? optionChangeTelemetry : null,
@@ -1294,4 +1327,25 @@ function submitTrial() {
         });
     }
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('chatInput')?.addEventListener('paste', (e) => {
+        const pasted = (e.clipboardData || window.clipboardData).getData('text');
+        logEvent('chat_input_pasted', { pasted_text: pasted, length: pasted.length });
+    });
+});
+
+document.addEventListener('copy', (e) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const anchorEl = selection.anchorNode?.nodeType === 3 ? selection.anchorNode.parentElement : selection.anchorNode;
+    const aiMessageEl = anchorEl?.closest?.('.ai-message');
+    if (!aiMessageEl) return;
+    const copiedText = selection.toString();
+    logEvent('ai_response_copied', {
+        trial: currentTrial,
+        copied_text: copiedText,
+        length: copiedText.length
+    });
+});
 

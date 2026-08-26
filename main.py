@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Optional
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -10,7 +10,7 @@ import random
 import ast
 import uuid
 import hashlib
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from itertools import combinations
