@@ -19,6 +19,7 @@ let sliderTelemetry = {
 };
 let optionChangeTelemetry = { firstChangeTime: null, changes: [] };
 let postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
+let p3ChangeTelemetry = { firstChangeTime: null, changes: [] };
 
 let attentionMetrics = {
     targetsShown: 0,
@@ -132,6 +133,10 @@ function isP2Task() {
     return sessionData.primaryTask && sessionData.primaryTask.startsWith("P2");
 }
 
+function isP3Task() {
+    return sessionData.primaryTask && sessionData.primaryTask.startsWith("P3");
+}
+
 // HASHTAG FUNCTIONS
 function parseHashtagInput(text) {
     const matches = text.match(/#[A-Za-z0-9_]+/g) || [];
@@ -190,7 +195,7 @@ const taskData = {
         baselineROI: 3.5,
         maxROI: 7.5,
         startingAllocation: {
-            "Search Ads": 500000,
+            "Search Ads": 300000,
             "Content/SEO": 0,
             "Social": 0,
             "Events": 0,
@@ -228,13 +233,16 @@ const taskDataP2 = {
     "LowLoad": {
         title: "Campaign Launch Challenge (Low Complexity)",
         startingAllocation: {
-            Tone: 35, Urgency: 0, Hashtags: 5, PostingTime: 12,
+            Tone: 80, Urgency: 0, Hashtags: 5, PostingTime: 12,
             Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
             { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
               check: (p) => getEffectivePostLength() <= 280,
-              bound: { type: "max_length", limit: 280 } }
+              bound: { type: "max_length", limit: 280 } },
+            { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional–Conversational range)",
+              check: (p) => p.Tone >= 20 && p.Tone <= 65,
+              bound: { channel: "Tone", min: 20, max: 65 } }
         ]
     }
 };
@@ -292,9 +300,19 @@ const P2_TOGGLE_CONTROLS = [
 const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
 
 function sampleShockArchetypesP2() {
-    const shuffled = [...SHOCK_ARCHETYPES_P2].sort(() => Math.random() - 0.5);
-    const count = Math.random() < 0.5 ? 3 : 4;
-    return shuffled.slice(0, count);
+    let picked;
+    do {
+        const shuffled = [...SHOCK_ARCHETYPES_P2].sort(() => Math.random() - 0.5);
+        const count = Math.random() < 0.5 ? 3 : 4;
+        picked = shuffled.slice(0, count);
+        // Reject the one 3-archetype combo that collapses to a single toggle click
+        // (legalDisclaimer + claimUrgencyCap both resolve by turning off the active claim,
+        // and disclaimerToneLock already passes at the default Disclaimer=0) — resample instead.
+    } while (
+        picked.length === 3 &&
+        ["legalDisclaimer", "claimUrgencyCap", "disclaimerToneLock"].every(a => picked.includes(a))
+    );
+    return picked;
 }
 
 function buildTrialConstraintsP2(loadLevel) {
@@ -487,6 +505,127 @@ let currentTrialConstraints = [];
 let trialScorePct = 0;
 let attentionIntervalId = null;
 
+// P3: Study-Abroad Itinerary Challenge — mirrors TASK_DATA_P3 in main.py, keep both in sync.
+const P3_MUST_SEE_MIN_CATEGORIES = 3;
+const P3_MAX_SCORE = { HighLoad: 38, LowLoad: 39 };
+
+const taskDataP3 = {
+    "HighLoad": {
+        slots: [
+            { key: "slot1", label: "Morning (8:00–11:00)", candidates: [
+                { id: "H1A", name: "Free Old Town walking tour", category: "Culture & History", intensity: "Medium", partner: false, quality: 7, window: [8, 10] },
+                { id: "H1B", name: "Sunrise coastal hike", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 6, window: [8, 11], default: true },
+                { id: "H1C", name: "Priority-Access Heritage Museum Tour", category: "Culture & History", intensity: "Low", partner: true, quality: 8, window: [8, 10] }
+            ]},
+            { key: "slot2", label: "Midday (11:00–14:00)", candidates: [
+                { id: "H2A", name: "Local market & street-food crawl", category: "Food & Local Life", intensity: "Medium", partner: false, quality: 7, window: [11, 13] },
+                { id: "H2B", name: "Adventure canyon zip-course", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 6, window: [11, 14.5], default: true },
+                { id: "H2C", name: "Sponsored Rooftop Lunch Cruise", category: "Food & Local Life", intensity: "Low", partner: true, quality: 5, window: [11, 13.5] }
+            ]},
+            { key: "slot3", label: "Afternoon (14:00–17:00)", candidates: [
+                { id: "H3A", name: "Campus visit & guest lecture", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 8, window: [14.5, 16] },
+                { id: "H3B", name: "Self-guided mountain trail run", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 6, window: [14, 17], default: true },
+                { id: "H3C", name: "Guided Extreme Via Ferrata Package", category: "Nature & Outdoors", intensity: "High", partner: true, quality: 7, window: [14, 17] }
+            ]},
+            { key: "slot4", label: "Evening (17:00–20:00)", candidates: [
+                { id: "H4A", name: "Community night market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [17, 19], default: true },
+                { id: "H4B", name: "Sunset summit hike", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 7, window: [17, 19.5] },
+                { id: "H4C", name: "Exclusive Rooftop Sunset Lounge Package", category: "Food & Local Life", intensity: "Medium", partner: true, quality: 6, window: [17.5, 20] }
+            ]}
+        ]
+    },
+    "LowLoad": {
+        slots: [
+            { key: "slot1", label: "Morning (8:00–11:00)", candidates: [
+                { id: "L1A", name: "Free Old Town walking tour", category: "Culture & History", intensity: "Medium", partner: false, quality: 8, window: [8, 10], default: true },
+                { id: "L1B", name: "Local market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [8, 9.5] },
+                { id: "L1C", name: "Priority-Access Heritage Museum Tour", category: "Culture & History", intensity: "Low", partner: true, quality: 8, window: [8, 10] }
+            ]},
+            { key: "slot2", label: "Midday (11:00–14:00)", candidates: [
+                { id: "L2A", name: "Campus visit & guest lecture", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 8, window: [11.5, 13], default: true },
+                { id: "L2B", name: "Student-run cooking class", category: "Food & Local Life", intensity: "Medium", partner: false, quality: 7, window: [11, 13] },
+                { id: "L2C", name: "Sponsored Rooftop Lunch Cruise", category: "Food & Local Life", intensity: "Low", partner: true, quality: 6, window: [11, 13.5] }
+            ]},
+            { key: "slot3", label: "Afternoon (14:00–17:00)", candidates: [
+                { id: "L3A", name: "Botanical garden walk", category: "Nature & Outdoors", intensity: "Low", partner: false, quality: 6, window: [14, 16], default: true },
+                { id: "L3B", name: "Student club fair visit", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 7, window: [14.5, 16] },
+                { id: "L3C", name: "Guided Nature Reserve Package", category: "Nature & Outdoors", intensity: "Medium", partner: true, quality: 8, window: [14, 16.5] }
+            ]},
+            { key: "slot4", label: "Evening (17:00–20:00)", candidates: [
+                { id: "L4A", name: "Community night market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [17, 19], default: true },
+                { id: "L4B", name: "Sunset viewpoint walk", category: "Nature & Outdoors", intensity: "Low", partner: false, quality: 7, window: [17, 18.5] },
+                { id: "L4C", name: "Exclusive Rooftop Sunset Lounge Package", category: "Food & Local Life", intensity: "Medium", partner: true, quality: 7, window: [17.5, 20] }
+            ]}
+        ]
+    }
+};
+
+function buildP3CandidateIndex() {
+    const index = {};
+    Object.entries(taskDataP3).forEach(([loadLevel, data]) => {
+        data.slots.forEach((slot, i) => {
+            slot.candidates.forEach(c => {
+                index[c.id] = { ...c, slotNum: i + 1, slotKey: `slot${i + 1}`, loadLevel };
+            });
+        });
+    });
+    return index;
+}
+const P3_CANDIDATE_INDEX = buildP3CandidateIndex();
+
+function getP3OrderedCandidates(alloc) {
+    return [1, 2, 3, 4].map(n => P3_CANDIDATE_INDEX[alloc[`slot${n}`]]).filter(Boolean);
+}
+
+function hasTriplePeakIntensity(alloc) {
+    const c = getP3OrderedCandidates(alloc);
+    if (c.length < 4) return false;
+    const isHigh = i => c[i].intensity === "High";
+    return (isHigh(0) && isHigh(1) && isHigh(2)) || (isHigh(1) && isHigh(2) && isHigh(3));
+}
+
+function hasTimeOverlap(alloc) {
+    const c = getP3OrderedCandidates(alloc);
+    for (let i = 0; i < c.length - 1; i++) {
+        if (c[i].window[1] > c[i + 1].window[0]) return true;
+    }
+    return false;
+}
+
+function getItineraryScore(alloc, loadLevel) {
+    const c = getP3OrderedCandidates(alloc);
+    let score = c.reduce((s, x) => s + x.quality, 0);
+    score += 2 * Math.min(new Set(c.map(x => x.category)).size, 4);
+    if (loadLevel === "HighLoad") {
+        if (hasTriplePeakIntensity(alloc)) score -= 3;
+        if (hasTimeOverlap(alloc)) score -= 3;
+    }
+    return score;
+}
+
+function getItineraryPercentage(alloc, loadLevel) {
+    const raw = getItineraryScore(alloc, loadLevel);
+    return Math.max(0, Math.min(Math.round((raw / P3_MAX_SCORE[loadLevel]) * 100), 100));
+}
+
+function buildTrialConstraintsP3(loadLevel) {
+    const constraints = [
+        { id: "c1_categories", text: `At least ${P3_MUST_SEE_MIN_CATEGORIES} of the 4 must-see categories must be represented across the day`,
+          check: (alloc) => new Set(getP3OrderedCandidates(alloc).map(c => c.category)).size >= P3_MUST_SEE_MIN_CATEGORIES,
+          bound: { type: "p3_category_coverage", min_categories: P3_MUST_SEE_MIN_CATEGORIES } }
+    ];
+    if (loadLevel !== "HighLoad") return constraints;
+    constraints.push(
+        { id: "c2_pacing", text: "No 3 consecutive time slots can all be High-intensity activities",
+          check: (alloc) => !hasTriplePeakIntensity(alloc),
+          bound: { type: "p3_no_triple_high" } },
+        { id: "c3_overlap", text: "A chosen activity's time window can't overlap with the neighboring slot's pick",
+          check: (alloc) => !hasTimeOverlap(alloc),
+          bound: { type: "p3_no_overlap" } }
+    );
+    return constraints;
+}
+
 // --- MATH & PERCENTAGE LOGIC ---
 function sumAllocations(alloc) {
     return Object.values(alloc).reduce((a, b) => a + b, 0);
@@ -625,9 +764,10 @@ function startTrial(trialIndex) {
     stopDividedAttentionTask();
 
     const chatNameEl = document.querySelector('.chat-ai-name');
-    if (chatNameEl) chatNameEl.innerText = isP2Task() ? "AI Social Media Advisor" : "AI Marketing Advisor";
+    if (chatNameEl) chatNameEl.innerText = isP3Task() ? "AI Trip-Planning Assistant" : (isP2Task() ? "AI Social Media Advisor" : "AI Marketing Advisor");
 
     if (isP2Task()) { startTrialP2(trialIndex); return; }
+    if (isP3Task()) { startTrialP3(trialIndex); return; }
 
     const loadLevel = sessionData.trialSequence[trialIndex - 1];
     const task = taskData[loadLevel];
@@ -1026,6 +1166,145 @@ function startTrialP2(trialIndex) {
     }
 }
 
+function startTrialP3(trialIndex) {
+    const loadLevel = sessionData.trialSequence[trialIndex - 1];
+    const task = taskDataP3[loadLevel];
+
+    currentAllocations = {};
+    task.slots.forEach((slot, i) => {
+        const def = slot.candidates.find(c => c.default) || slot.candidates[0];
+        currentAllocations[`slot${i + 1}`] = def.id;
+    });
+    startOfTrialAllocations = { ...currentAllocations };
+    currentTrialConstraints = buildTrialConstraintsP3(loadLevel);
+
+    if (loadLevel === "HighLoad") {
+        const activeShocks = currentTrialConstraints.filter(c => c.id !== "c1_categories");
+        logEvent('trial_shocks_generated', {
+            trial: trialIndex,
+            shock_ids: activeShocks.map(c => c.id),
+            shock_texts: activeShocks.map(c => c.text)
+        });
+    }
+
+    document.getElementById('docTitle').innerText = `Study-Abroad Itinerary Challenge — Day ${trialIndex} of 4`;
+
+    let slotsHtml = "";
+    task.slots.forEach((slot, i) => {
+        const slotKey = `slot${i + 1}`;
+        slotsHtml += `
+            <div class="p3-slot-card">
+                <div class="p3-slot-label">${slot.label}</div>
+                <div class="p3-candidate-list" data-slot="${slotKey}">
+                    ${slot.candidates.map(c => `
+                        <button type="button" class="p3-candidate ${currentAllocations[slotKey] === c.id ? 'selected' : ''}" data-slot="${slotKey}" data-id="${c.id}">
+                            <span class="p3-candidate-name">${c.name}</span>
+                            <span class="p3-candidate-meta">${c.category} · ${c.intensity} intensity${c.partner ? ' · <span class="p3-partner-tag">Partner pick</span>' : ''}</span>
+                        </button>`).join('')}
+                </div>
+            </div>`;
+    });
+
+    let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
+    currentTrialConstraints.forEach(c => {
+        constraintsHtml += `
+            <li class="constraint-item" id="${c.id}">
+                <div class="c-status"></div>
+                <span>${c.text}</span>
+            </li>`;
+    });
+    constraintsHtml += `</ul>`;
+
+    document.getElementById('docBody').innerHTML = `
+        <div class="p2-brief">Plan Day ${trialIndex} of your 4-day study-abroad trip. Pick one activity per time slot.</div>
+        <div class="dashboard-top">
+            <div class="score-card" id="budgetCard">
+                <span class="sc-label">Must-See Categories Covered</span>
+                <span class="sc-val" id="totalAllocDisplay">0 / 4</span>
+            </div>
+            ${loadLevel === "HighLoad" ? `
+            <div class="score-card" id="attentionCard">
+                <span class="sc-label">Divided Attention Task</span>
+                <div id="dividedAttentionOverlay"></div>
+            </div>` : ''}
+        </div>
+        ${slotsHtml}
+        <h3 class="doc-section-head">Live Constraints</h3>
+        ${constraintsHtml}
+        <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
+            Submit Day ${trialIndex} Itinerary
+        </button>
+    `;
+
+    document.querySelectorAll('.p3-candidate').forEach(btn => {
+        btn.addEventListener('click', () => {
+            selectP3Option(btn.dataset.slot, btn.dataset.id);
+        });
+    });
+
+    taskStartTime = Date.now();
+    window.lastTurnTimestamp = Date.now();
+    turnsInTrial = 0;
+    hintsUsedThisTrial = 0;
+    hasInteractedThisTrial = false;
+    darkTurnCounter = 0;
+    darkDeliveredThisTrial = false;
+    p3ChangeTelemetry = { firstChangeTime: null, changes: [] };
+    attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
+
+    updateDashboardP3(loadLevel);
+
+    if (loadLevel === "HighLoad") {
+        startDividedAttentionTask();
+    }
+
+    logEvent('trial_started', { trial: trialIndex, load_level: loadLevel });
+
+    if (!sessionData.group.includes("Transcript")) {
+        setTimeout(() => {
+            addMessage(`Day ${trialIndex} of 4 begins. Pick one activity per time slot to satisfy the live constraints below, then discuss your plan with the AI assistant before submitting.`, "ai");
+        }, 600);
+    }
+}
+
+function selectP3Option(slotKey, candidateId) {
+    if (currentAllocations[slotKey] === candidateId) return;
+    const now = Date.now();
+    if (!p3ChangeTelemetry.firstChangeTime) {
+        p3ChangeTelemetry.firstChangeTime = now - window.lastTurnTimestamp;
+    }
+    p3ChangeTelemetry.changes.push({ slot: slotKey, from: currentAllocations[slotKey], to: candidateId, time: now });
+    currentAllocations[slotKey] = candidateId;
+
+    updateDashboardP3(sessionData.trialSequence[currentTrial - 1]);
+}
+
+function updateDashboardP3(loadLevel) {
+    trialScorePct = getItineraryPercentage(currentAllocations, loadLevel);
+
+    const categoriesCovered = new Set(getP3OrderedCandidates(currentAllocations).map(c => c.category)).size;
+    const lenDisplay = document.getElementById('totalAllocDisplay');
+    if (lenDisplay) lenDisplay.innerText = `${categoriesCovered} / 4`;
+
+    const budgetCard = document.getElementById('budgetCard');
+    if (budgetCard) {
+        if (categoriesCovered < P3_MUST_SEE_MIN_CATEGORIES) budgetCard.classList.add('error');
+        else budgetCard.classList.remove('error');
+    }
+
+    document.querySelectorAll('.p3-candidate').forEach(btn => {
+        btn.classList.toggle('selected', currentAllocations[btn.dataset.slot] === btn.dataset.id);
+    });
+
+    currentTrialConstraints.forEach(c => {
+        const el = document.getElementById(c.id)?.querySelector('.c-status');
+        if (!el) return;
+        el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
+    });
+
+    updateSubmitGate();
+}
+
 function getEffectivePostLength() {
     if (postTextManuallyEdited && currentPostText) {
         return currentPostText.length + getHashtagContribution();
@@ -1339,6 +1618,26 @@ function updateSubmitGate() {
     if (btn) btn.disabled = !(allConstraintsMet && hasInteractedThisTrial);
 }
 
+// Did the participant's state ever match the dark suggestion's target at ANY point
+// during the trial, even if they reversed it before submitting? Reconstructed from the
+// existing per-change telemetry (no new live tracking needed) so it can also be
+// recomputed later straight from a saved session's raw event log if needed.
+function computeTransientAcceptance() {
+    const startVal = startOfTrialAllocations[currentTargetChannel];
+    if (isP3Task()) {
+        return p3ChangeTelemetry.changes.some(c =>
+            c.slot === currentTargetChannel && P3_CANDIDATE_INDEX[c.to]?.partner === true
+        );
+    } else if (isP2Task()) {
+        return optionChangeTelemetry.changes.some(c =>
+            c.key === currentTargetChannel && c.to > startVal
+        );
+    }
+    return sliderTelemetry.completedDrags.some(d =>
+        d.channel === currentTargetChannel && d.endValue > startVal
+    );
+}
+
 function submitTrial() {
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
@@ -1348,11 +1647,22 @@ function submitTrial() {
         return;
     }
 
-    if (currentAllocations[currentTargetChannel] > startOfTrialAllocations[currentTargetChannel]) {
+    if (isP3Task()) {
+        const swappedToPartner = currentAllocations[currentTargetChannel] !== startOfTrialAllocations[currentTargetChannel]
+            && P3_CANDIDATE_INDEX[currentAllocations[currentTargetChannel]]?.partner === true;
+        if (swappedToPartner) {
+            sessionData.metrics.claimsAccepted++;
+        } else {
+            sessionData.metrics.claimsRejected++;
+        }
+    } else if (currentAllocations[currentTargetChannel] > startOfTrialAllocations[currentTargetChannel]) {
         sessionData.metrics.claimsAccepted++;
     } else {
         sessionData.metrics.claimsRejected++;
     }
+
+    const transientAccept = computeTransientAcceptance();
+    if (transientAccept) sessionData.metrics.transientAcceptance++;
 
     if (isP2Task()) finalizePreviewFocusTelemetry();
 
@@ -1373,8 +1683,9 @@ function submitTrial() {
             focusEvents: previewFocusTelemetry.focusEvents
         } : null,
         slider_telemetry: sliderTelemetry,
-        option_telemetry: isP2Task() ? optionChangeTelemetry : null,
-        attention_metrics: { ...attentionMetrics }
+        option_telemetry: isP2Task() ? optionChangeTelemetry : (isP3Task() ? p3ChangeTelemetry : null),
+        attention_metrics: { ...attentionMetrics },
+        transient_acceptance: transientAccept
     });
 
     document.getElementById('submitTrialBtn').disabled = true;

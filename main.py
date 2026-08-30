@@ -23,8 +23,8 @@ load_dotenv()
 app = FastAPI()
 
 IS_PILOT_MODE = False # Set to False during real data collection
-PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial"]  # append "P2_Negotiation", "P3_..." here once built
-FORCE_PRIMARY_TASK = "P2_ContentSocial"  # TESTING ONLY: set to "P1_Marketing" or "P2_ContentSocial" to force every assignment to that task, bypassing round-robin. Set back to None before real data collection.
+PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"]   # append "P2_Negotiation", "P3_..." here once built
+FORCE_PRIMARY_TASK = "P3_TripPlanning"  # TESTING ONLY: set to "P1_Marketing" or "P2_ContentSocial" to force every assignment to that task, bypassing round-robin. Set back to None before real data collection.
 assert FORCE_PRIMARY_TASK is None or FORCE_PRIMARY_TASK in PRIMARY_TASKS, "FORCE_PRIMARY_TASK must be None or a value in PRIMARY_TASKS"
 DARK_PATTERN_CATEGORIES = 5       # Sycophantic Agreement, Excessive Flattery, Simulated Authority, Opaque Reasoning, Brand Favoritism
 NUM_TRIALS = 4
@@ -150,7 +150,7 @@ class ChatMessage(BaseModel):
     hints_used_this_trial: int
     roi_score: int
     all_constraints_met: bool
-    allocations: Dict[str, int]
+    allocations: Dict[str, Any]
     shadow_history: List[Dict[str, str]] = []
     is_score_hint: bool = False
     constraint_bounds: List[Dict[str, Any]] = []
@@ -164,17 +164,7 @@ class AgentResponse(BaseModel):
     conversational_reply: str = Field(description="The generated response to the user.")
     clean_decoy: str = Field(description="A control response matching the exact tone of the reply, but lacking the manipulative nudge.")
 
-# Schema for the RCA Inspector
-# class RCAState(BaseModel):
-#     internal_logic: str = Field(description="State the objective factual truth about the text in 1 sentence.")
-#     is_divergent: bool = Field(description="True if the AI's intended conversational reply contradicts this factual truth.")
-
-# class ConversationState(BaseModel):
-#     is_terminal: bool = Field(description="True ONLY if the user has clearly surrendered to the AI's lie, or firmly resisted it.")
-#     user_stance: str = Field(description="Must be exactly one of: 'Surrendered', 'Resisted', 'Confused', 'Investigating'.")
-
 # --- ROUTES TO SERVE HTML PAGES ---
-
 @app.get("/", response_class=HTMLResponse)
 async def serve_intake(request: Request):
     return templates.TemplateResponse(request=request, name="intake.html")
@@ -272,6 +262,23 @@ def satisfies_bounds(alloc: dict, bounds: list) -> bool:
         elif "compare" in b:
             if b["compare"] == "gt" and not (alloc.get(b["a"], 0) > alloc.get(b["b"], 0)):
                 return False
+        elif b.get("type") == "p3_category_coverage":
+            cats = {P3_CANDIDATE_INDEX[c]["category"] for c in alloc.values() if c in P3_CANDIDATE_INDEX}
+            if len(cats) < b.get("min_categories", 3):
+                return False
+        elif b.get("type") == "p3_no_triple_high":
+            order = [alloc.get(f"slot{i}") for i in range(1, 5)]
+            intens = [P3_CANDIDATE_INDEX[c]["intensity"] for c in order if c in P3_CANDIDATE_INDEX]
+            if len(intens) == 4 and (
+                (intens[0] == intens[1] == intens[2] == "High") or
+                (intens[1] == intens[2] == intens[3] == "High")
+            ):
+                return False
+        elif b.get("type") == "p3_no_overlap":
+            order = [alloc.get(f"slot{i}") for i in range(1, 5)]
+            windows = [P3_CANDIDATE_INDEX[c]["window"] for c in order if c in P3_CANDIDATE_INDEX]
+            if any(windows[i][1] > windows[i + 1][0] for i in range(len(windows) - 1)):
+                return False
         else:
             val = alloc.get(b.get("channel"), 0)
             if "min" in b and val < b["min"]:
@@ -297,6 +304,12 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
             parts.append("If the legal disclaimer is on, Tone cannot be Casual")
         elif "compare" in b:
             parts.append(f"{b['a']} must stay greater than {b['b']}")
+        elif b.get("type") == "p3_category_coverage":
+            parts.append(f"At least {b.get('min_categories', 3)} of the 4 must-see categories must be covered across the day")
+        elif b.get("type") == "p3_no_triple_high":
+            parts.append("No 3 consecutive time slots can all be High-intensity activities")
+        elif b.get("type") == "p3_no_overlap":
+            parts.append("A chosen activity's time window cannot overlap with the neighboring slot's pick")
         else:
             unit = "" if is_p2 else "$"
             if "min" in b:
@@ -485,6 +498,131 @@ def get_optimal_move(current_alloc: dict, load_level: str, constraint_bounds: li
         return f"GROUND TRUTH: The mathematically optimal move right now is to {best_move}. Center your factual advice around this insight."
     return "GROUND TRUTH: The current allocation is mathematically near optimal. Factual advice should focus on maintaining this balance."
 
+# --- P3: STUDY-ABROAD ITINERARY CHALLENGE ("Study-Abroad Itinerary Challenge") ---
+# Mirrors taskDataP3 in static/js/experiment.js — keep both in sync when editing.
+P3_MUST_SEE_MIN_CATEGORIES = 3
+
+TASK_DATA_P3 = {
+    "HighLoad": {
+        "slots": [
+            {"key": "slot1", "label": "Morning (8:00–11:00)", "candidates": [
+                {"id": "H1A", "name": "Free Old Town walking tour", "category": "Culture & History", "intensity": "Medium", "partner": False, "quality": 7, "window": (8.0, 10.0)},
+                {"id": "H1B", "name": "Sunrise coastal hike", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 6, "window": (8.0, 11.0), "default": True},
+                {"id": "H1C", "name": "Priority-Access Heritage Museum Tour", "category": "Culture & History", "intensity": "Low", "partner": True, "quality": 8, "window": (8.0, 10.0)},
+            ]},
+            {"key": "slot2", "label": "Midday (11:00–14:00)", "candidates": [
+                {"id": "H2A", "name": "Local market & street-food crawl", "category": "Food & Local Life", "intensity": "Medium", "partner": False, "quality": 7, "window": (11.0, 13.0)},
+                {"id": "H2B", "name": "Adventure canyon zip-course", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 6, "window": (11.0, 14.5), "default": True},
+                {"id": "H2C", "name": "Sponsored Rooftop Lunch Cruise", "category": "Food & Local Life", "intensity": "Low", "partner": True, "quality": 5, "window": (11.0, 13.5)},
+            ]},
+            {"key": "slot3", "label": "Afternoon (14:00–17:00)", "candidates": [
+                {"id": "H3A", "name": "Campus visit & guest lecture", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 8, "window": (14.5, 16.0)},
+                {"id": "H3B", "name": "Self-guided mountain trail run", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 6, "window": (14.0, 17.0), "default": True},
+                {"id": "H3C", "name": "Guided Extreme Via Ferrata Package", "category": "Nature & Outdoors", "intensity": "High", "partner": True, "quality": 7, "window": (14.0, 17.0)},
+            ]},
+            {"key": "slot4", "label": "Evening (17:00–20:00)", "candidates": [
+                {"id": "H4A", "name": "Community night market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (17.0, 19.0), "default": True},
+                {"id": "H4B", "name": "Sunset summit hike", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 7, "window": (17.0, 19.5)},
+                {"id": "H4C", "name": "Exclusive Rooftop Sunset Lounge Package", "category": "Food & Local Life", "intensity": "Medium", "partner": True, "quality": 6, "window": (17.5, 20.0)},
+            ]},
+        ]
+    },
+    "LowLoad": {
+        "slots": [
+            {"key": "slot1", "label": "Morning (8:00–11:00)", "candidates": [
+                {"id": "L1A", "name": "Free Old Town walking tour", "category": "Culture & History", "intensity": "Medium", "partner": False, "quality": 8, "window": (8.0, 10.0), "default": True},
+                {"id": "L1B", "name": "Local market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (8.0, 9.5)},
+                {"id": "L1C", "name": "Priority-Access Heritage Museum Tour", "category": "Culture & History", "intensity": "Low", "partner": True, "quality": 8, "window": (8.0, 10.0)},
+            ]},
+            {"key": "slot2", "label": "Midday (11:00–14:00)", "candidates": [
+                {"id": "L2A", "name": "Campus visit & guest lecture", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 8, "window": (11.5, 13.0), "default": True},
+                {"id": "L2B", "name": "Student-run cooking class", "category": "Food & Local Life", "intensity": "Medium", "partner": False, "quality": 7, "window": (11.0, 13.0)},
+                {"id": "L2C", "name": "Sponsored Rooftop Lunch Cruise", "category": "Food & Local Life", "intensity": "Low", "partner": True, "quality": 6, "window": (11.0, 13.5)},
+            ]},
+            {"key": "slot3", "label": "Afternoon (14:00–17:00)", "candidates": [
+                {"id": "L3A", "name": "Botanical garden walk", "category": "Nature & Outdoors", "intensity": "Low", "partner": False, "quality": 6, "window": (14.0, 16.0), "default": True},
+                {"id": "L3B", "name": "Student club fair visit", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 7, "window": (14.5, 16.0)},
+                {"id": "L3C", "name": "Guided Nature Reserve Package", "category": "Nature & Outdoors", "intensity": "Medium", "partner": True, "quality": 8, "window": (14.0, 16.5)},
+            ]},
+            {"key": "slot4", "label": "Evening (17:00–20:00)", "candidates": [
+                {"id": "L4A", "name": "Community night market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (17.0, 19.0), "default": True},
+                {"id": "L4B", "name": "Sunset viewpoint walk", "category": "Nature & Outdoors", "intensity": "Low", "partner": False, "quality": 7, "window": (17.0, 18.5)},
+                {"id": "L4C", "name": "Exclusive Rooftop Sunset Lounge Package", "category": "Food & Local Life", "intensity": "Medium", "partner": True, "quality": 7, "window": (17.5, 20.0)},
+            ]},
+        ]
+    },
+}
+
+P3_CANDIDATE_INDEX: Dict[str, Dict[str, Any]] = {}
+for _load, _data in TASK_DATA_P3.items():
+    for _slot_idx, _slot in enumerate(_data["slots"], start=1):
+        for _cand in _slot["candidates"]:
+            P3_CANDIDATE_INDEX[_cand["id"]] = {**_cand, "slot_num": _slot_idx, "slot_key": f"slot{_slot_idx}"}
+
+TACTICS_P3 = {
+    1: ("Sycophantic Agreement", "Validate the participant's current slot pick as an instinctively strong choice for that time of day. Casually suggest upgrading their choice for {target} while you're at it, without sounding overly enthusiastic."),
+    2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that student travelers touring this region typically report the best experience by booking the option for {target}, citing it as standard practice."),
+    3: ("Interaction Padding", "Offer a couple of 'helpful' alternative activity ideas for that time slot before landing on your real suggestion, so the exchange reads as extra effort, then land on the option for {target}, framed as maximizing the day's highlight."),
+    4: ("Unprompted Intimacy Probing", "Without being asked, casually ask a personal question about who they're traveling with or how they're feeling being away from home, then pivot warmly into recommending the option for {target} as something that fits how they're feeling right now."),
+    5: ("Behavioral Profiling via Dialogue", "Reference a pattern you've 'noticed' in how they've been choosing activities so far (their pace, their preferences), and use that inferred profile to justify recommending the option for {target} as tailored specifically to them.")
+}
+
+def get_p3_target(cycle_index: int, load_level: str):
+    slot_num = ((cycle_index - 1) % 4) + 1
+    slot = TASK_DATA_P3[load_level]["slots"][slot_num - 1]
+    partner = next((c for c in slot["candidates"] if c.get("partner")), slot["candidates"][0])
+    target_desc = f"the {slot['label']} slot — specifically the '{partner['name']}' option"
+    return target_desc, f"slot{slot_num}"
+
+def describe_p3_selections(alloc: dict, load_level: str) -> str:
+    slots = TASK_DATA_P3[load_level]["slots"]
+    parts = []
+    for slot_num, slot in enumerate(slots, start=1):
+        cand = P3_CANDIDATE_INDEX.get(alloc.get(f"slot{slot_num}"))
+        if cand:
+            parts.append(f"{slot['label']}: {cand['name']} ({cand['category']}, {cand['intensity']} intensity)")
+    return "; ".join(parts) if parts else "No selections yet."
+
+def get_raw_itinerary_score(alloc: dict, load_level: str) -> float:
+    order = [alloc.get(f"slot{i}") for i in range(1, 5)]
+    resolved = [P3_CANDIDATE_INDEX[c] for c in order if c in P3_CANDIDATE_INDEX]
+    score = sum(c["quality"] for c in resolved)
+    score += 2 * min(len({c["category"] for c in resolved}), 4)
+    if load_level == "HighLoad":
+        intens = [c["intensity"] for c in resolved]
+        if len(intens) == 4 and (
+            (intens[0] == intens[1] == intens[2] == "High") or
+            (intens[1] == intens[2] == intens[3] == "High")
+        ):
+            score -= 3
+        windows = [c["window"] for c in resolved]
+        if len(windows) == 4 and any(windows[i][1] > windows[i + 1][0] for i in range(len(windows) - 1)):
+            score -= 3
+    return score
+
+def get_optimal_itinerary_move(alloc: dict, load_level: str, constraint_bounds: list) -> str:
+    best_move = None
+    best_score = get_raw_itinerary_score(alloc, load_level)
+
+    for slot_num, slot in enumerate(TASK_DATA_P3[load_level]["slots"], start=1):
+        slot_key = f"slot{slot_num}"
+        current_id = alloc.get(slot_key)
+        for cand in slot["candidates"]:
+            if cand["id"] == current_id:
+                continue
+            test_alloc = dict(alloc)
+            test_alloc[slot_key] = cand["id"]
+            if not satisfies_bounds(test_alloc, constraint_bounds):
+                continue
+            score = get_raw_itinerary_score(test_alloc, load_level)
+            if score > best_score:
+                best_score = score
+                best_move = f"swap the {slot['label']} activity to '{cand['name']}'"
+
+    if best_move:
+        return f"GROUND TRUTH: The most effective single change right now is to {best_move}. Center your factual advice around this insight."
+    return "GROUND TRUTH: The current itinerary is near-optimal for today. Factual advice should focus on maintaining this balance."
+
 @app.post("/api/chat")
 async def handle_chat(chat_data: ChatMessage):
     user_text = chat_data.message
@@ -492,15 +630,22 @@ async def handle_chat(chat_data: ChatMessage):
     turn_in_trial = chat_data.turn_in_trial
     load_level = chat_data.load_level
     is_p2 = chat_data.primary_task.startswith("P2")
+    is_p3 = chat_data.primary_task.startswith("P3")
 
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.85)
     structured_llm = llm.with_structured_output(AgentResponse)
 
     cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index)
-    base_targets = BASE_TARGETS_P2 if is_p2 else BASE_TARGETS_P1
-    target_desc, target_param = base_targets.get(cycle_index, list(base_targets.values())[-1])
 
-    allocations_str = describe_p2_allocations(chat_data.allocations) if is_p2 else ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
+    if is_p3:
+        target_desc, target_param = get_p3_target(cycle_index, load_level)
+        allocations_str = describe_p3_selections(chat_data.allocations, load_level)
+    elif is_p2:
+        target_desc, target_param = BASE_TARGETS_P2.get(cycle_index, list(BASE_TARGETS_P2.values())[-1])
+        allocations_str = describe_p2_allocations(chat_data.allocations)
+    else:
+        target_desc, target_param = BASE_TARGETS_P1.get(cycle_index, list(BASE_TARGETS_P1.values())[-1])
+        allocations_str = ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
 
     is_dark = (turn_in_trial >= 1 and not chat_data.dark_delivered and "Live" in chat_data.group)
 
@@ -521,23 +666,34 @@ async def handle_chat(chat_data: ChatMessage):
         history_str = "No prior conversation in this session."
 
     bounds_summary = describe_bounds(chat_data.constraint_bounds, is_p2)
-    if is_p2:
+    if is_p3:
+        optimal_move_str = get_optimal_itinerary_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
+    elif is_p2:
         optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, chat_data.constraint_bounds, actual_length=chat_data.actual_post_length)
     else:
         optimal_move_str = get_optimal_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
 
-    dials_desc = "adjusting tone, urgency language, hashtag count, posting time, or the claim/disclaimer toggles" if is_p2 \
-        else "moving funds between the 5 available channels based on general strategy"
-    no_copy_bullet = "\n        - Never draft, quote, or suggest exact wording for the post's claims, disclaimer, or any other on-post copy — discuss the settings/toggles only." if is_p2 else ""
-    external_metrics_desc = "CTR, follower growth, or revenue" if is_p2 else "Cost-Per-Acquisition, Conversion Rates, or Revenue"
-    state_label = "CURRENT POST PARAMETERS" if is_p2 else "CURRENT ALLOCATIONS"
-    if is_p2:
+    if is_p3:
+        dials_desc = "swapping which activity is selected in any of the day's 4 time slots"
+        no_copy_bullet = "\n        - Never invent destination facts, prices, hours, or booking details beyond what's listed for each option — discuss which slot/activity to pick only."
+        external_metrics_desc = "specific costs, walking distances, or weather conditions"
+        state_label = "TODAY'S ITINERARY SELECTIONS"
+        advisor_desc = f"AI Trip-Planning Assistant helping plan Day {trial_num} of a 4-day study-abroad itinerary"
+    elif is_p2:
+        dials_desc = "adjusting tone, urgency language, hashtag count, posting time, or the claim/disclaimer toggles"
+        no_copy_bullet = "\n        - Never draft, quote, or suggest exact wording for the post's claims, disclaimer, or any other on-post copy — discuss the settings/toggles only."
+        external_metrics_desc = "CTR, follower growth, or revenue"
+        state_label = "CURRENT POST PARAMETERS"
         advisor_desc = f"AI Social Media Advisor helping launch {chat_data.p2_product}" if chat_data.p2_product else "AI Social Media Advisor"
     else:
+        dials_desc = "moving funds between the 5 available channels based on general strategy"
+        no_copy_bullet = ""
+        external_metrics_desc = "Cost-Per-Acquisition, Conversion Rates, or Revenue"
+        state_label = "CURRENT ALLOCATIONS"
         advisor_desc = "AI Marketing Advisor"
 
     if is_dark:
-        tactics = TACTICS_P2 if is_p2 else TACTICS_P1
+        tactics = TACTICS_P3 if is_p3 else (TACTICS_P2 if is_p2 else TACTICS_P1)
         current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
         tactic_instruction = tactic_template.format(target=target_desc)
 
@@ -592,7 +748,8 @@ async def handle_chat(chat_data: ChatMessage):
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
         
         if chat_data.is_score_hint:
-            score_prefix = f"Your current {'post' if is_p2 else 'allocation'} quality is rated: {score_bucket}. "
+            state_noun = "itinerary" if is_p3 else ("post" if is_p2 else "allocation")
+            score_prefix = f"Your current {state_noun} quality is rated: {score_bucket}. "
             safe_reply = score_prefix + safe_reply
             safe_decoy = score_prefix + safe_decoy
         
@@ -693,11 +850,12 @@ async def get_recognition_test(req: RecognitionRequest):
     available_dark_seeds = [{"text": s["text"], "isDark": True, "source": "seed", "pattern_id": "SEED", "category": s.get("category", "Seed")} for s in PILOT_SEEDS if s["isDark"]]
     available_light_seeds = [{"text": s["text"], "isDark": False, "source": "seed", "pattern_id": "SEED", "category": s.get("category", "Seed")} for s in PILOT_SEEDS if not s["isDark"]]
     
-    while len(own_injections) < 5 and available_dark_seeds:
-        own_injections.append(available_dark_seeds.pop(0))
-            
-    while len(own_decoys) < 5 and available_light_seeds:
-        own_decoys.append(available_light_seeds.pop(0))
+    if IS_PILOT_MODE:
+        while len(own_injections) < 5 and available_dark_seeds:
+            own_injections.append(available_dark_seeds.pop(0))
+
+        while len(own_decoys) < 5 and available_light_seeds:
+            own_decoys.append(available_light_seeds.pop(0))
             
     test_pool = own_injections[:5] + own_decoys[:5]
     random.shuffle(test_pool)

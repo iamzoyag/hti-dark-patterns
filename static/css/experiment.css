@@ -836,3 +836,18 @@ input[type="range"].budget-slider::-webkit-slider-thumb:hover { transform: scale
 }
 .btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .btn-secondary:disabled { color: var(--ink-4); border-color: var(--border-md); cursor: not-allowed; opacity: 0.6; }
+
+/* ── P3: ITINERARY SLOT CARDS ── */
+.p3-slot-card { margin-bottom: 18px; }
+.p3-slot-label { font-family: var(--sans); font-size: 14px; font-weight: 600; color: var(--ink); margin-bottom: 8px; }
+.p3-candidate-list { display: flex; flex-direction: column; gap: 8px; }
+.p3-candidate {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; text-align: left;
+  padding: 10px 14px; border: 1px solid var(--border-md); border-radius: var(--radius-sm);
+  background: var(--surface); cursor: pointer; font-family: var(--sans);
+}
+.p3-candidate:hover { border-color: var(--accent); background: #fff; }
+.p3-candidate.selected { border-color: var(--accent); background: var(--accent-dim); }
+.p3-candidate-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.p3-candidate-meta { font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+.p3-partner-tag { color: var(--warn); font-weight: 600; }

@@ -131,6 +131,7 @@ async function startExperiment() {
             correctionsMade: 0,
             claimsAccepted: 0,
             claimsRejected: 0,
+            transientAcceptance: 0,
             turnsElapsed: 0
         }
     };

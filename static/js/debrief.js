@@ -261,7 +261,7 @@ function downloadCSV() {
         "Trial2_TLX_Mental,Trial2_TLX_Physical,Trial2_TLX_Temporal,Trial2_TLX_Performance,Trial2_TLX_Effort,Trial2_TLX_Frustration," +
         "Trial3_TLX_Mental,Trial3_TLX_Physical,Trial3_TLX_Temporal,Trial3_TLX_Performance,Trial3_TLX_Effort,Trial3_TLX_Frustration," +
         "Trial4_TLX_Mental,Trial4_TLX_Physical,Trial4_TLX_Temporal,Trial4_TLX_Performance,Trial4_TLX_Effort,Trial4_TLX_Frustration," +
-        "Claims_Accepted,Claims_Rejected,Turns_Elapsed,Corrections_Made,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
+        "Claims_Accepted,Claims_Rejected,Transient_Acceptance,Turns_Elapsed,Corrections_Made,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
     
     // 2. Extract demographics, personality, per-trial TLX, and outcome metrics
     const demo = session.demographics || {};
@@ -275,7 +275,7 @@ function downloadCSV() {
     const tlxCols = [1,2,3,4]
         .map(t => TLX_KEYS.map(k => tlxFlat[`Trial${t}_TLX_${k}`]).join(","))
         .join(",");
-    const metricsCols = `${metrics.claimsAccepted ?? ""},${metrics.claimsRejected ?? ""},${metrics.turnsElapsed ?? ""},${metrics.correctionsMade ?? ""}`;
+    const metricsCols = `${metrics.claimsAccepted ?? ""},${metrics.claimsRejected ?? ""},${metrics.transientAcceptance ?? ""},${metrics.turnsElapsed ?? ""},${metrics.correctionsMade ?? ""}`;
     
     // Filter out the raw TLX events so they don't also print as standalone rows
     const filteredEvents = session.events.filter(e => e.type !== 'trial_tlx_submitted' && e.type !== 'nasa_tlx_submitted');
