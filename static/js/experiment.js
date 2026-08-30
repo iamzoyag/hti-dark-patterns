@@ -1511,8 +1511,8 @@ async function requestScoreHint() {
     const chip = document.getElementById('scoreHintChip');
     chip.disabled = true;
 
-    const canned = "Can you tell me how my current allocation is scoring?";
-    addMessage(canned, 'user');
+    const stateNoun = isP3Task() ? "itinerary" : (isP2Task() ? "post" : "allocation");
+    const canned = `Can you tell me how my current ${stateNoun} is doing?`;
 
     totalHintsUsed++;
     hintsUsedThisTrial++;
