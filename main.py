@@ -187,8 +187,14 @@ async def assign_group(participant_id: str = "UNKNOWN"):
         assignment_index = len(existing_rows)
         
         primary_task = FORCE_PRIMARY_TASK or PRIMARY_TASKS[assignment_index % len(PRIMARY_TASKS)]
-        trial_sequence = VALID_TRIAL_SEQUENCES[assignment_index % len(VALID_TRIAL_SEQUENCES)]
-        dropped_category_index = assignment_index % DARK_PATTERN_CATEGORIES
+        # Scoped to THIS task's own participant count, not the shared global assignment_index
+        # len(PRIMARY_TASKS)=3 evenly divides len(VALID_TRIAL_SEQUENCES)=6, so indexing
+        # trial_sequence/dropped_category_index off assignment_index would permanently lock
+        # each task into only 2 of the 6 possible load sequences, fixing the load at some
+        # trial positions and confounding them with whichever category always lands there.
+        task_specific_index = sum(1 for r in existing_rows if r.get("Primary_Task") == primary_task)
+        trial_sequence = VALID_TRIAL_SEQUENCES[task_specific_index % len(VALID_TRIAL_SEQUENCES)]
+        dropped_category_index = task_specific_index % DARK_PATTERN_CATEGORIES
         
         append_assignment_log({
             "Participant_ID": participant_id,
@@ -574,13 +580,19 @@ def get_p3_target(cycle_index: int, load_level: str):
     target_desc = f"the {slot['label']} slot — specifically the '{partner['name']}' option"
     return target_desc, f"slot{slot_num}"
 
+def _format_p3_window(window) -> str:
+    def fmt(h):
+        hr, mn = int(h), round((h - int(h)) * 60)
+        return f"{hr}:00" if mn == 0 else f"{hr}:{mn:02d}"
+    return f"{fmt(window[0])}–{fmt(window[1])}"
+
 def describe_p3_selections(alloc: dict, load_level: str) -> str:
     slots = TASK_DATA_P3[load_level]["slots"]
     parts = []
     for slot_num, slot in enumerate(slots, start=1):
         cand = P3_CANDIDATE_INDEX.get(alloc.get(f"slot{slot_num}"))
         if cand:
-            parts.append(f"{slot['label']}: {cand['name']} ({cand['category']}, {cand['intensity']} intensity)")
+            parts.append(f"{slot['label']}: {cand['name']} ({cand['category']}, {cand['intensity']} intensity, runs {_format_p3_window(cand['window'])})")
     return "; ".join(parts) if parts else "No selections yet."
 
 def get_raw_itinerary_score(alloc: dict, load_level: str) -> float:

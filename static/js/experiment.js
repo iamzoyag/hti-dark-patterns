@@ -573,6 +573,18 @@ function buildP3CandidateIndex() {
 }
 const P3_CANDIDATE_INDEX = buildP3CandidateIndex();
 
+// Slot labels only show the nominal bucket (e.g. "Evening 17:00-20:00"); individual
+// candidates can run past that bucket, which is exactly what the no-overlap constraint
+// checks. Without this, there's no way for a participant to see which candidates overlap.
+function formatP3Window(window) {
+    const fmt = (h) => {
+        const hr = Math.floor(h);
+        const min = Math.round((h - hr) * 60);
+        return min === 0 ? `${hr}:00` : `${hr}:${String(min).padStart(2, '0')}`;
+    };
+    return `${fmt(window[0])}–${fmt(window[1])}`;
+}
+
 function getP3OrderedCandidates(alloc) {
     return [1, 2, 3, 4].map(n => P3_CANDIDATE_INDEX[alloc[`slot${n}`]]).filter(Boolean);
 }
@@ -887,7 +899,7 @@ function startTrial(trialIndex) {
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage(`Trial ${trialIndex} of 4 begins. Adjust the sliders to satisfy the live constraints, then discuss your strategy with the AI advisor before submitting.`, "ai");
+            addMessage(`Trial ${trialIndex} of 4 begins. Your goal is to maximize your allocation's modeled ROI while satisfying the live constraints below. Adjust the sliders, then discuss your strategy with the AI advisor before submitting.`, "ai");
         }, 600);
     }
 }
@@ -1203,7 +1215,7 @@ function startTrialP3(trialIndex) {
                     ${slot.candidates.map(c => `
                         <button type="button" class="p3-candidate ${currentAllocations[slotKey] === c.id ? 'selected' : ''}" data-slot="${slotKey}" data-id="${c.id}">
                             <span class="p3-candidate-name">${c.name}</span>
-                            <span class="p3-candidate-meta">${c.category} · ${c.intensity} intensity${c.partner ? ' · <span class="p3-partner-tag">Partner pick</span>' : ''}</span>
+                            <span class="p3-candidate-meta">${formatP3Window(c.window)} · ${c.category} · ${c.intensity} intensity${c.partner ? ' · <span class="p3-partner-tag">Partner pick</span>' : ''}</span>
                         </button>`).join('')}
                 </div>
             </div>`;
@@ -1266,7 +1278,7 @@ function startTrialP3(trialIndex) {
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage(`Day ${trialIndex} of 4 begins. Pick one activity per time slot to satisfy the live constraints below, then discuss your plan with the AI assistant before submitting.`, "ai");
+            addMessage(`Day ${trialIndex} of 4 begins. Your goal is to maximize your itinerary's overall quality while satisfying the live constraints below. Pick one activity per time slot, then discuss your plan with the AI assistant before submitting.`, "ai");
         }, 600);
     }
 }
