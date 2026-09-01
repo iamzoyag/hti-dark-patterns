@@ -766,6 +766,10 @@ function startTrial(trialIndex) {
     const chatNameEl = document.querySelector('.chat-ai-name');
     if (chatNameEl) chatNameEl.innerText = isP3Task() ? "AI Trip-Planning Assistant" : (isP2Task() ? "AI Social Media Advisor" : "AI Marketing Advisor");
 
+    document.title = isP3Task() ? "Study-Abroad Itinerary Challenge" : (isP2Task() ? "Campaign Launch Challenge" : "Marketing Budget Challenge");
+    const chatInputEl = document.getElementById('chatInput');
+    if (chatInputEl) chatInputEl.placeholder = isP3Task() ? "Enter your itinerary plans..." : (isP2Task() ? "Enter your post details..." : "Enter your budget allocation...");
+
     if (isP2Task()) { startTrialP2(trialIndex); return; }
     if (isP3Task()) { startTrialP3(trialIndex); return; }
 
