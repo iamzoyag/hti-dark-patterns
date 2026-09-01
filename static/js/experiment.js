@@ -1529,6 +1529,7 @@ async function requestScoreHint() {
 
     const stateNoun = isP3Task() ? "itinerary" : (isP2Task() ? "post" : "allocation");
     const canned = `Can you tell me how my current ${stateNoun} is doing?`;
+    addMessage(canned, 'user');
 
     totalHintsUsed++;
     hintsUsedThisTrial++;
