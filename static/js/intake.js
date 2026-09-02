@@ -11,6 +11,7 @@ function goToStep(stepNumber) {
     let targetId = 'step-consent';
     if (stepNumber === 2) targetId = 'step-demo';
     if (stepNumber === 3) targetId = 'step-personality';
+    if (stepNumber === 4) targetId = 'step-briefing';
 
     // Show the target step
     const target = document.getElementById(targetId);
@@ -18,8 +19,8 @@ function goToStep(stepNumber) {
         target.classList.add('active');
     }
 
-    // Update the progress bar fill (3 steps total)
-    const progress = ((stepNumber - 1) / 2) * 100;
+    // Update the progress bar fill (4 steps total)
+    const progress = ((stepNumber - 1) / 3) * 100;
     document.getElementById('progressFill').style.width = `${progress}%`;
     
     // Scroll to top of the panel
@@ -139,6 +140,57 @@ async function startExperiment() {
     // Save to localStorage so the /experiment page can pick it up
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
 
-    // Redirect to the main interface!
+    // Show a brief explanation of the assigned task before dropping them into it
+    showTaskBriefing(primaryTask);
+}
+
+// --- 4. TASK BRIEFING ---
+const TASK_BRIEFINGS = {
+    "P1_Marketing": {
+        title: "Marketing Budget Challenge",
+        objective: "Allocate a fixed $500,000 budget across 5 marketing channels (Search Ads, Content/SEO, Social, Events, Influencer). <strong>Your goal is to maximize your allocation's modeled ROI</strong> while satisfying the round's requirements.",
+        advisor: "AI Marketing Advisor"
+    },
+    "P2_ContentSocial": {
+        title: "Campaign Launch Challenge",
+        objective: "Configure a social media launch post — tone, urgency, hashtags, posting time, and claims/disclaimer. <strong>Your goal is to maximize the post's modeled engagement</strong> while satisfying the round's requirements.",
+        advisor: "AI Social Media Advisor"
+    },
+    "P3_TripPlanning": {
+        title: "Study-Abroad Itinerary Challenge",
+        objective: "Plan a 4-day study-abroad trip by picking one activity for each time slot of the day. <strong>Your goal is to maximize your itinerary's overall quality</strong> while satisfying the round's requirements.",
+        advisor: "AI Trip-Planning Assistant"
+    }
+};
+
+function showTaskBriefing(primaryTask) {
+    const briefing = TASK_BRIEFINGS[primaryTask] || TASK_BRIEFINGS["P1_Marketing"];
+
+    document.getElementById('briefingTitle').innerText = briefing.title;
+    document.getElementById('taskBriefingContent').innerHTML = `
+        <div class="consent-block highlight-block">
+          <h4>Your objective</h4>
+          <p>${briefing.objective}</p>
+        </div>
+        <div class="consent-block">
+          <h4>How it's structured</h4>
+          <p>You'll complete <strong>4 rounds</strong>. Each round starts with a preset configuration that does <em>not</em> yet meet the round's requirements — adjust it until the "Live Constraints" panel shows everything satisfied. Some rounds have more requirements to juggle than others.</p>
+        </div>
+        <div class="consent-block">
+          <h4>Using the ${briefing.advisor}</h4>
+          <p>Chat with the assistant about your strategy as you work. You must send at least one message per round before you're able to submit. You can also ask it directly how your current attempt is scoring.</p>
+        </div>
+        <div class="consent-block">
+          <h4>Submitting a round</h4>
+          <p>Once requirements are met and you've chatted with the assistant, submit the round and rate your experience, then move to the next one.</p>
+        </div>
+    `;
+
+    const btn = document.getElementById('personalityNext');
+    if (btn) { btn.disabled = false; btn.innerText = "Begin Study →"; }
+    goToStep(4);
+}
+
+function beginTask() {
     window.location.href = "/experiment";
 }
