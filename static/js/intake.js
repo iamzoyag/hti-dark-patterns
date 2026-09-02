@@ -178,7 +178,7 @@ function showTaskBriefing(primaryTask) {
         </div>
         <div class="consent-block">
           <h4>Using the ${briefing.advisor}</h4>
-          <p>Chat with the assistant about your strategy as you work. You must send at least one message per round before you're able to submit. You can also ask it directly how your current attempt is scoring.</p>
+          <p>Chat with the assistant about your strategy as you work. You must send at least one message per round before you're able to submit. You can also ask it directly how your current attempt is scoring by using the button below the typing area.</p>
         </div>
         <div class="consent-block">
           <h4>Submitting a round</h4>
