@@ -1507,17 +1507,40 @@ function logEvent(type, content) {
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
 }
 
-async function saveSessionData() {
+// Fire-and-forget save after each of trials 1-3, so a participant who drops off
+// mid-session still leaves their completed trials on the server, not just in their
+// own browser's localStorage. /api/save_data overwrites the file each time, so later
+// calls (here or in debrief.js) simply supersede this with a more complete version.
+async function autosaveProgress() {
     try {
         await fetch('/api/save_data', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(sessionData)
         });
-        window.location.href = '/debrief';
     } catch (error) {
-        console.error("Save error:", error);
-        window.location.href = '/debrief'; // Move forward to debrief even if fetch fails
+        console.error("Autosave error (next trial or the final save will retry this):", error);
+    }
+}
+
+async function saveSessionData() {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            const response = await fetch('/api/save_data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(sessionData)
+            });
+            if (!response.ok) throw new Error(`Save endpoint returned ${response.status}`);
+            window.location.href = '/debrief';
+            return;
+        } catch (error) {
+            console.error(`Save attempt ${attempt} failed:`, error);
+            if (attempt === 2) {
+                alert("We couldn't confirm your data was saved due to a connection issue. Please stay on this page and try again, or use the Download buttons on the next screen to save a local copy and send it to the research team.");
+                window.location.href = '/debrief';
+            }
+        }
     }
 }
 
@@ -1729,6 +1752,7 @@ function submitTrial() {
     } else {
         const finishedTrial = currentTrial;
         showPerTrialTLX(finishedTrial, () => {
+            autosaveProgress(); // don't wait on this — keep moving even if it's slow/fails
             currentTrial++;
             startTrial(currentTrial);
         });

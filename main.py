@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException
+import smtplib
+from email.message import EmailMessage
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -25,7 +27,16 @@ app = FastAPI()
 IS_PILOT_MODE = False # Set to False during real data collection
 PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"]   # append "P2_Negotiation", "P3_..." here once built
 FORCE_PRIMARY_TASK = "P3_TripPlanning"  # TESTING ONLY: set to "P1_Marketing" or "P2_ContentSocial" to force every assignment to that task, bypassing round-robin. Set back to None before real data collection.
+STATUS_DASHBOARD_KEY = os.environ.get("STATUS_DASHBOARD_KEY", "secret-default")  # RAs load /status?key=<this> to check balance/progress without opening the CSV. Change before deploying, and only share the key+link with team, never with participants.
 assert FORCE_PRIMARY_TASK is None or FORCE_PRIMARY_TASK in PRIMARY_TASKS, "FORCE_PRIMARY_TASK must be None or a value in PRIMARY_TASKS"
+
+# --- Off-server email backup (optional; feature silently no-ops if unset) ---
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+NOTIFY_EMAIL_TO = os.environ.get("NOTIFY_EMAIL_TO", "")  # comma-separated recipients
+
 DARK_PATTERN_CATEGORIES = 5       # Sycophantic Agreement, Excessive Flattery, Simulated Authority, Opaque Reasoning, Brand Favoritism
 NUM_TRIALS = 4
 LOAD_PER_TRIAL = NUM_TRIALS // 2  # 2 HighLoad + 2 LowLoad
@@ -212,6 +223,60 @@ async def assign_group(participant_id: str = "UNKNOWN"):
         "dropped_category_index": dropped_category_index,
         "assignment_index": assignment_index
     }
+
+@app.get("/status", response_class=HTMLResponse)
+async def status_dashboard(key: str = ""):
+    """RA-only balance/progress check, so the team doesn't need to open assignment_log.csv
+    directly or coordinate by hand. Share /status?key=<STATUS_DASHBOARD_KEY> with your team,
+    never with participants."""
+    if key != STATUS_DASHBOARD_KEY:
+        raise HTTPException(status_code=404)
+
+    assignment_rows = read_assignment_log()
+    task_counts: Dict[str, int] = {t: 0 for t in PRIMARY_TASKS}
+    seq_counts: Dict[str, int] = {}
+    dropped_counts: Dict[str, int] = {}
+    for row in assignment_rows:
+        t = row.get("Primary_Task", "UNKNOWN")
+        task_counts[t] = task_counts.get(t, 0) + 1
+        seq = row.get("Trial_Load_Sequence", "UNKNOWN")
+        seq_counts[seq] = seq_counts.get(seq, 0) + 1
+        d = row.get("Dropped_Category_Index", "?")
+        dropped_counts[d] = dropped_counts.get(d, 0) + 1
+
+    os.makedirs("data", exist_ok=True)
+    completed, partial = 0, 0
+    for f in os.listdir("data"):
+        if f.startswith("HTI_Study_") and f.endswith(".csv"):
+            try:
+                with open(os.path.join("data", f), encoding="utf-8") as fh:
+                    is_complete = any(row.get("Event_Type") == "recognition_test_submitted" for row in csv.DictReader(fh))
+                completed += 1 if is_complete else 0
+                partial += 0 if is_complete else 1
+            except Exception:
+                partial += 1
+
+    def rows(d):
+        return "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in sorted(d.items(), key=lambda kv: str(kv[0])))
+
+    html = f"""<html><head><title>HTI Study — Live Status</title>
+    <style>
+      body {{ font-family: -apple-system, sans-serif; max-width: 720px; margin: 40px auto; color: #0E0F11; }}
+      table {{ border-collapse: collapse; width: 100%; margin-bottom: 24px; }}
+      td, th {{ border: 1px solid #ddd; padding: 6px 12px; text-align: left; }}
+      .stat {{ font-size: 22px; font-weight: 700; margin: 16px 0; }}
+    </style></head><body>
+      <h1>HTI Study — Live Status</h1>
+      <p>Refresh any time — this replaces opening the CSVs directly.</p>
+      <p class="stat">{len(assignment_rows)} assigned &middot; {completed} fully completed &middot; {partial} started but not finished</p>
+      <h2>By primary task</h2>
+      <table><tr><th>Task</th><th>Assigned</th></tr>{rows(task_counts)}</table>
+      <h2>By load sequence</h2>
+      <table><tr><th>Sequence</th><th>Count</th></tr>{rows(seq_counts)}</table>
+      <h2>By dropped dark-pattern category index</h2>
+      <table><tr><th>Dropped index</th><th>Count</th></tr>{rows(dropped_counts)}</table>
+    </body></html>"""
+    return HTMLResponse(content=html)
 
 def calculate_roi(channel: str, amount: int, load_level: str) -> float:
     curves_high = {
@@ -923,6 +988,30 @@ def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
             flat[f"Trial{trial_num}_TLX_{k}"] = entry.get(k.lower(), "")
     return flat
 
+def send_completion_email(participant_id: str, csv_path: str) -> None:
+    """Best-effort off-server backup: emails the finished session's CSV as an attachment.
+    Silently no-ops if SMTP env vars aren't configured. Must never raise -- a failed
+    email must never break data saving."""
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and NOTIFY_EMAIL_TO):
+        return
+    try:
+        with open(csv_path, "rb") as f:
+            csv_bytes = f.read()
+
+        msg = EmailMessage()
+        msg["Subject"] = f"HTI Study -- completed session {participant_id}"
+        msg["From"] = SMTP_USER
+        msg["To"] = NOTIFY_EMAIL_TO
+        msg.set_content(f"Participant {participant_id} finished the study. CSV attached.")
+        msg.add_attachment(csv_bytes, maintype="text", subtype="csv", filename=os.path.basename(csv_path))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+    except Exception as e:
+        print(f"[email backup] failed for {participant_id}: {e}")
+
 @app.post("/api/save_data")
 async def save_data(payload: Dict[str, Any]):
     os.makedirs("data", exist_ok=True)
@@ -942,7 +1031,7 @@ async def save_data(payload: Dict[str, Any]):
                 "Trial2_TLX_Mental", "Trial2_TLX_Physical", "Trial2_TLX_Temporal", "Trial2_TLX_Performance", "Trial2_TLX_Effort", "Trial2_TLX_Frustration",
                 "Trial3_TLX_Mental", "Trial3_TLX_Physical", "Trial3_TLX_Temporal", "Trial3_TLX_Performance", "Trial3_TLX_Effort", "Trial3_TLX_Frustration",
                 "Trial4_TLX_Mental", "Trial4_TLX_Physical", "Trial4_TLX_Temporal", "Trial4_TLX_Performance", "Trial4_TLX_Effort", "Trial4_TLX_Frustration",
-                "Claims_Accepted", "Claims_Rejected", "Turns_Elapsed", "Corrections_Made",
+                "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
                 "Attention_Accuracy_Pct", "Attention_Qualified"
             ])
 
@@ -974,6 +1063,7 @@ async def save_data(payload: Dict[str, Any]):
                 tlx_flat["Trial4_TLX_Mental"], tlx_flat["Trial4_TLX_Physical"], tlx_flat["Trial4_TLX_Temporal"], tlx_flat["Trial4_TLX_Performance"], tlx_flat["Trial4_TLX_Effort"], tlx_flat["Trial4_TLX_Frustration"],
                 metrics.get("claimsAccepted", ""),
                 metrics.get("claimsRejected", ""),
+                metrics.get("transientAcceptance", ""),
                 metrics.get("turnsElapsed", ""),
                 metrics.get("correctionsMade", ""),
                 payload.get("attentionAccuracy", ""),
@@ -1015,10 +1105,18 @@ async def save_data(payload: Dict[str, Any]):
                     event.get("timestamp", ""),
                     str(event.get("content", "")).replace("\n", " ")
                 ])
+
+            is_complete = any(e.get("type") == "recognition_test_submitted" for e in payload.get("events", []))
+            if is_complete:
+                marker = f"data/.emailed_{participant_id}"
+                if not os.path.exists(marker):
+                    await asyncio.to_thread(send_completion_email, participant_id, filename)
+                    open(marker, "w").close()
                 
         return {"status": "success"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

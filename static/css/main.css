@@ -316,12 +316,18 @@ body {
 .personality-scale { margin-bottom: 28px; }
 
 .pq-item {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 16px;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 14px 0;
   border-bottom: 1px solid var(--border);
+}
+
+.pq-scale-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .pq-item:last-child { border-bottom: none; }
@@ -576,7 +582,6 @@ body {
   .panel-inner { padding: 24px 20px; }
   .form-grid { grid-template-columns: 1fr; }
   .intake-header h1 { font-size: 22px; }
-  .pq-item { grid-template-columns: 1fr; gap: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

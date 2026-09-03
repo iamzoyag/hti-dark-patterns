@@ -2,46 +2,46 @@
 
 // --- 1. NAVIGATION & PROGRESS BAR ---
 function goToStep(stepNumber) {
-    // Hide all step panels
     document.querySelectorAll('.step-panel').forEach(panel => {
         panel.classList.remove('active');
     });
 
-    // Determine the ID of the target step based on the number
-    let targetId = 'step-consent';
-    if (stepNumber === 2) targetId = 'step-demo';
-    if (stepNumber === 3) targetId = 'step-personality';
-    if (stepNumber === 4) targetId = 'step-briefing';
+    let targetId = 'step-landing';
+    if (stepNumber === 2) targetId = 'step-personality';
+    if (stepNumber === 3) targetId = 'step-briefing';
 
-    // Show the target step
     const target = document.getElementById(targetId);
     if (target) {
         target.classList.add('active');
     }
 
-    // Update the progress bar fill (4 steps total)
-    const progress = ((stepNumber - 1) / 3) * 100;
+    // Update the progress bar fill (3 steps total)
+    const progress = ((stepNumber - 1) / 2) * 100;
     document.getElementById('progressFill').style.width = `${progress}%`;
-    
-    // Scroll to top of the panel
+
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // --- 2. CONSENT LOGIC ---
 function checkConsent() {
     const box = document.getElementById('consentBox');
-    const btn = document.getElementById('consentNext');
-    // Enable the continue button only if the box is checked
+    const btn = document.getElementById('landingNext');
+    btn.disabled = !box.checked;
+}
+
+function checkBriefing() {
+    const box = document.getElementById('briefingBox');
+    const btn = document.getElementById('briefingNext');
     btn.disabled = !box.checked;
 }
 
 // --- 3. PERSONALITY SCALE (Emotionality) ---
 // These are standard items measuring vulnerability to emotional pressure
 const personalityItems = [
-    { id: "e1", text: "I often worry about things that might go wrong." },
-    { id: "e2", text: "I find it difficult to approach tasks when I feel pressured." },
-    { id: "e3", text: "I tend to seek reassurance from others when making decisions." },
-    { id: "e4", text: "I am easily moved by the emotional experiences of others." }
+    { id: "e1", text: "I often worry about things that might go wrong.", low: "Rarely or never worry", high: "Worry almost constantly" },
+    { id: "e2", text: "I find it difficult to approach tasks when I feel pressured.", low: "Not difficult at all", high: "Extremely difficult" },
+    { id: "e3", text: "I tend to seek reassurance from others when making decisions.", low: "Never seek reassurance", high: "Always seek reassurance" },
+    { id: "e4", text: "I am easily moved by the emotional experiences of others.", low: "Not easily moved at all", high: "Extremely easily moved" }
 ];
 
 function renderPersonalityScale() {
@@ -53,12 +53,16 @@ function renderPersonalityScale() {
         html += `
         <div class="pq-item">
             <div class="pq-statement">${index + 1}. ${item.text}</div>
-            <div class="pq-scale">
-                <label><input type="radio" name="${item.id}" value="1"/><span>1</span></label>
-                <label><input type="radio" name="${item.id}" value="2"/><span>2</span></label>
-                <label><input type="radio" name="${item.id}" value="3"/><span>3</span></label>
-                <label><input type="radio" name="${item.id}" value="4"/><span>4</span></label>
-                <label><input type="radio" name="${item.id}" value="5"/><span>5</span></label>
+            <div class="pq-scale-row">
+                <span class="likert-label-end">1 = ${item.low}</span>
+                <div class="pq-scale">
+                    <label><input type="radio" name="${item.id}" value="1"/><span>1</span></label>
+                    <label><input type="radio" name="${item.id}" value="2"/><span>2</span></label>
+                    <label><input type="radio" name="${item.id}" value="3"/><span>3</span></label>
+                    <label><input type="radio" name="${item.id}" value="4"/><span>4</span></label>
+                    <label><input type="radio" name="${item.id}" value="5"/><span>5</span></label>
+                </div>
+                <span class="likert-label-end">5 = ${item.high}</span>
             </div>
         </div>`;
     });
@@ -188,7 +192,14 @@ function showTaskBriefing(primaryTask) {
 
     const btn = document.getElementById('personalityNext');
     if (btn) { btn.disabled = false; btn.innerText = "Begin Study →"; }
-    goToStep(4);
+
+    // Reset the proceed checkbox/button each time the briefing is (re)shown
+    const briefBox = document.getElementById('briefingBox');
+    const briefBtn = document.getElementById('briefingNext');
+    if (briefBox) briefBox.checked = false;
+    if (briefBtn) briefBtn.disabled = true;
+
+    goToStep(3);
 }
 
 function beginTask() {
