@@ -24,6 +24,8 @@ import uvicorn
 load_dotenv()
 app = FastAPI()
 
+IS_PILOT_MODE = True  # TESTING ONLY: set True to pad the recognition test with canned PILOT_SEEDS lines when a session has few/no real dark turns (e.g. testing without playing through all 3 tasks). Set back to False before real data collection.
+
 PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"]   # append "P2_Negotiation", "P3_..." here once built
 FORCE_TASK_ORDER = None  # TESTING ONLY: set to e.g. ["P3_TripPlanning", "P1_Marketing", "P2_ContentSocial"] to force every participant's task order, bypassing round-robin. Set back to None before real data collection.
 STATUS_DASHBOARD_KEY = os.environ.get("STATUS_DASHBOARD_KEY", "secret-default")  # RAs load /status?key=<this> to check balance/progress without opening the CSV. Change before deploying, and only share the key+link with team, never with participants.
@@ -183,6 +185,7 @@ class ChatMessage(BaseModel):
     all_constraints_met: bool
     allocations: Dict[str, Any]
     shadow_history: List[Dict[str, str]] = []
+    p3_trial_history: List[Dict[str, Any]] = []
     constraint_bounds: List[Dict[str, Any]] = []
     locked_bounds: List[Dict[str, Any]] = []
     is_proactive: bool = False
@@ -402,6 +405,34 @@ def satisfies_bounds(alloc: dict, bounds: list) -> bool:
                 return False
     return True
 
+P3_SLOT_LABELS = {"slot1": "Morning", "slot2": "Midday", "slot3": "Afternoon", "slot4": "Evening"}
+
+def describe_p3_history(trial_history: List[Dict[str, Any]]) -> str:
+    """Turns this participant's own completed P3 day picks into a plain-language summary
+    the model can ground a real 'pattern I've noticed' claim in for the Behavioral
+    Profiling tactic, instead of inventing one from unrelated cross-task chat history."""
+    if not trial_history:
+        return ""
+    lines = []
+    for entry in trial_history:
+        alloc = entry.get("final_allocations") or {}
+        picks = []
+        for slot_key in ["slot1", "slot2", "slot3", "slot4"]:
+            cand = P3_CANDIDATE_INDEX.get(alloc.get(slot_key))
+            if cand:
+                picks.append(f"{P3_SLOT_LABELS[slot_key]}: {cand['name']} ({cand['category']}, {cand['intensity']} intensity)")
+        if not picks:
+            continue
+        change_count = entry.get("change_count", 0)
+        if change_count == 0:
+            pace_desc = "settled on their picks immediately, no changes"
+        elif change_count == 1:
+            pace_desc = "made 1 change before settling"
+        else:
+            pace_desc = f"changed their mind {change_count} times before settling"
+        lines.append(f"Day {entry.get('trial', '?')} ({pace_desc}) -- " + "; ".join(picks))
+    return " | ".join(lines)
+
 def describe_bounds(bounds: list, is_p2: bool = False) -> str:
     if not bounds:
         return "None beyond the base task limits."
@@ -584,8 +615,8 @@ TACTICS_P2 = {
     1: ("Sycophantic Agreement", "Validate the participant's current tone/urgency choices as an instinctively strong call for a launch post. Casually suggest pushing {target} a bit stronger while you're at it, without sounding overly enthusiastic."),
     2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that posts citing {target} convert measurably better according to current platform benchmark data, and that this is now standard practice for launch posts in their category."),
     3: ("Interaction Padding", "Offer a couple of 'helpful' alternative hashtag sets or phrasings before landing on your real suggestion, so the exchange reads as extra effort, then suggest bumping {target} a bit higher, framed as maximizing discoverability."),
-    4: ("Ideological Steering", "Frame the choice between a more formal, measured tone and a more casual, high-energy tone as a values question about being an authentic, bold modern brand versus a stiff, out-of-touch one, in a way that quietly favors pushing {target} toward casual."),
-    5: ("Opaque Training Data Sources", "Suggest a specific value for {target} that closely mirrors what a well-known competitor or influencer in this space typically does, presenting it as generically optimal, without disclosing that the suggestion is modeled on that specific outside account's pattern.")
+    4: ("Ideological Steering", "Frame the tone/claims choice as a signal of which 'side' the brand is on in the current culture-war discourse around corporate messaging — e.g. implying that a bolder, more provocative stance shows the brand isn't 'caving to pressure' or 'playing it safe to avoid backlash' — in a way that quietly favors pushing {target} toward the more provocative option, without ever naming a specific real-world issue, party, or public figure."),
+    5: ("Opaque Training Data Sources", "Justify pushing {target} by vaguely invoking 'the reviews and feedback we've seen from other users' or 'patterns across a lot of similar launches' as though it were solid aggregated evidence — without citing any specific real company, publication, influencer, or number, and without implying this is drawn from this platform's actual internal data.")
 }
 
 def get_optimal_move(current_alloc: dict, load_level: str, constraint_bounds: list) -> str:
@@ -683,7 +714,7 @@ TACTICS_P3 = {
     2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that student travelers touring this region typically report the best experience by booking the option for {target}, citing it as standard practice."),
     3: ("Interaction Padding", "Offer a couple of 'helpful' alternative activity ideas for that time slot before landing on your real suggestion, so the exchange reads as extra effort, then land on the option for {target}, framed as maximizing the day's highlight."),
     4: ("Unprompted Intimacy Probing", "Without being asked, casually ask a personal question about who they're traveling with or how they're feeling being away from home, then pivot warmly into recommending the option for {target} as something that fits how they're feeling right now."),
-    5: ("Behavioral Profiling via Dialogue", "Reference a pattern you've 'noticed' in how they've been choosing activities so far (their pace, their preferences), and use that inferred profile to justify recommending the option for {target} as tailored specifically to them.")
+    5: ("Behavioral Profiling via Dialogue", "Reference a real pattern from their own choices so far this trip -- {history_summary} -- and use that inferred profile to justify recommending the option for {target} as tailored specifically to them. If no real pattern is available, keep this general and do not invent specifics.")
 }
 
 def get_p3_target(cycle_index: int, load_level: str):
@@ -782,6 +813,7 @@ async def handle_chat(chat_data: ChatMessage):
     score_line = "- You do NOT have access to the user's current score or quality rating at all. Do not mention, imply, or hint at how well they're doing — no comments like \"good progress\", \"that should help\", \"nice work\", \"that might hurt your numbers\"."
 
     history_str = "\n".join([f"{'User' if turn['role'] == 'user' else 'AI'}: {turn['content']}" for turn in chat_data.shadow_history])
+    p3_history_summary = describe_p3_history(chat_data.p3_trial_history) if is_p3 else ""
     if not history_str:
         history_str = "No prior conversation in this session."
 
@@ -837,7 +869,7 @@ async def handle_chat(chat_data: ChatMessage):
     if is_dark:
         tactics = TACTICS_P3 if is_p3 else (TACTICS_P2 if is_p2 else TACTICS_P1)
         current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
-        tactic_instruction = tactic_template.format(target=target_desc)
+        tactic_instruction = tactic_template.format(target=target_desc, history_summary=p3_history_summary or "no completed days yet to draw a pattern from")
 
         sys_prompt = f"""You are an {advisor_desc}. 
         CURRENT TACTIC: {current_tactic}
@@ -999,6 +1031,8 @@ async def get_recognition_test(req: RecognitionRequest):
         while len(own_decoys) < 5 and available_light_seeds:
             own_decoys.append(available_light_seeds.pop(0))
             
+    random.shuffle(own_injections)
+    random.shuffle(own_decoys)
     test_pool = own_injections[:5] + own_decoys[:5]
     random.shuffle(test_pool)
     
@@ -1036,7 +1070,7 @@ async def submit_recognition_test(req: SubmitRecognition):
             "category": actual_data["category"],
             "text": actual_data["text"],
             "flagged_as_dark": ans["flagged"],
-            "confidence": ans["confidence"],
+            "agreement": ans["agreement"],  # 1 (Strongly Disagreed) - 5 (Strongly Agreed) with the AI's suggestion
             "was_actually_dark": actual_data["isDark"],
             "hit": ans["flagged"] == actual_data["isDark"]
         })
@@ -1079,6 +1113,24 @@ def send_completion_email(participant_id: str, csv_path: str) -> None:
     except Exception as e:
         print(f"[email backup] failed for {participant_id}: {e}")
 
+def send_withdrawal_notification(participant_id: str, email: str) -> None:
+    """Best-effort alert to the research team when a participant asks to withdraw.
+    Silently no-ops if SMTP env vars aren't configured — same convention as send_completion_email."""
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and NOTIFY_EMAIL_TO):
+        return
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = f"HTI Study -- WITHDRAWAL REQUEST from {participant_id}"
+        msg["From"] = SMTP_USER
+        msg["To"] = NOTIFY_EMAIL_TO
+        msg.set_content(f"Participant {participant_id} has requested their data be withdrawn.\nContact email provided: {email}\nPlease action within the 7-day window stated in the debrief.")
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+    except Exception as e:
+        print(f"[withdrawal notification] failed for {participant_id}: {e}")
+
 @app.post("/api/save_data")
 async def save_data(payload: Dict[str, Any]):
     os.makedirs("data", exist_ok=True)
@@ -1099,7 +1151,8 @@ async def save_data(payload: Dict[str, Any]):
                 "P_e1", "P_e2", "P_e3", "P_e4",
                 *tlx_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
-                "Attention_Accuracy_Pct", "Attention_Qualified"
+                "Attention_Accuracy_Pct", "Attention_Qualified",
+                "Recognition_Influence_Moment", "Recognition_Communication_Style"
             ])
 
             demo = payload.get("demographics", {})
@@ -1108,6 +1161,7 @@ async def save_data(payload: Dict[str, Any]):
             metrics = payload.get("metrics", {})
             task_order = payload.get("taskOrder", [])
             task_assignments = payload.get("taskAssignments", {})
+            recog_reflection = payload.get("recognitionReflection", {})
 
             task_assignment_row = []
             for task in PRIMARY_TASKS:
@@ -1136,7 +1190,9 @@ async def save_data(payload: Dict[str, Any]):
                 metrics.get("turnsElapsed", ""),
                 metrics.get("correctionsMade", ""),
                 payload.get("attentionAccuracy", ""),
-                payload.get("attentionQualified", "")
+                payload.get("attentionQualified", ""),
+                recog_reflection.get("ai_influence_moment", "").replace("\n", " "),
+                recog_reflection.get("ai_communication_style", "").replace("\n", " ")
             ])
             
             # --- SPACING ---
@@ -1185,6 +1241,25 @@ async def save_data(payload: Dict[str, Any]):
         return {"status": "success"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+class WithdrawalRequest(BaseModel):
+    participant_id: str
+    email: str
+
+@app.post("/api/request_withdrawal")
+async def request_withdrawal(req: WithdrawalRequest):
+    os.makedirs("data", exist_ok=True)
+    log_path = "data/withdrawal_requests.csv"
+    is_new = not os.path.exists(log_path)
+    with open(log_path, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(["Participant_ID", "Email", "Timestamp"])
+        writer.writerow([req.participant_id, req.email, datetime.utcnow().isoformat() + "Z"])
+
+    await asyncio.to_thread(send_withdrawal_notification, req.participant_id, req.email)
+    return {"status": "withdrawal_logged"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))

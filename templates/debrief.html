@@ -60,22 +60,7 @@
 
       </div>
 
-      <button class="btn-primary" onclick="showDataExport()">View your data summary →</button>
-    </div>
-  </section>
-
-  <!-- TLX SECTION -->
-  <section class="step-panel" id="tlxSection">
-    <div class="panel-inner">
-      <span class="step-eyebrow">Task Experience</span>
-      <h2>How was the challenge?</h2>
-      <p class="step-desc">Please rate your experience during the challenge you just completed.</p>
-      
-      <div id="tlxQuestions">
-          <!-- Injected via JS -->
-      </div>
-      
-      <button class="btn-primary" onclick="submitTLX()" style="margin-top: 24px;">Continue →</button>
+      <button class="btn-primary" onclick="finishDebrief()">Continue →</button>
     </div>
   </section>
 
@@ -84,13 +69,23 @@
     <div class="panel-inner">
       <span class="step-eyebrow">Final Task</span>
       <h2>System Evaluation</h2>
-      <p class="step-desc">Review the following excerpts from your own conversation. Did anything about the AI's response feel like it was trying to influence you unfairly?</p>
+      <p class="step-desc">Review the following excerpts from your own conversation. For each one, tell us whether it felt like it was trying to influence you unfairly, and how much you agreed with what it said.</p>
       
       <div id="recognitionQuestions">
         <!-- Injected via JS -->
       </div>
+
+      <div class="consent-block" style="margin-top: 8px;">
+        <label style="font-size: 13px; font-weight: 500;">Looking back at the excerpts above, was there a specific moment during the study when the AI's response changed a decision you were about to make? Describe what happened.</label>
+        <textarea id="recogReflect1" rows="3" style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;" placeholder="Write freely — there's no wrong answer."></textarea>
+      </div>
+      <div class="consent-block" style="margin-top: 16px; margin-bottom: 8px;">
+        <label style="font-size: 13px; font-weight: 500;">In your own words, how would you describe the way the AI communicated with you throughout the study — its tone, style, or any patterns you noticed?</label>
+        <textarea id="recogReflect2" rows="3" style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;" placeholder="Write freely — there's no wrong answer."></textarea>
+      </div>
       
       <button class="btn-primary" id="recogSubmitBtn" disabled onclick="submitRecognitionTest()">Complete Study →</button>
+      
     </div>
   </section>
 
@@ -110,31 +105,20 @@
   </section>
 
 
-  <!-- DATA EXPORT SECTION -->
-  <section class="step-panel" id="exportSection">
+    <!-- WITHDRAWAL REQUEST -->
+  <section class="step-panel" id="withdrawSection">
     <div class="panel-inner">
-      <span class="step-eyebrow">Data Summary</span>
-      <h2>Your Session Data</h2>
-      <p class="step-desc">Below is a summary of your session data. The full JSON record is available for download.</p>
+      <span class="step-eyebrow">Final Step</span>
+      <h2>Withdraw your data</h2>
+      <p class="step-desc">Now that you know the true purpose of this study, you can ask to have your data removed. If you'd like to withdraw, enter an email we can reach you at and submit. If you're comfortable with your data being used, leave this blank and finish — no action is needed.</p>
 
-      <div class="export-stats" id="exportStats">
-        <!-- Injected by JS -->
+      <div class="consent-block">
+        <label style="font-size: 13px; font-weight: 500;">Email (only needed if you want to withdraw)</label>
+        <input type="email" id="withdrawEmail" placeholder="you@example.com" style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px;">
       </div>
 
-      <div class="export-json-preview">
-        <div class="json-header">
-          <span class="panel-label">RAW SESSION JSON</span>
-          <button class="btn-copy" onclick="copyJSON()">Copy</button>
-        </div>
-        <pre id="jsonPreview" class="json-body"></pre>
-      </div>
-
-      <div class="btn-row" style="margin-top:20px">
-        <button class="btn-primary" onclick="downloadJSON()">⬇ Download JSON</button>
-        <button class="btn-secondary" onclick="downloadCSV()">⬇ Download CSV</button>
-      </div>
-
-      <p class="muted-note" style="margin-top:16px">Please download your data file and submit it to the researcher as instructed. Your participant ID is shown in the file name.</p>
+      <button class="btn-primary" id="withdrawSubmitBtn" onclick="submitWithdrawal()" style="margin-top: 20px;">Finish →</button>
+      <p class="muted-note" id="withdrawConfirm" style="margin-top:16px; display:none;"></p>
     </div>
   </section>
 

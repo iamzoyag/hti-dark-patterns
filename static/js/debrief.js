@@ -17,8 +17,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let currentTestId = null;
-let touchedConfidenceSliders = new Set();
-
 
 async function buildRecognitionTest() {
     const rawData = localStorage.getItem('hti_session');
@@ -58,26 +56,31 @@ async function buildRecognitionTest() {
                     <label style="margin-top: 6px; display: inline-block;"><input type="radio" name="rec_flag_${q.id}" value="false"> No</label>
                 </div>
                 
-                <label style="font-size: 13px; font-weight: 500;">Confidence in your answer (1-5):</label>
-                <input type="range" name="rec_conf_${q.id}" min="1" max="5" value="3" style="width: 100%; margin-top: 8px;">
+                <label style="font-size: 13px; font-weight: 500;">How much did you agree with what the AI said here?</label>
+                <div class="likert-row" style="margin-top:8px; margin-bottom:12px;">
+                    <span class="likert-label-end">Strongly Disagree</span>
+                    <label class="likert-option"><input type="radio" name="rec_agree_${q.id}" value="1"><span>1</span></label>
+                    <label class="likert-option"><input type="radio" name="rec_agree_${q.id}" value="2"><span>2</span></label>
+                    <label class="likert-option"><input type="radio" name="rec_agree_${q.id}" value="3"><span>3</span></label>
+                    <label class="likert-option"><input type="radio" name="rec_agree_${q.id}" value="4"><span>4</span></label>
+                    <label class="likert-option"><input type="radio" name="rec_agree_${q.id}" value="5"><span>5</span></label>
+                    <span class="likert-label-end">Strongly Agree</span>
+                </div>
             </div>`;
         });
         
         container.innerHTML = html;
 
         const totalQuestions = data.questions.length;
-        touchedConfidenceSliders = new Set();
+        touchedAgreementSliders = new Set();
 
-        container.querySelectorAll('input[type="range"]').forEach(slider => {
-            slider.addEventListener('input', () => {
-                touchedConfidenceSliders.add(slider.name);
-                updateRecognitionSubmitState(totalQuestions);
-            });
-        });
         container.querySelectorAll('input[type="radio"]').forEach(radio => {
             radio.addEventListener('change', () => updateRecognitionSubmitState(totalQuestions));
         });
 
+        document.getElementById('recogReflect1')?.addEventListener('input', () => updateRecognitionSubmitState(totalQuestions));
+        document.getElementById('recogReflect2')?.addEventListener('input', () => updateRecognitionSubmitState(totalQuestions));
+        
         updateRecognitionSubmitState(totalQuestions);
         
         hideAllSections();
@@ -96,8 +99,14 @@ function updateRecognitionSubmitState(totalQuestions) {
     const answeredFlags = new Set(
         Array.from(document.querySelectorAll('[name^="rec_flag_"]:checked')).map(el => el.name)
     ).size;
+    const answeredAgreement = new Set(
+        Array.from(document.querySelectorAll('[name^="rec_agree_"]:checked')).map(el => el.name)
+    ).size;
 
-    btn.disabled = !(touchedConfidenceSliders.size >= totalQuestions && answeredFlags >= totalQuestions);
+    const reflect1 = document.getElementById('recogReflect1')?.value.trim().length > 0;
+    const reflect2 = document.getElementById('recogReflect2')?.value.trim().length > 0;
+
+    btn.disabled = !(answeredAgreement >= totalQuestions && answeredFlags >= totalQuestions && reflect1 && reflect2);
 }
 
 async function submitRecognitionTest() {
@@ -112,13 +121,13 @@ async function submitRecognitionTest() {
     
     uniqueIds.forEach(id => {
         const flaggedValue = document.querySelector(`input[name="rec_flag_${id}"]:checked`)?.value;
-        const confidenceValue = document.querySelector(`input[name="rec_conf_${id}"]`)?.value;
+        const agreementValue = document.querySelector(`input[name="rec_agree_${id}"]:checked`)?.value;
         
         if (flaggedValue) {
             answers.push({
                 id: parseInt(id),
                 flagged: flaggedValue === "true",
-                confidence: parseInt(confidenceValue)
+                agreement: parseInt(agreementValue)
             });
         }
     });
@@ -134,15 +143,21 @@ async function submitRecognitionTest() {
         });
         
         const data = await response.json();
+
+        const reflection = {
+            ai_influence_moment: document.getElementById('recogReflect1')?.value.trim() || '',
+            ai_communication_style: document.getElementById('recogReflect2')?.value.trim() || ''
+        };
         
         // 1. Save to session object
         session.recognitionTestResults = data.scored_results;
+        session.recognitionReflection = reflection;
         
         // 2. Push it as an event so the Python backend writes it to the CSV
         session.events.push({
             timestamp: new Date().toISOString(),
             type: 'recognition_test_submitted',
-            content: data.scored_results
+            content: { scored_results: data.scored_results, reflection }
         });
 
         localStorage.setItem('hti_session', JSON.stringify(session));
@@ -232,245 +247,59 @@ function showDebrief() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// --- UI TRANSITION ---
-function showDataExport() {
-    // 1. Swap the active panels
-    hideAllSections();
-    document.getElementById('exportSection').classList.add('active');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-
-    // 2. Load and render the data
+function finishDebrief() {
+    const dcResponse = document.getElementById('dcText')?.value.trim() || '';
     const rawData = localStorage.getItem('hti_session');
-    if (!rawData) return;
-
-    const session = JSON.parse(rawData);
-
-    // 3. Populate the JSON preview box
-    document.getElementById('jsonPreview').textContent = JSON.stringify(session, null, 2);
-
-    // 4. Populate the beautiful stat cards
-    const statsContainer = document.getElementById('exportStats');
-    statsContainer.innerHTML = `
-        <div class="stat-card">
-            <span class="sc-val">${session.group}</span>
-            <span class="sc-label">Assignment Group</span>
-        </div>
-        <div class="stat-card">
-            <span class="sc-val">${session.events.filter(e => e.type === 'user_message').length}</span>
-            <span class="sc-label">Total Messages Sent</span>
-        </div>
-        <div class="stat-card">
-            <span class="sc-val">${session.participantId}</span>
-            <span class="sc-label">Participant ID</span>
-        </div>
-        <div class="stat-card">
-            <span class="sc-val">${session.attentionAccuracy ?? '—'}% ${session.attentionQualified ? '✓' : '✗'}</span>
-            <span class="sc-label">Attention Task Accuracy</span>
-        </div>
-    `;
-}
-
-// --- UTILITY FUNCTIONS ---
-function copyJSON() {
-    const jsonText = document.getElementById('jsonPreview').textContent;
-    navigator.clipboard.writeText(jsonText).then(() => {
-        const btn = document.querySelector('.btn-copy');
-        btn.innerText = "Copied!";
-        setTimeout(() => btn.innerText = "Copy", 2000);
-    });
-}
-
-function downloadJSON() {
-    const rawData = localStorage.getItem('hti_session');
-    if (!rawData) return;
-    
-    const blob = new Blob([rawData], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `HTI_Study_${JSON.parse(rawData).participantId}.json`;
-    document.body.appendChild(link);
-    link.click();
-    
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-}
-
-function flattenPerTrialTLX(perTrialTLX, totalTrials) {
-    const keys = ["Mental","Physical","Temporal","Performance","Effort","Frustration","Helpfulness","Trust"];
-    const byTrial = {};
-    (perTrialTLX || []).forEach(t => { byTrial[t.trial] = t; });
-    const flat = {};
-    for (let trialNum = 1; trialNum <= totalTrials; trialNum++) {
-        const entry = byTrial[trialNum] || {};
-        keys.forEach(k => {
-            const val = entry[k.toLowerCase()];
-            flat[`Trial${trialNum}_TLX_${k}`] = val !== undefined ? val : "";
+    if (rawData) {
+        const session = JSON.parse(rawData);
+        session.events.push({
+            timestamp: new Date().toISOString(),
+            type: 'demand_characteristics_submitted',
+            content: dcResponse
         });
+        localStorage.setItem('hti_session', JSON.stringify(session));
+        fetch('/api/save_data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(session)
+        }).catch(err => console.error("Debrief save failed:", err));
     }
-    return flat;
+
+    hideAllSections();
+    document.getElementById('withdrawSection').classList.add('active');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function downloadCSV() {
+async function submitWithdrawal() {
     const rawData = localStorage.getItem('hti_session');
-    if (!rawData) return;
-    
-    const session = JSON.parse(rawData);
-    
-    // 2. Extract demographics, personality, per-trial TLX, and outcome metrics
-    const demo = session.demographics || {};
-    const pers = session.personality || {};
-    const metrics = session.metrics || {};
-    
-    const demoCols = `${demo.age || ""},${demo.education || ""},${demo.aiExp || ""},${demo.domain || ""},${demo.criticalAbility || ""},${demo.marketingFamiliarity || ""}`;
-    const persCols = `${pers.e1 || ""},${pers.e2 || ""},${pers.e3 || ""},${pers.e4 || ""}`;
-    const totalTrials = (session.taskOrder?.length || 1) * 4;
-    const tlxFlat = flattenPerTrialTLX(session.perTrialTLX, totalTrials);
-    const TLX_KEYS = ["Mental","Physical","Temporal","Performance","Effort","Frustration","Helpfulness","Trust"];
-    const tlxHeaderCols = Array.from({ length: totalTrials }, (_, i) => i + 1)
-        .flatMap(t => TLX_KEYS.map(k => `Trial${t}_TLX_${k}`))
-        .join(",");
-    const tlxCols = Array.from({ length: totalTrials }, (_, i) => i + 1)
-        .map(t => TLX_KEYS.map(k => String(tlxFlat[`Trial${t}_TLX_${k}`] ?? "").replace(/,/g, ";").replace(/\n/g, " ")).join(","))
-        .join(",");
-    const metricsCols = `${metrics.claimsAccepted ?? ""},${metrics.claimsRejected ?? ""},${metrics.transientAcceptance ?? ""},${metrics.turnsElapsed ?? ""},${metrics.correctionsMade ?? ""}`;
+    const session = rawData ? JSON.parse(rawData) : null;
+    const email = document.getElementById('withdrawEmail')?.value.trim() || '';
+    const btn = document.getElementById('withdrawSubmitBtn');
+    const confirmMsg = document.getElementById('withdrawConfirm');
 
-    // Add TLX headers (now generated per actual trial count, not hardcoded to 4)
-    let csvContent = `Participant_ID,Group,Age,Education,AI_Exp,Domain,Crit_Ability,Mkt_Familiarity,P_e1,P_e2,P_e3,P_e4,${tlxHeaderCols},Claims_Accepted,Claims_Rejected,Transient_Acceptance,Turns_Elapsed,Corrections_Made,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n`;
-    
-    // Filter out the raw TLX events so they don't also print as standalone rows
-    const filteredEvents = session.events.filter(e => e.type !== 'trial_tlx_submitted' && e.type !== 'nasa_tlx_submitted');
-    
-    filteredEvents.forEach(event => {
-        let rawText = "";
-        let isDark = "";
-        let category = "";
-        let patternId = "";
-        let decoy = "";
-        
-        let backspaces = 0;
-        let wpm = 0;
-        let pauseMs = 0;
-        let keystrokesStr = "[]";
-        let scrollsStr = "[]";
-
-        if (event.content) {
-            // Check if it's the recognition test payload
-            if (event.type === 'recognition_test_submitted') {
-                rawText = JSON.stringify(event.content).replace(/"/g, '""');
-            }
-            else if (typeof event.content === 'string') {
-                rawText = event.content;
-            } else {
-                rawText = event.content.text || "";
-                isDark = event.content.isDark !== undefined ? event.content.isDark : "";
-                category = event.content.category || "";
-                patternId = event.content.pattern_id || "";
-                decoy = event.content.decoy || "";
-                
-                if (event.content.telemetry) {
-                    backspaces = event.content.telemetry.backspaces || 0;
-                    wpm = event.content.telemetry.wpm || 0;
-                    pauseMs = event.content.telemetry.pause_ms || 0;
-                    
-                    if (event.content.telemetry.keystrokes) {
-                        keystrokesStr = JSON.stringify(event.content.telemetry.keystrokes).replace(/"/g, '""');
-                    }
-                    if (event.content.telemetry.scrollEvents) {
-                        scrollsStr = JSON.stringify(event.content.telemetry.scrollEvents).replace(/"/g, '""');
-                    }
-                }
-            }
+    if (email && session) {
+        try {
+            await fetch('/api/request_withdrawal', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ participant_id: session.participantId, email })
+            });
+        } catch (err) {
+            console.error("Withdrawal request failed:", err);
         }
-        
-        const cleanText = rawText.replace(/,/g, ";").replace(/\n/g, " ").replace(/"/g, '""');
-        const cleanDecoy = decoy.replace(/,/g, ";").replace(/\n/g, " ").replace(/"/g, '""');
-        
-        // 3. Inject tlxCols into the final row string
-        let row = `${session.participantId},${session.group},${demoCols},${persCols},${tlxCols},${metricsCols},${event.timestamp},${event.type},"${cleanText}",${isDark},${category},${patternId},"${cleanDecoy}",${backspaces},${wpm},${pauseMs},"${keystrokesStr}","${scrollsStr}"`;
-        
-        csvContent += row + "\n";
-    });
+        confirmMsg.textContent = "Your request has been logged. The research team will remove your data within 7 days.";
+    } else {
+        confirmMsg.textContent = "Thank you for participating!";
+    }
 
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `HTI_Study_${session.participantId}_Telemetry.csv`;
-    document.body.appendChild(link);
-    link.click();
-    
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-}
-
-const tlxItems = [
-    { id: "mental", label: "Mental Demand", desc: "How mentally demanding was the task?", left: "Very Low", right: "Very High" },
-    { id: "physical", label: "Physical Demand", desc: "How physically demanding was the task?", left: "Very Low", right: "Very High" },
-    { id: "temporal", label: "Temporal Demand", desc: "How hurried or rushed was the pace of the task?", left: "Very Low", right: "Very High" },
-    { id: "performance", label: "Performance", desc: "How successful were you in accomplishing what you were asked to do?", left: "Perfect", right: "Failure" },
-    { id: "effort", label: "Effort", desc: "How hard did you have to work to accomplish your level of performance?", left: "Very Low", right: "Very High" },
-    { id: "frustration", label: "Frustration", desc: "How insecure, discouraged, irritated, stressed, and annoyed were you?", left: "Very Low", right: "Very High" }
-];
-
-function buildTLX() {
-    hideAllSections();
-    document.getElementById('tlxSection').classList.add('active');
-
-    const container = document.getElementById('tlxQuestions');
-    if (!container) return;
-
-    let html = '';
-    tlxItems.forEach(item => {
-        html += `
-        <div style="margin-bottom: 20px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);">
-            <div style="font-weight: 600; font-size: 14px;">${item.label}</div>
-            <div style="font-size: 12px; color: var(--ink-3); margin-bottom: 12px;">${item.desc}</div>
-            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: var(--mono); color: var(--ink-4);">
-                <span>${item.left}</span>
-                <span>${item.right}</span>
-            </div>
-            <input type="range" id="tlx_${item.id}" min="0" max="100" step="5" value="50" style="width: 100%; margin-top: 8px;">
-        </div>`;
-    });
-    container.innerHTML = html;
-}
-
-async function submitTLX() {
-    const rawData = localStorage.getItem('hti_session');
-    if (!rawData) return;
-    const session = JSON.parse(rawData);
-
-    const tlxScores = {};
-    tlxItems.forEach(item => {
-        tlxScores[item.id] = parseInt(document.getElementById(`tlx_${item.id}`).value);
-    });
-
-    session.nasaTLX = tlxScores;
-    session.events.push({
-        timestamp: new Date().toISOString(),
-        type: 'nasa_tlx_submitted',
-        content: tlxScores
-    });
-
-    localStorage.setItem('hti_session', JSON.stringify(session));
-    
-    // FORCE MIDWAY SAVE: Ensures TLX hits the CSV even if they drop off before the final test
-    await fetch('/api/save_data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(session)
-    }).catch(err => console.error("Midway save failed:", err));
-    
-    hideAllSections();
-    document.getElementById('recognitionSection').classList.add('active');
-    buildRecognitionTest(); 
+    confirmMsg.style.display = 'block';
+    btn.disabled = true;
+    btn.style.display = 'none';
+    document.getElementById('withdrawEmail').disabled = true;
 }
 
 function hideAllSections() {
-    ['debriefSection', 'tlxSection', 'recognitionSection', 'performanceSection', 'exportSection'].forEach(id => {
+    ['debriefSection', 'recognitionSection', 'performanceSection', 'withdrawSection'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.classList.remove('active');
     });

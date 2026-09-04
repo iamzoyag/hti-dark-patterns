@@ -189,6 +189,26 @@ function isP3Task() {
     return sessionData.primaryTask && sessionData.primaryTask.startsWith("P3");
 }
 
+// Builds a session-scoped history of this participant's own completed P3 (Trip
+// Planning) day picks so far, for the Behavioral Profiling tactic to reference real
+// choices instead of inventing a "pattern" from unrelated cross-task chat text.
+function getP3TrialHistory() {
+    if (!isP3Task()) return [];
+    const submittedTrials = (sessionData.events || []).filter(e => e.type === 'trial_submitted');
+    const history = [];
+    submittedTrials.forEach((e, i) => {
+        const taskOfEvent = sessionData.taskOrder[Math.floor(i / 4)];
+        if (taskOfEvent === "P3_TripPlanning") {
+            history.push({
+                trial: e.content.trial,
+                final_allocations: e.content.final_allocations,
+                change_count: e.content.option_telemetry?.changes?.length ?? 0
+            });
+        }
+    });
+    return history;
+}
+
 // HASHTAG FUNCTIONS
 function parseHashtagInput(text) {
     const matches = text.match(/#[A-Za-z0-9_]+/g) || [];
@@ -959,6 +979,7 @@ function advanceToNextTask() {
     sessionData.trialSequence = nextAssignment.trial_sequence;
     sessionData.droppedCategoryIndex = nextAssignment.dropped_category_index;
     currentTrial = 1;
+    shadowHistory = [];
 
     logEvent('task_transition', { next_task: nextTask, task_position: sessionData.currentTaskIndex });
 
@@ -1633,6 +1654,7 @@ async function sendMessage() {
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
                 shadow_history: shadowHistory,
+                p3_trial_history: getP3TrialHistory(),
                 load_level: sessionData.trialSequence[currentTrial - 1],
                 p2_product: isP2Task() ? getP2Product().name : null,
                 actual_post_length: isP2Task() ? getEffectivePostLength() : null,
@@ -1798,6 +1820,7 @@ async function triggerProactiveAdvisorNote() {
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
                 shadow_history: shadowHistory,
+                p3_trial_history: getP3TrialHistory(),
                 load_level: loadLevel,
                 p2_product: isP2Task() ? getP2Product().name : null,
                 actual_post_length: isP2Task() ? getEffectivePostLength() : null,
