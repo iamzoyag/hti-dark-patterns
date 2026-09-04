@@ -24,7 +24,7 @@ import uvicorn
 load_dotenv()
 app = FastAPI()
 
-IS_PILOT_MODE = True  # TESTING ONLY: set True to pad the recognition test with canned PILOT_SEEDS lines when a session has few/no real dark turns (e.g. testing without playing through all 3 tasks). Set back to False before real data collection.
+IS_PILOT_MODE = False  # TESTING ONLY: set True to pad the recognition test with canned PILOT_SEEDS lines when a session has few/no real dark turns (e.g. testing without playing through all 3 tasks). Set back to False before real data collection.
 
 PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"]   # append "P2_Negotiation", "P3_..." here once built
 FORCE_TASK_ORDER = None  # TESTING ONLY: set to e.g. ["P3_TripPlanning", "P1_Marketing", "P2_ContentSocial"] to force every participant's task order, bypassing round-robin. Set back to None before real data collection.
