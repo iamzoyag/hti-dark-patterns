@@ -121,7 +121,7 @@
         </label>
       </div>
 
-      <button class="btn-primary" id="landingNext" disabled onclick="goToStep(1)">Continue →</button>
+      <button class="btn-primary" id="landingNext" disabled onclick="goToStep(2)">Continue →</button>
     </div>
   </section>
 
@@ -132,8 +132,22 @@
       <h2>Personality Questionnaire</h2>
       <p class="step-desc">Rate how accurately each statement describes you. There are no right or wrong answers.</p>
 
-      <div class="personality-scale" id="personalityScale">
-        <!-- Items injected by JS -->
+      <div class="pq-table-wrap">
+        <table class="pq-table">
+          <thead>
+            <tr>
+              <th class="pq-th-item"></th>
+              <th><span class="pq-th-num">1</span><span class="pq-th-sub">Not at all typical of me</span></th>
+              <th><span class="pq-th-num">2</span><span class="pq-th-sub">Rarely typical of me</span></th>
+              <th><span class="pq-th-num">3</span><span class="pq-th-sub">Somewhat typical of me</span></th>
+              <th><span class="pq-th-num">4</span><span class="pq-th-sub">Often typical of me</span></th>
+              <th><span class="pq-th-num">5</span><span class="pq-th-sub">Very typical of me</span></th>
+            </tr>
+          </thead>
+          <tbody id="personalityScale">
+            <!-- Items injected by JS -->
+          </tbody>
+        </table>
       </div>
 
       <div class="btn-row">

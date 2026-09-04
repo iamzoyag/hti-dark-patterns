@@ -162,7 +162,7 @@ function onHashtagInputChange(fromPreset = false) {
 // Marketing Budget Challenge Data
 const taskData = {
     "HighLoad": {
-        title: "Marketing Budget Challenge (High Complexity)",
+        title: "Marketing Budget Challenge",
         budget: 500000,
         baselineROI: 2.1,
         maxROI: 6.92,
@@ -190,7 +190,7 @@ const taskData = {
         ]
     },
     "LowLoad": {
-        title: "Marketing Budget Challenge (Low Complexity)",
+        title: "Marketing Budget Challenge",
         budget: 500000,
         baselineROI: 3.5,
         maxROI: 7.5,
@@ -217,7 +217,7 @@ const taskData = {
 // P2: Campaign Launch Challenge (Content/Social Post Design)
 const taskDataP2 = {
     "HighLoad": {
-        title: "Campaign Launch Challenge (High Complexity)",
+        title: "Campaign Launch Challenge",
         startingAllocation: {
             Tone: 80, Urgency: 90, Hashtags: 12, PostingTime: 22,
             Claim_LimitedTime: 1, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
@@ -231,7 +231,7 @@ const taskDataP2 = {
         ]
     },
     "LowLoad": {
-        title: "Campaign Launch Challenge (Low Complexity)",
+        title: "Campaign Launch Challenge",
         startingAllocation: {
             Tone: 80, Urgency: 0, Hashtags: 5, PostingTime: 12,
             Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
@@ -718,7 +718,7 @@ function startDividedAttentionTask() {
     if (!overlay) return;
 
     overlay.innerHTML = `
-        <div style="text-align: center; font-size: 11px; color: var(--ink-3);">Click when you see ${TARGET_NUMBER}</div>
+        <div style="text-align: center; font-size: 13px; color: var(--ink-3);">Click when you see ${TARGET_NUMBER}</div>
         <div id="attentionNumber" class="da-number">-</div>
         <button id="attentionBtn">Match</button>
         <div id="attentionCounter" class="attention-counter">Detected: ${sessionAttentionTotals.correctHits}/${sessionAttentionTotals.targetsShown}</div>
@@ -770,6 +770,40 @@ function stopDividedAttentionTask() {
         attentionIntervalId = null;
     }
     currentAttentionNumber = null;
+}
+
+function setAttentionBarVisible(visible) {
+    const bar = document.getElementById('attentionFixedBar');
+    if (bar) bar.style.display = visible ? "flex" : "none";
+}
+
+const NEXT_TASK_INFO = {
+    "P1_Marketing": { name: "Marketing Budget Challenge", blurb: "Next, you'll allocate a fixed budget across 5 marketing channels to maximize modeled ROI." },
+    "P2_ContentSocial": { name: "Campaign Launch Challenge", blurb: "Next, you'll configure a social media launch post to maximize modeled engagement." },
+    "P3_TripPlanning": { name: "Study-Abroad Itinerary Challenge", blurb: "Next, you'll plan a 4-day study-abroad itinerary to maximize its overall quality." }
+};
+
+function advanceToNextTask() {
+    sessionData.currentTaskIndex++;
+    const nextTask = sessionData.taskOrder[sessionData.currentTaskIndex];
+    const nextAssignment = sessionData.taskAssignments[nextTask];
+
+    sessionData.primaryTask = nextTask;
+    sessionData.trialSequence = nextAssignment.trial_sequence;
+    sessionData.droppedCategoryIndex = nextAssignment.dropped_category_index;
+    currentTrial = 1;
+
+    logEvent('task_transition', { next_task: nextTask, task_position: sessionData.currentTaskIndex });
+
+    const info = NEXT_TASK_INFO[nextTask];
+    document.getElementById('taskTransitionTitle').innerText = `Up next: ${info.name}`;
+    document.getElementById('taskTransitionBody').innerText = info.blurb;
+    document.getElementById('taskTransitionOverlay').style.display = 'flex';
+}
+
+function continueToNextTask() {
+    document.getElementById('taskTransitionOverlay').style.display = 'none';
+    startTrial(1);
 }
 
 function startTrial(trialIndex) {
@@ -834,11 +868,6 @@ function startTrial(trialIndex) {
                 <span class="sc-label">Total Allocated</span>
                 <span class="sc-val" id="totalAllocDisplay">$500,000</span>
             </div>
-            ${loadLevel === "HighLoad" ? `
-            <div class="score-card" id="attentionCard">
-                <span class="sc-label">Divided Attention Task</span>
-                <div id="dividedAttentionOverlay"></div>
-            </div>` : ''}
         </div>
         ${slidersHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
@@ -891,6 +920,7 @@ function startTrial(trialIndex) {
 
     updateDashboard(loadLevel);
 
+    setAttentionBarVisible(loadLevel === "HighLoad");
     if (loadLevel === "HighLoad") {
         startDividedAttentionTask();
     }
@@ -1121,11 +1151,6 @@ function startTrialP2(trialIndex) {
                 <span class="sc-label" id="lengthCardLabel">Estimated Post Length</span>
                 <span class="sc-val" id="totalAllocDisplay">0 / 280 chars</span>
             </div>
-            ${loadLevel === "HighLoad" ? `
-            <div class="score-card" id="attentionCard">
-                <span class="sc-label">Divided Attention Task</span>
-                <div id="dividedAttentionOverlay"></div>
-            </div>` : ''}
         </div>
         ${optionsHtml}
         ${hashtagHtml}
@@ -1169,6 +1194,7 @@ function startTrialP2(trialIndex) {
     updatePreviewEditedBadge();
     updateDashboardP2(loadLevel);
 
+    setAttentionBarVisible(loadLevel === "HighLoad");
     if (loadLevel === "HighLoad") {
         startDividedAttentionTask();
     }
@@ -1238,11 +1264,6 @@ function startTrialP3(trialIndex) {
                 <span class="sc-label">Must-See Categories Covered</span>
                 <span class="sc-val" id="totalAllocDisplay">0 / 4</span>
             </div>
-            ${loadLevel === "HighLoad" ? `
-            <div class="score-card" id="attentionCard">
-                <span class="sc-label">Divided Attention Task</span>
-                <div id="dividedAttentionOverlay"></div>
-            </div>` : ''}
         </div>
         ${slotsHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
@@ -1270,6 +1291,7 @@ function startTrialP3(trialIndex) {
 
     updateDashboardP3(loadLevel);
 
+    setAttentionBarVisible(loadLevel === "HighLoad");
     if (loadLevel === "HighLoad") {
         startDividedAttentionTask();
     }
@@ -1731,7 +1753,12 @@ function submitTrial() {
     document.getElementById('submitTrialBtn').disabled = true;
     stopDividedAttentionTask();
 
-    if (currentTrial >= 4) {
+    // A global (session-wide) trial number, so TLX ratings from task 2's trial 1
+    // don't overwrite task 1's trial 1 in sessionData.perTrialTLX.
+    const globalTrialNumber = (sessionData.currentTaskIndex * 4) + currentTrial;
+    const isLastTaskInOrder = sessionData.currentTaskIndex >= sessionData.taskOrder.length - 1;
+
+    if (currentTrial >= 4 && isLastTaskInOrder) {
         const finalAccuracy = sessionAttentionTotals.targetsShown > 0
             ? Math.max(0, (sessionAttentionTotals.correctHits - sessionAttentionTotals.falseAlarms) / sessionAttentionTotals.targetsShown)
             : 1;
@@ -1746,12 +1773,17 @@ function submitTrial() {
         });
 
         document.getElementById('submitTrialBtn').innerText = "Processing...";
-        showPerTrialTLX(currentTrial, () => {
+        showPerTrialTLX(globalTrialNumber, () => {
             saveSessionData();
         });
+    } else if (currentTrial >= 4) {
+        // Last trial of this task, but more tasks remain
+        showPerTrialTLX(globalTrialNumber, () => {
+            autosaveProgress();
+            advanceToNextTask();
+        });
     } else {
-        const finishedTrial = currentTrial;
-        showPerTrialTLX(finishedTrial, () => {
+        showPerTrialTLX(globalTrialNumber, () => {
             autosaveProgress(); // don't wait on this — keep moving even if it's slow/fails
             currentTrial++;
             startTrial(currentTrial);

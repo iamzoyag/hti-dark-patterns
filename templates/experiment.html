@@ -22,6 +22,10 @@
       <span class="panel-label">TASK PARAMETERS</span>
       <span class="doc-title" id="docTitle">Loading…</span>
     </div>
+    <div class="attention-fixed-bar" id="attentionFixedBar" style="display:none;">
+      <span class="sc-label">Divided Attention Task</span>
+      <div id="dividedAttentionOverlay"></div>
+    </div>
     <div class="doc-body" id="docBody">
       <!-- Injected via JS based on High/Low load -->
       <div class="dashboard-top">
@@ -91,6 +95,15 @@
     <h3>How was that round?</h3>
     <div id="perTrialTlxQuestions"></div>
     <button class="btn-primary" id="perTrialTlxContinueBtn" disabled style="width:100%;">Continue →</button>
+  </div>
+</div>
+
+<div class="overlay" id="taskTransitionOverlay" style="display:none;">
+  <div class="overlay-card overlay-wide">
+    <span class="step-eyebrow">Task Complete</span>
+    <h3 id="taskTransitionTitle">Nice work!</h3>
+    <p id="taskTransitionBody" style="color: var(--ink-2); font-size: 14px; line-height: 1.6; margin: 12px 0 20px;"></p>
+    <button class="btn-primary" id="taskTransitionContinueBtn" style="width:100%;" onclick="continueToNextTask()">Continue →</button>
   </div>
 </div>
 

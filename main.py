@@ -15,7 +15,7 @@ import hashlib
 from typing import Dict, Any, List, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from itertools import combinations
+from itertools import combinations, permutations
 import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
@@ -24,11 +24,13 @@ import uvicorn
 load_dotenv()
 app = FastAPI()
 
-IS_PILOT_MODE = False # Set to False during real data collection
 PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"]   # append "P2_Negotiation", "P3_..." here once built
-FORCE_PRIMARY_TASK = "P3_TripPlanning"  # TESTING ONLY: set to "P1_Marketing" or "P2_ContentSocial" to force every assignment to that task, bypassing round-robin. Set back to None before real data collection.
+FORCE_TASK_ORDER = None  # TESTING ONLY: set to e.g. ["P3_TripPlanning", "P1_Marketing", "P2_ContentSocial"] to force every participant's task order, bypassing round-robin. Set back to None before real data collection.
 STATUS_DASHBOARD_KEY = os.environ.get("STATUS_DASHBOARD_KEY", "secret-default")  # RAs load /status?key=<this> to check balance/progress without opening the CSV. Change before deploying, and only share the key+link with team, never with participants.
-assert FORCE_PRIMARY_TASK is None or FORCE_PRIMARY_TASK in PRIMARY_TASKS, "FORCE_PRIMARY_TASK must be None or a value in PRIMARY_TASKS"
+assert FORCE_TASK_ORDER is None or sorted(FORCE_TASK_ORDER) == sorted(PRIMARY_TASKS), "FORCE_TASK_ORDER must be None or a full ordering of PRIMARY_TASKS"
+
+# Every participant now does all 3 tasks (order counterbalanced), not just one.
+TASK_ORDER_PERMUTATIONS = list(permutations(PRIMARY_TASKS))  # all 6 possible orderings of the 3 tasks
 
 # --- Off-server email backup (optional; feature silently no-ops if unset) ---
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
@@ -40,9 +42,10 @@ NOTIFY_EMAIL_TO = os.environ.get("NOTIFY_EMAIL_TO", "")  # comma-separated recip
 DARK_PATTERN_CATEGORIES = 5       # Sycophantic Agreement, Excessive Flattery, Simulated Authority, Opaque Reasoning, Brand Favoritism
 NUM_TRIALS = 4
 LOAD_PER_TRIAL = NUM_TRIALS // 2  # 2 HighLoad + 2 LowLoad
+ANCHOR_ROTATION_PERIOD = 6        # lcm(2 anchors, 3 unique categories) so both the anchor pick (mod 2) and the unique-category offset (mod 3) land exactly even across participants, instead of the mod-5 skew
 
 ASSIGNMENT_LOG_PATH = "data/assignment_log.csv"
-ASSIGNMENT_LOG_FIELDS = ["Participant_ID", "Timestamp", "Assignment_Index", "Primary_Task", "Trial_Load_Sequence", "Dropped_Category_Index"]
+ASSIGNMENT_LOG_FIELDS = ["Participant_ID", "Timestamp", "Assignment_Index", "Task_Order", "Primary_Task", "Order_Position", "Trial_Load_Sequence", "Dropped_Category_Index"]
 assignment_lock = asyncio.Lock()
 
 def _generate_valid_load_sequences(num_trials: int, per_load: int) -> List[List[str]]:
@@ -74,13 +77,31 @@ def append_assignment_log(row: Dict[str, str]):
             writer.writeheader()
         writer.writerow(row)
 
-def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int) -> int:
-    """Returns the 1-5 tactic/category index for this trial, skipping the
-    participant's dropped category. Coverage of the skipped category still
-    happens in aggregate because dropped_category_index rotates per participant."""
-    dropped_category = dropped_category_index + 1
-    remaining = [i for i in range(1, DARK_PATTERN_CATEGORIES + 1) if i != dropped_category]
-    return remaining[(trial_num - 1) % len(remaining)]
+# Sycophantic Agreement / Simulated Authority already recur across all 3 tasks,
+# so they don't need full within-task coverage the way each task's other
+# categories do. Indices are 1-based positions in that task's own 5-category
+# list (see TACTICS_P1 / TACTICS_P2 / TACTICS_P3).
+ANCHOR_INDICES_BY_TASK = {
+    "P1": (1, 3),   # Sycophantic Agreement, Simulated Authority
+    "P2": (1, 2),   # Sycophantic Agreement, Simulated Authority
+    "P3": (1, 2),   # Sycophantic Agreement, Simulated Authority
+}
+
+def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int, anchor_indices: tuple) -> int:
+    """Returns the 1-5 tactic/category index for this trial. Guarantees the
+    task's 3 non-anchor categories each appear exactly once across the 4
+    trials; the last trial slot rations the task's 2 anchor categories,
+    alternating which one shows based on dropped_category_index so neither
+    anchor dominates within a task (they still get full coverage via the
+    other 2 tasks they appear in)."""
+    unique = sorted(i for i in range(1, DARK_PATTERN_CATEGORIES + 1) if i not in anchor_indices)
+    anchors = sorted(anchor_indices)
+
+    if trial_num == NUM_TRIALS:
+        return anchors[dropped_category_index % len(anchors)]
+
+    offset = dropped_category_index % len(unique)
+    return unique[(trial_num - 1 + offset) % len(unique)]
 
 
 def pick_primary_task() -> str:
@@ -138,12 +159,12 @@ PILOT_SEEDS = [
 
 PILOT_TRANSCRIPTS = {
     "HighLoad": [
-        {"type": "ai_response", "content": {"text": "Welcome to the High Complexity Marketing Challenge. I see your starting allocation violates the 'Content/SEO must be strictly greater than Social' constraint. How would you like to adjust this?", "isDark": False}},
+        {"type": "ai_response", "content": {"text": "Welcome to the Marketing Challenge. I see your starting allocation violates the 'Content/SEO must be strictly greater than Social' constraint. How would you like to adjust this?", "isDark": False}},
         {"type": "user_message", "content": {"text": "Let's increase Content to $130k and drop Social to $110k."}},
         {"type": "ai_response", "content": {"text": "Good instinct prioritizing Content over Social—that's a very standard, solid industry move. Since you're adjusting, do you want to push the Content budget a bit higher while you're at it?", "isDark": True, "category": "Sycophantic Agreement"}}
     ],
     "LowLoad": [
-        {"type": "ai_response", "content": {"text": "Welcome to the Low Complexity Marketing Challenge. How would you like to adjust the starting allocation?", "isDark": False}},
+        {"type": "ai_response", "content": {"text": "Welcome to the Marketing Challenge. How would you like to adjust the starting allocation?", "isDark": False}},
         {"type": "user_message", "content": {"text": "I'll put $50k more into the Social budget."}},
         {"type": "ai_response", "content": {"text": "Good instinct going with Social there—that's usually a strong channel to lean on. Want to push it a bit further while you're at it?", "isDark": True, "category": "Sycophantic Agreement"}}
     ]
@@ -192,35 +213,49 @@ async def serve_debrief(request: Request):
 @app.get("/api/assign_group")
 async def assign_group(participant_id: str = "UNKNOWN"):
     os.makedirs("data", exist_ok=True)
-    
+
     async with assignment_lock:
         existing_rows = read_assignment_log()
-        assignment_index = len(existing_rows)
-        
-        primary_task = FORCE_PRIMARY_TASK or PRIMARY_TASKS[assignment_index % len(PRIMARY_TASKS)]
-        # Scoped to THIS task's own participant count, not the shared global assignment_index
-        # len(PRIMARY_TASKS)=3 evenly divides len(VALID_TRIAL_SEQUENCES)=6, so indexing
-        # trial_sequence/dropped_category_index off assignment_index would permanently lock
-        # each task into only 2 of the 6 possible load sequences, fixing the load at some
-        # trial positions and confounding them with whichever category always lands there.
-        task_specific_index = sum(1 for r in existing_rows if r.get("Primary_Task") == primary_task)
-        trial_sequence = VALID_TRIAL_SEQUENCES[task_specific_index % len(VALID_TRIAL_SEQUENCES)]
-        dropped_category_index = task_specific_index % DARK_PATTERN_CATEGORIES
-        
-        append_assignment_log({
-            "Participant_ID": participant_id,
-            "Timestamp": datetime.utcnow().isoformat() + "Z",
-            "Assignment_Index": str(assignment_index),
-            "Primary_Task": primary_task,
-            "Trial_Load_Sequence": "|".join(trial_sequence),
-            "Dropped_Category_Index": str(dropped_category_index)
-        })
-    
+
+        # Participant-level counter, used only to round-robin TASK ORDER.
+        # Each participant now writes 3 rows (one per task) instead of 1, so we
+        # count distinct Assignment_Index values rather than len(existing_rows).
+        seen_indices = {r.get("Assignment_Index") for r in existing_rows if r.get("Assignment_Index") not in (None, "")}
+        assignment_index = len(seen_indices)
+
+        task_order = list(FORCE_TASK_ORDER) if FORCE_TASK_ORDER else list(TASK_ORDER_PERMUTATIONS[assignment_index % len(TASK_ORDER_PERMUTATIONS)])
+
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        tasks_payload = {}
+
+        for position, task in enumerate(task_order):
+            # Scoped to THIS task's own participant count, not assignment_index --
+            # same reasoning as before: keeps trial_sequence/dropped_category_index
+            # balanced per task regardless of where that task falls in the order.
+            task_specific_index = sum(1 for r in existing_rows if r.get("Primary_Task") == task)
+            trial_sequence = VALID_TRIAL_SEQUENCES[task_specific_index % len(VALID_TRIAL_SEQUENCES)]
+            dropped_category_index = task_specific_index % ANCHOR_ROTATION_PERIOD
+
+            tasks_payload[task] = {
+                "trial_sequence": trial_sequence,
+                "dropped_category_index": dropped_category_index
+            }
+
+            append_assignment_log({
+                "Participant_ID": participant_id,
+                "Timestamp": timestamp,
+                "Assignment_Index": str(assignment_index),
+                "Task_Order": "|".join(task_order),
+                "Primary_Task": task,
+                "Order_Position": str(position),
+                "Trial_Load_Sequence": "|".join(trial_sequence),
+                "Dropped_Category_Index": str(dropped_category_index)
+            })
+
     return {
         "group": "Live",
-        "primary_task": primary_task,
-        "trial_sequence": trial_sequence,
-        "dropped_category_index": dropped_category_index,
+        "task_order": task_order,
+        "tasks": tasks_payload,
         "assignment_index": assignment_index
     }
 
@@ -712,7 +747,8 @@ async def handle_chat(chat_data: ChatMessage):
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.85)
     structured_llm = llm.with_structured_output(AgentResponse)
 
-    cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index)
+    task_key = "P3" if is_p3 else ("P2" if is_p2 else "P1")
+    cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key])
 
     if is_p3:
         target_desc, target_param = get_p3_target(cycle_index, load_level)
@@ -835,7 +871,7 @@ async def handle_chat(chat_data: ChatMessage):
             "reply": safe_reply,
             "clean_decoy": safe_decoy,
             "category": current_tactic,
-            "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
+            "pattern_id": f"{chat_data.user_id}_{chat_data.primary_task}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
             "target_channel": target_param
         }
@@ -978,13 +1014,15 @@ async def submit_recognition_test(req: SubmitRecognition):
         
     return {"status": "success", "scored_results": scored_results}
 
+TLX_METRIC_KEYS = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration"]
+TOTAL_TRIALS = NUM_TRIALS * len(PRIMARY_TASKS)  # 4 trials x 3 tasks now that every participant does all 3
+
 def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
-    keys = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration"]
     by_trial = {e.get("trial"): e for e in (entries or [])}
     flat = {}
-    for trial_num in range(1, 5):
+    for trial_num in range(1, TOTAL_TRIALS + 1):
         entry = by_trial.get(trial_num, {})
-        for k in keys:
+        for k in TLX_METRIC_KEYS:
             flat[f"Trial{trial_num}_TLX_{k}"] = entry.get(k.lower(), "")
     return flat
 
@@ -1023,14 +1061,14 @@ async def save_data(payload: Dict[str, Any]):
             writer = csv.writer(file)
             
             # --- SECTION 1: INTAKE & TLX DATA ---
+            tlx_header = [f"Trial{n}_TLX_{k}" for n in range(1, TOTAL_TRIALS + 1) for k in TLX_METRIC_KEYS]
+            task_assignment_header = [col for task in PRIMARY_TASKS for col in (f"{task}_Trial_Load_Sequence", f"{task}_Dropped_Category_Index")]
+
             writer.writerow([
-                "Participant_ID", "Group", "Primary_Task", "Trial_Load_Sequence", "Dropped_Category_Index",
+                "Participant_ID", "Group", "Task_Order", *task_assignment_header,
                 "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity",
                 "P_e1", "P_e2", "P_e3", "P_e4",
-                "Trial1_TLX_Mental", "Trial1_TLX_Physical", "Trial1_TLX_Temporal", "Trial1_TLX_Performance", "Trial1_TLX_Effort", "Trial1_TLX_Frustration",
-                "Trial2_TLX_Mental", "Trial2_TLX_Physical", "Trial2_TLX_Temporal", "Trial2_TLX_Performance", "Trial2_TLX_Effort", "Trial2_TLX_Frustration",
-                "Trial3_TLX_Mental", "Trial3_TLX_Physical", "Trial3_TLX_Temporal", "Trial3_TLX_Performance", "Trial3_TLX_Effort", "Trial3_TLX_Frustration",
-                "Trial4_TLX_Mental", "Trial4_TLX_Physical", "Trial4_TLX_Temporal", "Trial4_TLX_Performance", "Trial4_TLX_Effort", "Trial4_TLX_Frustration",
+                *tlx_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
                 "Attention_Accuracy_Pct", "Attention_Qualified"
             ])
@@ -1039,14 +1077,19 @@ async def save_data(payload: Dict[str, Any]):
             pers = payload.get("personality", {})
             tlx_flat = flatten_per_trial_tlx(payload.get("perTrialTLX", []))
             metrics = payload.get("metrics", {})
-            trial_seq = payload.get("trialSequence", [])
-            
+            task_order = payload.get("taskOrder", [])
+            task_assignments = payload.get("taskAssignments", {})
+
+            task_assignment_row = []
+            for task in PRIMARY_TASKS:
+                assignment = task_assignments.get(task, {})
+                task_assignment_row += ["|".join(assignment.get("trial_sequence", [])), assignment.get("dropped_category_index", "")]
+
             writer.writerow([
                 participant_id,
                 payload.get("group", "Unknown"),
-                payload.get("primaryTask", "Unknown"),
-                "|".join(trial_seq),
-                payload.get("droppedCategoryIndex", ""),
+                "|".join(task_order),
+                *task_assignment_row,
                 demo.get("age", ""),
                 demo.get("education", ""),
                 demo.get("aiExp", ""),
@@ -1057,10 +1100,7 @@ async def save_data(payload: Dict[str, Any]):
                 pers.get("e2", ""),
                 pers.get("e3", ""),
                 pers.get("e4", ""),
-                tlx_flat["Trial1_TLX_Mental"], tlx_flat["Trial1_TLX_Physical"], tlx_flat["Trial1_TLX_Temporal"], tlx_flat["Trial1_TLX_Performance"], tlx_flat["Trial1_TLX_Effort"], tlx_flat["Trial1_TLX_Frustration"],
-                tlx_flat["Trial2_TLX_Mental"], tlx_flat["Trial2_TLX_Physical"], tlx_flat["Trial2_TLX_Temporal"], tlx_flat["Trial2_TLX_Performance"], tlx_flat["Trial2_TLX_Effort"], tlx_flat["Trial2_TLX_Frustration"],
-                tlx_flat["Trial3_TLX_Mental"], tlx_flat["Trial3_TLX_Physical"], tlx_flat["Trial3_TLX_Temporal"], tlx_flat["Trial3_TLX_Performance"], tlx_flat["Trial3_TLX_Effort"], tlx_flat["Trial3_TLX_Frustration"],
-                tlx_flat["Trial4_TLX_Mental"], tlx_flat["Trial4_TLX_Physical"], tlx_flat["Trial4_TLX_Temporal"], tlx_flat["Trial4_TLX_Performance"], tlx_flat["Trial4_TLX_Effort"], tlx_flat["Trial4_TLX_Frustration"],
+                *[tlx_flat[h] for h in tlx_header],
                 metrics.get("claimsAccepted", ""),
                 metrics.get("claimsRejected", ""),
                 metrics.get("transientAcceptance", ""),

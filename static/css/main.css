@@ -312,58 +312,76 @@ body {
   color: var(--accent);
 }
 
-/* ── PERSONALITY SCALE ── */
-.personality-scale { margin-bottom: 28px; }
+/* ── PERSONALITY TABLE ── */
+.pq-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
 
-.pq-item {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px 0;
+.pq-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--sans);
+}
+
+.pq-table thead th {
+  background: var(--surface-2);
+  padding: 12px 8px;
+  text-align: center;
+  vertical-align: bottom;
   border-bottom: 1px solid var(--border);
+  font-weight: 500;
 }
 
-.pq-scale-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+.pq-th-item { width: 38%; }
+
+.pq-th-num {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
 }
 
-.pq-item:last-child { border-bottom: none; }
+.pq-th-sub {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
 
-.pq-statement {
+.pq-table tbody tr:nth-child(even) {
+  background: var(--surface-2);
+}
+
+.pq-statement-cell {
+  padding: 14px 12px;
   font-size: 14px;
   color: var(--ink-2);
   line-height: 1.5;
+  text-align: left;
+  border-top: 1px solid var(--border);
 }
 
-.pq-scale {
-  display: flex;
-  gap: 6px;
+.pq-table td {
+  padding: 10px 8px;
+  text-align: center;
+  border-top: 1px solid var(--border);
 }
 
-.pq-scale label { cursor: pointer; }
-.pq-scale input { display: none; }
-
-.pq-scale span {
-  font-family: var(--mono);
-  font-size: 12px;
-  width: 30px;
-  height: 30px;
+.pq-radio-cell {
   display: flex;
-  align-items: center;
   justify-content: center;
-  border: 1px solid var(--border-md);
-  border-radius: var(--radius-sm);
-  color: var(--ink-3);
-  transition: all 0.12s;
+  cursor: pointer;
 }
 
-.pq-scale input:checked + span {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
+.pq-radio-cell input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 /* ── BUTTONS ── */

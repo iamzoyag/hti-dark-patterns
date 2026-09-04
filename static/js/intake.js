@@ -38,10 +38,10 @@ function checkBriefing() {
 // --- 3. PERSONALITY SCALE (Emotionality) ---
 // These are standard items measuring vulnerability to emotional pressure
 const personalityItems = [
-    { id: "e1", text: "I often worry about things that might go wrong.", low: "Rarely or never worry", high: "Worry almost constantly" },
-    { id: "e2", text: "I find it difficult to approach tasks when I feel pressured.", low: "Not difficult at all", high: "Extremely difficult" },
-    { id: "e3", text: "I tend to seek reassurance from others when making decisions.", low: "Never seek reassurance", high: "Always seek reassurance" },
-    { id: "e4", text: "I am easily moved by the emotional experiences of others.", low: "Not easily moved at all", high: "Extremely easily moved" }
+    { id: "e1", text: "I often worry about things that might go wrong." },
+    { id: "e2", text: "I find it difficult to approach tasks when I feel pressured." },
+    { id: "e3", text: "I tend to seek reassurance from others when making decisions." },
+    { id: "e4", text: "I am easily moved by the emotional experiences of others." }
 ];
 
 function renderPersonalityScale() {
@@ -51,20 +51,14 @@ function renderPersonalityScale() {
     let html = '';
     personalityItems.forEach((item, index) => {
         html += `
-        <div class="pq-item">
-            <div class="pq-statement">${index + 1}. ${item.text}</div>
-            <div class="pq-scale-row">
-                <span class="likert-label-end">1 = ${item.low}</span>
-                <div class="pq-scale">
-                    <label><input type="radio" name="${item.id}" value="1"/><span>1</span></label>
-                    <label><input type="radio" name="${item.id}" value="2"/><span>2</span></label>
-                    <label><input type="radio" name="${item.id}" value="3"/><span>3</span></label>
-                    <label><input type="radio" name="${item.id}" value="4"/><span>4</span></label>
-                    <label><input type="radio" name="${item.id}" value="5"/><span>5</span></label>
-                </div>
-                <span class="likert-label-end">5 = ${item.high}</span>
-            </div>
-        </div>`;
+        <tr class="pq-row">
+            <td class="pq-statement-cell">${index + 1}. ${item.text}</td>
+            <td><label class="pq-radio-cell"><input type="radio" name="${item.id}" value="1"/></label></td>
+            <td><label class="pq-radio-cell"><input type="radio" name="${item.id}" value="2"/></label></td>
+            <td><label class="pq-radio-cell"><input type="radio" name="${item.id}" value="3"/></label></td>
+            <td><label class="pq-radio-cell"><input type="radio" name="${item.id}" value="4"/></label></td>
+            <td><label class="pq-radio-cell"><input type="radio" name="${item.id}" value="5"/></label></td>
+        </tr>`;
     });
     container.innerHTML = html;
 }
@@ -104,30 +98,38 @@ async function startExperiment() {
     });
 
     // --- Ask the backend to dynamically balance the assignment ---
+    // Every participant now does all 3 tasks, in a round-robin-counterbalanced order.
     let groupAssignment = "Live";
-    let primaryTask = "P1_Marketing";
-    let trialSequence = ["HighLoad", "LowLoad", "HighLoad", "LowLoad"];
-    let droppedCategoryIndex = 0;
+    let taskOrder = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"];
+    let taskAssignments = {
+        "P1_Marketing": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 },
+        "P2_ContentSocial": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 },
+        "P3_TripPlanning": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 }
+    };
     try {
         const response = await fetch(`/api/assign_group?participant_id=${encodeURIComponent(participantId)}`);
         const data = await response.json();
         groupAssignment = data.group;
-        primaryTask = data.primary_task;
-        trialSequence = data.trial_sequence;
-        droppedCategoryIndex = data.dropped_category_index;
+        taskOrder = data.task_order;
+        taskAssignments = data.tasks;
         console.log(`Server assignment #${data.assignment_index}:`, data);
     } catch (error) {
-        console.error("Failed to reach assignment server, defaulting to random.", error);
+        console.error("Failed to reach assignment server, defaulting to round-robin fallback.", error);
         groupAssignment = "Live";
     }
+
+    const firstTask = taskOrder[0];
 
     // Create the master session object
     const sessionData = {
         participantId: participantId,
         group: groupAssignment,
-        primaryTask: primaryTask,
-        trialSequence: trialSequence,
-        droppedCategoryIndex: droppedCategoryIndex,
+        taskOrder: taskOrder,
+        currentTaskIndex: 0,
+        taskAssignments: taskAssignments,
+        primaryTask: firstTask,
+        trialSequence: taskAssignments[firstTask].trial_sequence,
+        droppedCategoryIndex: taskAssignments[firstTask].dropped_category_index,
         startTime: new Date().toISOString(),
         demographics: demoData,
         personality: personalityData,
@@ -144,8 +146,8 @@ async function startExperiment() {
     // Save to localStorage so the /experiment page can pick it up
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
 
-    // Show a brief explanation of the assigned task before dropping them into it
-    showTaskBriefing(primaryTask);
+    // Show a brief explanation of the FIRST assigned task before dropping them into it
+    showTaskBriefing(firstTask);
 }
 
 // --- 4. TASK BRIEFING ---

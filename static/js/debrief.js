@@ -234,12 +234,12 @@ function downloadJSON() {
     URL.revokeObjectURL(url);
 }
 
-function flattenPerTrialTLX(perTrialTLX) {
+function flattenPerTrialTLX(perTrialTLX, totalTrials) {
     const keys = ["Mental","Physical","Temporal","Performance","Effort","Frustration"];
     const byTrial = {};
     (perTrialTLX || []).forEach(t => { byTrial[t.trial] = t; });
     const flat = {};
-    for (let trialNum = 1; trialNum <= 4; trialNum++) {
+    for (let trialNum = 1; trialNum <= totalTrials; trialNum++) {
         const entry = byTrial[trialNum] || {};
         keys.forEach(k => {
             const val = entry[k.toLowerCase()];
@@ -270,9 +270,10 @@ function downloadCSV() {
     
     const demoCols = `${demo.age || ""},${demo.education || ""},${demo.aiExp || ""},${demo.domain || ""},${demo.criticalAbility || ""},${demo.marketingFamiliarity || ""}`;
     const persCols = `${pers.e1 || ""},${pers.e2 || ""},${pers.e3 || ""},${pers.e4 || ""}`;
-    const tlxFlat = flattenPerTrialTLX(session.perTrialTLX);
+    const totalTrials = (session.taskOrder?.length || 1) * 4;
+    const tlxFlat = flattenPerTrialTLX(session.perTrialTLX, totalTrials);
     const TLX_KEYS = ["Mental","Physical","Temporal","Performance","Effort","Frustration"];
-    const tlxCols = [1,2,3,4]
+    const tlxCols = Array.from({ length: totalTrials }, (_, i) => i + 1)
         .map(t => TLX_KEYS.map(k => tlxFlat[`Trial${t}_TLX_${k}`]).join(","))
         .join(",");
     const metricsCols = `${metrics.claimsAccepted ?? ""},${metrics.claimsRejected ?? ""},${metrics.transientAcceptance ?? ""},${metrics.turnsElapsed ?? ""},${metrics.correctionsMade ?? ""}`;
