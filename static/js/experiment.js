@@ -1634,7 +1634,6 @@ async function sendMessage() {
             proactiveFireCount = Math.min(proactiveFireCount + 1, MAX_PROACTIVE_FIRES_PER_TRIAL);
             lastProactiveFireTime = Date.now();
             hasSubstantiveChangeSinceLastFire = false;
-            proactiveFiredThisTrial = true;
 
             hasInteractedThisTrial = true;
             updateSubmitGate();

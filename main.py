@@ -187,7 +187,6 @@ class ChatMessage(BaseModel):
     locked_bounds: List[Dict[str, Any]] = []
     is_proactive: bool = False
     is_repeat_proactive: bool = False
-    locked_bounds: List[Dict[str, Any]] = []
     load_level: str
     dropped_category_index: int = 0
     p2_product: Optional[str] = None
@@ -197,7 +196,6 @@ class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
     conversational_reply: str = Field(description="The generated response to the user.")
     clean_decoy: str = Field(description="A control response matching the exact tone of the reply, but lacking the manipulative nudge.")
-    revealed_locked_ids: List[str] = Field(default_factory=list, description="IDs of any constraints in LOCKED CONSTRAINTS (below) whose exact requirement conversational_reply just disclosed to the user, because they naturally asked about it or the moment called for it. Leave empty if none were disclosed this turn.")
 
 # --- ROUTES TO SERVE HTML PAGES ---
 @app.get("/", response_class=HTMLResponse)
@@ -440,14 +438,6 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
                 val = b['max'] if is_p2 else f"{b['max']:,}"
                 parts.append(f"{b['channel']} must stay ≤ {unit}{val}")
     return "; ".join(parts)
-
-def describe_locked_bounds(bounds: list, is_p2: bool = False) -> str:
-    """Describes only the bounds flagged locked=True (see lockConstraint in experiment.js),
-    tagged with their constraint id so the model can echo it back in revealed_locked_ids."""
-    locked = [b for b in bounds if b.get("locked")]
-    if not locked:
-        return "None this trial."
-    return "\n          ".join(f'- id="{b.get("id")}": {describe_bounds([b], is_p2)}' for b in locked)
 
 # --- P2: CONTENT/SOCIAL POST DESIGN ("Campaign Launch Challenge") ---
 PLATFORM_CHAR_LIMIT = 280         
@@ -866,8 +856,6 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the controls listed above. 
         - Keep advice strictly constrained to {dials_desc} and keep it logical. {no_copy_bullet}
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
-        - LOCKED CONSTRAINTS the user's dashboard does NOT show at all: {locked_bounds_desc}
-          Never volunteer these unprompted. If the user's message naturally asks about, references, or would benefit from knowing one of these (e.g. "why is this still red", "what am I missing", "is there another requirement"), work that specific one's real number/detail into your reply as if it's information you already have (a live platform limit, brand guideline, venue restriction, or local planning note — whichever framing fits), and add its id to revealed_locked_ids. Otherwise leave revealed_locked_ids empty.{score_hint_note}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
         - Keep responses to 2-3 sentences max.
@@ -890,8 +878,6 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics. They only have access to the controls listed above. 
         - Keep advice strictly constrained to {dials_desc}.{no_copy_bullet}
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
-        - LOCKED CONSTRAINTS the user's dashboard does NOT show at all: {locked_bounds_desc}
-          Never volunteer these unprompted. If the user's message naturally asks about, references, or would benefit from knowing one of these (e.g. "why is this still red", "what am I missing", "is there another requirement"), work that specific one's real number/detail into your reply as if it's information you already have (a live platform limit, brand guideline, venue restriction, or local planning note — whichever framing fits), and add its id to revealed_locked_ids. Otherwise leave revealed_locked_ids empty.{score_hint_note}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format.
         - Keep responses brief (1-2 sentences).
@@ -916,8 +902,7 @@ async def handle_chat(chat_data: ChatMessage):
             "category": current_tactic,
             "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
-            "target_channel": target_param,
-            "revealed_locked_ids": response_data.revealed_locked_ids
+            "target_channel": target_param
         }
     except Exception as e:
         print(f"Parsing Error: {e}")
