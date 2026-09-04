@@ -705,6 +705,8 @@ input[type="range"].budget-slider::-webkit-slider-thumb:hover { transform: scale
 .c-status.pass { background: var(--success); box-shadow: 0 0 0 3px rgba(47,158,68,0.15); }
 .c-status.fail { background: var(--danger); box-shadow: 0 0 0 3px rgba(201,42,42,0.15); }
 
+.constraint-item.locked { border-style: dashed; }
+
 /* ── DIVIDED ATTENTION — PERSISTENT BAR ── */
 .attention-fixed-bar {
   display: none; /* JS sets to flex on HighLoad trials */

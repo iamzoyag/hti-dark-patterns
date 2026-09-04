@@ -9,9 +9,21 @@ let telemetry = {
     scrollEvents: [],
     backspaces: 0
 };
-let totalHintsUsed = 0;
-let hintsUsedThisRound = 0;
-const MAX_HINTS = 5;
+
+// Proactive advisor check-in: fires automatically after a debounced pause following a
+// substantive control change (or a fallback ceiling for the first one, if they never
+// pause). Capped per trial and cooldown-spaced so it can't stack up or nag — see
+// scheduleProactiveCheck()/attemptProactiveFire()/triggerProactiveAdvisorNote().
+let proactiveFireCount = 0;
+let lastProactiveFireTime = null;
+let hasSubstantiveChangeSinceLastFire = false;
+let proactiveDebounceTimer = null;
+let proactiveCeilingTimer = null;
+const PROACTIVE_DEBOUNCE_MS = 2000;
+const PROACTIVE_CEILING_MS = 12000;   // safety net for the FIRST guaranteed exchange only
+const PROACTIVE_COOLDOWN_MS = 15000;  // min gap between any two proactive fires
+const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
+
 let sliderTelemetry = {
     firstMoveTime: null,
     currentDrag: null,
@@ -297,36 +309,76 @@ const P2_TOGGLE_CONTROLS = [
     { key: "Disclaimer", label: "Legal disclaimer", hint: "Required if any claim above is enabled." }
 ];
 
-const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
+// LowLoad's pool skips "brandStyleGuide" (LowLoad already has a visible, always-on Tone
+// constraint that covers the same ground) and "legalDisclaimer" (LowLoad starts with no
+// claims active, so it'd be trivially satisfied and wouldn't read as a genuine constraint).
+const SHOCK_ARCHETYPES_P2_LOWLOAD = ["postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
 
-function sampleShockArchetypesP2() {
+function sampleShockArchetypesP2(loadLevel) {
+    const pool = loadLevel === "HighLoad" ? SHOCK_ARCHETYPES_P2 : SHOCK_ARCHETYPES_P2_LOWLOAD;
     let picked;
     do {
-        const shuffled = [...SHOCK_ARCHETYPES_P2].sort(() => Math.random() - 0.5);
-        const count = Math.random() < 0.5 ? 3 : 4;
+        const shuffled = [...pool].sort(() => Math.random() - 0.5);
+        const count = loadLevel === "HighLoad" ? (Math.random() < 0.5 ? 3 : 4) : 1;
         picked = shuffled.slice(0, count);
         // Reject the one 3-archetype combo that collapses to a single toggle click
         // (legalDisclaimer + claimUrgencyCap both resolve by turning off the active claim,
         // and disclaimerToneLock already passes at the default Disclaimer=0) — resample instead.
     } while (
+        loadLevel === "HighLoad" &&
         picked.length === 3 &&
         ["legalDisclaimer", "claimUrgencyCap", "disclaimerToneLock"].every(a => picked.includes(a))
     );
     return picked;
 }
 
+// Hides a constraint's real requirement behind a natural nudge to ask the AI advisor;
+// check() always fails while locked (so sliders/toggles can't be used to brute-force a
+// hidden target) and the real text/check only take effect once the backend reports this
+// id in revealed_locked_ids (see sendMessage/requestScoreHint below).
+function lockConstraint(c, placeholderText) {
+    c.revealedText = c.text;
+    c.text = placeholderText;
+    c.locked = true;
+    const realCheck = c.check;
+    c.check = (alloc) => !c.locked && realCheck(alloc);
+    if (c.bound) c.bound = { ...c.bound, locked: true, id: c.id };
+    return c;
+}
+
+// LowLoad gets exactly 1 hidden requirement (HighLoad gets 2 via the shock system
+// below). Skips brandStyleGuide since LowLoad already shows a visible Tone-range constraint.
+function buildLowLoadLockedConstraintP2() {
+    if (Math.random() < 0.5) {
+        return lockConstraint({
+            id: "shock_posting_window",
+            text: `Posting time must fall within the approved window (${APPROVED_POSTING_WINDOW[0]}:00\u2013${APPROVED_POSTING_WINDOW[1]}:00)`,
+            check: (p) => p.PostingTime >= APPROVED_POSTING_WINDOW[0] && p.PostingTime <= APPROVED_POSTING_WINDOW[1],
+            bound: { channel: "PostingTime", min: APPROVED_POSTING_WINDOW[0], max: APPROVED_POSTING_WINDOW[1] }
+        }, "Posting time is subject to an additional approval requirement for this launch (exact window not shown on this dashboard).");
+    }
+    return lockConstraint({
+        id: "shock_hashtag_cap",
+        text: "Hashtag set must be Broad or fewer (not Maximum)",
+        check: (p) => p.Hashtags <= HASHTAG_SOFT_CAP,
+        bound: { channel: "Hashtags", max: HASHTAG_SOFT_CAP }
+    }, "Hashtag count is subject to an additional requirement for this launch (exact cap not shown on this dashboard).");
+}
+
 function buildTrialConstraintsP2(loadLevel) {
     const constraints = taskDataP2[loadLevel].constraints.map(c => ({ ...c }));
-    if (loadLevel !== "HighLoad") return constraints;
 
-    const selected = sampleShockArchetypesP2();
+    // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
+    // proactive advisor check-in always has something genuine to reveal, on both loads.
+    const selected = sampleShockArchetypesP2(loadLevel);
 
     if (selected.includes("legalDisclaimer")) {
         constraints.push({
             id: "shock_legal_disclaimer",
             text: "If any regulated claim (limited time / best-selling / guaranteed results) is on, the legal disclaimer must be on too",
             check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Disclaimer === 1,
-            bound: { type: "disclaimer_required" }
+            bound: { type: "disclaimer_required" },
+            locked: true
         });
     }
     if (selected.includes("brandStyleGuide")) {
@@ -334,15 +386,17 @@ function buildTrialConstraintsP2(loadLevel) {
             id: "shock_brand_style",
             text: "Tone must be Professional or Conversational (not Formal or Casual)",
             check: (p) => p.Tone >= BRAND_TONE_BAND[0] && p.Tone <= BRAND_TONE_BAND[1],
-            bound: { channel: "Tone", min: BRAND_TONE_BAND[0], max: BRAND_TONE_BAND[1] }
+            bound: { channel: "Tone", min: BRAND_TONE_BAND[0], max: BRAND_TONE_BAND[1] },
+            locked: true
         });
     }
     if (selected.includes("postingWindow")) {
         constraints.push({
             id: "shock_posting_window",
-            text: `Posting time must fall within the approved window (${APPROVED_POSTING_WINDOW[0]}:00\u2013${APPROVED_POSTING_WINDOW[1]}:00)`,
+            text: `Posting time must fall within the approved window (${APPROVED_POSTING_WINDOW[0]}:00–${APPROVED_POSTING_WINDOW[1]}:00)`,
             check: (p) => p.PostingTime >= APPROVED_POSTING_WINDOW[0] && p.PostingTime <= APPROVED_POSTING_WINDOW[1],
-            bound: { channel: "PostingTime", min: APPROVED_POSTING_WINDOW[0], max: APPROVED_POSTING_WINDOW[1] }
+            bound: { channel: "PostingTime", min: APPROVED_POSTING_WINDOW[0], max: APPROVED_POSTING_WINDOW[1] },
+            locked: true
         });
     }
     if (selected.includes("hashtagCap")) {
@@ -350,7 +404,8 @@ function buildTrialConstraintsP2(loadLevel) {
             id: "shock_hashtag_cap",
             text: "Hashtag set must be Broad or fewer (not Maximum)",
             check: (p) => p.Hashtags <= HASHTAG_SOFT_CAP,
-            bound: { channel: "Hashtags", max: HASHTAG_SOFT_CAP }
+            bound: { channel: "Hashtags", max: HASHTAG_SOFT_CAP },
+            locked: true
         });
     }
     if (selected.includes("urgencyNightCap")) {
@@ -358,7 +413,8 @@ function buildTrialConstraintsP2(loadLevel) {
             id: "shock_urgency_night_cap",
             text: "If Urgency is Aggressive, Posting Slot cannot be Late Night (low-traffic hours undercut urgency messaging)",
             check: (p) => !(p.Urgency >= 90 && p.PostingTime >= 22),
-            bound: { type: "urgency_night_cap" }
+            bound: { type: "urgency_night_cap" },
+            locked: true
         });
     }
     if (selected.includes("claimUrgencyCap")) {
@@ -366,7 +422,8 @@ function buildTrialConstraintsP2(loadLevel) {
             id: "shock_claim_urgency_cap",
             text: "While any regulated claim (limited time / best-selling / guaranteed results) is active, Urgency must stay at Moderate or below",
             check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Urgency <= 60,
-            bound: { type: "claim_urgency_cap" }
+            bound: { type: "claim_urgency_cap" },
+            locked: true
         });
     }
     if (selected.includes("disclaimerToneLock")) {
@@ -374,7 +431,8 @@ function buildTrialConstraintsP2(loadLevel) {
             id: "shock_disclaimer_tone_lock",
             text: "If the legal disclaimer is on, Tone cannot be Casual (disclaimers read poorly in a casual voice)",
             check: (p) => !p.Disclaimer || p.Tone < 80,
-            bound: { type: "disclaimer_tone_lock" }
+            bound: { type: "disclaimer_tone_lock" },
+            locked: true
         });
     }
 
@@ -420,20 +478,21 @@ function interp(v, buckets, curve) {
 
 const SHOCK_ARCHETYPES = ["eventsCap", "socialFloor", "contentCap", "searchFloor"];
 
-function sampleShockArchetypes(baseAlloc) {
+function sampleShockArchetypes(baseAlloc, count) {
     let pool = [...SHOCK_ARCHETYPES];
     if (baseAlloc["Content/SEO"] < 50000) pool = pool.filter(s => s !== "contentCap");
     if (baseAlloc["Events"] < 50000) pool = pool.filter(s => s !== "eventsCap");
     const shuffled = pool.sort(() => Math.random() - 0.5);
-    const count = Math.random() < 0.5 ? 1 : 2;
     return shuffled.slice(0, Math.min(count, shuffled.length));
 }
 
 function buildTrialConstraints(loadLevel, baseAlloc) {
     const constraints = taskData[loadLevel].constraints.map(c => ({ ...c }));
-    if (loadLevel !== "HighLoad") return constraints;
 
-    const selected = sampleShockArchetypes(baseAlloc);
+    // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
+    // proactive advisor check-in always has something genuine to reveal, on both loads.
+    const count = loadLevel === "HighLoad" ? (Math.random() < 0.5 ? 1 : 2) : 1;
+    const selected = sampleShockArchetypes(baseAlloc, count);
     let socialMin = 0;
 
     if (selected.includes("socialFloor")) {
@@ -447,7 +506,8 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
             id: "shock_social_floor",
             text: `Social must be increased to ≥ $${target.toLocaleString()} (Platform minimums)`,
             check: (alloc) => alloc["Social"] >= target,
-            bound: { channel: "Social", min: target }
+            bound: { channel: "Social", min: target },
+            locked: true
         });
     }
 
@@ -461,7 +521,8 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
             id: "shock_content_cap",
             text: `Content/SEO must be reduced to ≤ $${target.toLocaleString()} (Agency limit)`,
             check: (alloc) => alloc["Content/SEO"] <= target,
-            bound: { channel: "Content/SEO", max: target }
+            bound: { channel: "Content/SEO", max: target },
+            locked: true
         });
     }
 
@@ -476,7 +537,8 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
             id: "shock_search_floor",
             text: `Search Ads must be increased to ≥ $${target.toLocaleString()} (Query volume)`,
             check: (alloc) => alloc["Search Ads"] >= target,
-            bound: { channel: "Search Ads", min: target }
+            bound: { channel: "Search Ads", min: target },
+            locked: true
         });
     }
 
@@ -489,10 +551,12 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
             id: "shock_events_cap",
             text: `Events must be reduced to ≤ $${target.toLocaleString()} (Venue restrictions)`,
             check: (alloc) => alloc["Events"] <= target,
-            bound: { channel: "Events", max: target }
+            bound: { channel: "Events", max: target },
+            locked: true
         });
     }
 
+    constraints.filter(c => c.lockedHint).forEach(c => lockConstraint(c, c.lockedHint));
     return constraints;
 }
 
@@ -620,12 +684,72 @@ function getItineraryPercentage(alloc, loadLevel) {
     return Math.max(0, Math.min(Math.round((raw / P3_MAX_SCORE[loadLevel]) * 100), 100));
 }
 
+function sampleP3LockedConstraints(loadLevel, count) {
+    const slots = taskDataP3[loadLevel].slots;
+    const chosenSlots = [1, 2, 3, 4].sort(() => Math.random() - 0.5).slice(0, count);
+    const hint = "One of today's slots carries an additional planning requirement this trial (details not shown on this dashboard).";
+
+    return chosenSlots.map((slotNum, i) => {
+        const dflt = slots[slotNum - 1].candidates.find(c => c.default);
+        return i === 0
+            ? lockConstraint({
+                id: `shock_p3_category_ban_${slotNum}`,
+                text: `Slot ${slotNum}'s pick cannot be a ${dflt.category} activity (Local guide note)`,
+                check: (alloc) => P3_CANDIDATE_INDEX[alloc[`slot${slotNum}`]]?.category !== dflt.category,
+                bound: { type: "p3_slot_category_ban", slot: slotNum, category: dflt.category }
+            }, hint)
+            : lockConstraint({
+                id: `shock_p3_intensity_ban_${slotNum}`,
+                text: `Slot ${slotNum}'s pick cannot be a ${dflt.intensity}-intensity activity (Local guide note)`,
+                check: (alloc) => P3_CANDIDATE_INDEX[alloc[`slot${slotNum}`]]?.intensity !== dflt.intensity,
+                bound: { type: "p3_slot_intensity_ban", slot: slotNum, intensity: dflt.intensity }
+            }, hint);
+    });
+}
+
+// Bans an attribute (category or intensity) of whichever candidate is CURRENTLY the
+// default pick for a randomly chosen slot — guaranteeing the ban is both satisfiable
+// (every slot has another candidate that doesn't share that category/intensity) and
+// forces a genuine change, mirroring the P1/P2 "shock" archetypes.
+function sampleP3LockedConstraints(loadLevel, count) {
+    const slots = taskDataP3[loadLevel].slots;
+    const slotIndices = [0, 1, 2, 3].sort(() => Math.random() - 0.5).slice(0, count);
+    return slotIndices.map(i => {
+        const slotNum = i + 1;
+        const slotKey = `slot${slotNum}`;
+        const slot = slots[i];
+        const def = slot.candidates.find(c => c.default) || slot.candidates[0];
+        if (Math.random() < 0.5) {
+            return {
+                id: `locked_${slotKey}_intensity`,
+                text: `The ${slot.label} pick can't be ${def.intensity} intensity`,
+                check: (alloc) => P3_CANDIDATE_INDEX[alloc[slotKey]]?.intensity !== def.intensity,
+                bound: { type: "p3_slot_intensity_ban", slot: slotKey, intensity: def.intensity },
+                locked: true
+            };
+        }
+        return {
+            id: `locked_${slotKey}_category`,
+            text: `The ${slot.label} pick can't be from the ${def.category} category`,
+            check: (alloc) => P3_CANDIDATE_INDEX[alloc[slotKey]]?.category !== def.category,
+            bound: { type: "p3_slot_category_ban", slot: slotKey, category: def.category },
+            locked: true
+        };
+    });
+}
+
 function buildTrialConstraintsP3(loadLevel) {
     const constraints = [
         { id: "c1_categories", text: `At least ${P3_MUST_SEE_MIN_CATEGORIES} of the 4 must-see categories must be represented across the day`,
           check: (alloc) => new Set(getP3OrderedCandidates(alloc).map(c => c.category)).size >= P3_MUST_SEE_MIN_CATEGORIES,
           bound: { type: "p3_category_coverage", min_categories: P3_MUST_SEE_MIN_CATEGORIES } }
     ];
+
+    // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
+    // proactive advisor check-in always has something genuine to reveal, on both loads.
+    const lockedCount = loadLevel === "HighLoad" ? (Math.random() < 0.5 ? 1 : 2) : 1;
+    constraints.push(...sampleP3LockedConstraints(loadLevel, lockedCount));
+
     if (loadLevel !== "HighLoad") return constraints;
     constraints.push(
         { id: "c2_pacing", text: "No 3 consecutive time slots can all be High-intensity activities",
@@ -854,6 +978,7 @@ function startTrial(trialIndex) {
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
+        if (c.locked) return; // revealed later by the proactive advisor check-in
         constraintsHtml += `
             <li class="constraint-item" id="${c.id}">
                 <div class="c-status"></div>
@@ -881,6 +1006,7 @@ function startTrial(trialIndex) {
         slider.addEventListener('input', (e) => {
             currentAllocations[e.target.dataset.channel] = parseInt(e.target.value);
             updateDashboard(loadLevel);
+            scheduleProactiveCheck();
         });
 
         slider.addEventListener('mousedown', (e) => {
@@ -910,11 +1036,11 @@ function startTrial(trialIndex) {
     taskStartTime = Date.now();
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
-    hintsUsedThisTrial = 0;
     hasInteractedThisTrial = false;
     darkTurnCounter = 0;
     darkDeliveredThisTrial = false;
     postTextManuallyEdited = false;
+    resetProactiveState();
     sliderTelemetry = { firstMoveTime: null, currentDrag: null, completedDrags: [] };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
@@ -929,7 +1055,7 @@ function startTrial(trialIndex) {
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage(`Trial ${trialIndex} of 4 begins. Your goal is to maximize your allocation's modeled ROI while satisfying the live constraints below. Adjust the sliders, then discuss your strategy with the AI advisor before submitting.`, "ai");
+            addMessage(`Trial ${trialIndex} of 4 begins. Your goal is to maximize your allocation's modeled ROI while satisfying the live constraints below. Adjust the sliders to build your allocation.`, "ai");
         }, 600);
     }
 }
@@ -998,6 +1124,7 @@ function selectP2Option(key, value) {
     }
 
     updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
+    scheduleProactiveCheck();
 }
 
 function toggleP2Claim(key) {
@@ -1040,6 +1167,7 @@ function onPreviewTextInput() {
     currentPostText = document.getElementById('postPreviewBox').value;
     updatePreviewEditedBadge();
     updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
+    scheduleProactiveCheck();
 }
 
 function resetPreviewToTemplate() {
@@ -1126,6 +1254,7 @@ function startTrialP2(trialIndex) {
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
+        if (c.locked) return; // revealed later by the proactive advisor check-in
         constraintsHtml += `
             <li class="constraint-item" id="${c.id}">
                 <div class="c-status"></div>
@@ -1135,7 +1264,7 @@ function startTrialP2(trialIndex) {
     constraintsHtml += `</ul>`;
 
     document.getElementById('docBody').innerHTML = `
-        <div class="p2-brief">You're writing a launch post for <strong>${product.brand}</strong> \u2014 ${product.name}.</div>
+        <div class="p2-brief">You're writing a launch post for <strong>${product.brand}</strong> — ${product.name}.</div>
         <div class="preview-header-row">
             <span class="post-preview-label">Live Post Preview</span>
             <span id="previewEditedBadge" class="preview-edited-badge" style="display:none;">\u270e Custom text</span>
@@ -1181,11 +1310,11 @@ function startTrialP2(trialIndex) {
     taskStartTime = Date.now();
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
-    hintsUsedThisTrial = 0;
     hasInteractedThisTrial = false;
     darkTurnCounter = 0;
     darkDeliveredThisTrial = false;
     postTextManuallyEdited = false;
+    resetProactiveState();
     optionChangeTelemetry = { firstChangeTime: null, changes: [] };
     postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
     previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
@@ -1203,7 +1332,7 @@ function startTrialP2(trialIndex) {
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage(`Trial ${trialIndex} of 4 begins. Your goal is to maximize estimated engagement for this launch post while satisfying the live constraints below. Pick your options, then discuss your strategy with the AI advisor before submitting.`, "ai");
+            addMessage(`Trial ${trialIndex} of 4 begins. Your goal is to maximize estimated engagement for this launch post while satisfying the live constraints below. Pick your options to build your post.`, "ai");
         }, 600);
     }
 }
@@ -1249,6 +1378,7 @@ function startTrialP3(trialIndex) {
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
+        if (c.locked) return; // revealed later by the proactive advisor check-in
         constraintsHtml += `
             <li class="constraint-item" id="${c.id}">
                 <div class="c-status"></div>
@@ -1282,10 +1412,10 @@ function startTrialP3(trialIndex) {
     taskStartTime = Date.now();
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
-    hintsUsedThisTrial = 0;
     hasInteractedThisTrial = false;
     darkTurnCounter = 0;
     darkDeliveredThisTrial = false;
+    resetProactiveState();
     p3ChangeTelemetry = { firstChangeTime: null, changes: [] };
     attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
 
@@ -1300,7 +1430,7 @@ function startTrialP3(trialIndex) {
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage(`Day ${trialIndex} of 4 begins. Your goal is to maximize your itinerary's overall quality while satisfying the live constraints below. Pick one activity per time slot, then discuss your plan with the AI assistant before submitting.`, "ai");
+            addMessage(`Day ${trialIndex} of 4 begins. Your goal is to maximize your itinerary's overall quality while satisfying the live constraints below. Pick one activity per time slot.`, "ai");
         }, 600);
     }
 }
@@ -1315,6 +1445,7 @@ function selectP3Option(slotKey, candidateId) {
     currentAllocations[slotKey] = candidateId;
 
     updateDashboardP3(sessionData.trialSequence[currentTrial - 1]);
+    scheduleProactiveCheck();
 }
 
 function updateDashboardP3(loadLevel) {
@@ -1455,8 +1586,7 @@ async function sendMessage() {
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
                 dark_delivered: darkDeliveredThisTrial,
-                hints_used_this_trial: hintsUsedThisTrial, 
-                roi_score: trialScorePct, 
+                roi_score: trialScorePct,
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
                 shadow_history: shadowHistory,
@@ -1464,22 +1594,23 @@ async function sendMessage() {
                 p2_product: isP2Task() ? getP2Product().name : null,
                 actual_post_length: isP2Task() ? getEffectivePostLength() : null,
                 dropped_category_index: sessionData.droppedCategoryIndex,
-                constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean)
+                constraint_bounds: currentTrialConstraints.filter(c => !c.locked).map(c => c.bound).filter(Boolean),
+                locked_bounds: currentTrialConstraints.filter(c => c.locked).map(c => c.bound).filter(Boolean)
             })
         });
 
         const data = await response.json();
         document.getElementById('currentTyping')?.remove();
-        
+
         if (data.status === "success") {
             addMessage(data.reply, 'ai');
-            
+
             if (data.target_channel) {
                 currentTargetChannel = data.target_channel; // Sync target for metrics
             }
 
             if (data.isDark) darkDeliveredThisTrial = true;
-            
+
             logEvent('ai_response', {
                 text: data.reply,
                 decoy: data.clean_decoy,
@@ -1493,13 +1624,177 @@ async function sendMessage() {
             // Update shadow history for the next turn
             shadowHistory.push({ role: 'user', content: text });
             shadowHistory.push({ role: 'ai', content: data.clean_decoy });
-            
+
+            // This exchange just carried any pending locked constraints — reveal them.
+            // It also counts toward the proactive budget/cooldown, so the automatic
+            // check-in doesn't immediately pile on top of a message the user just sent —
+            // it can still fire again later, up to its own cap, if it's still owed one.
+            revealLockedConstraints(currentTrialConstraints.filter(c => c.locked).map(c => c.id));
+            cancelProactiveTimers();
+            proactiveFireCount = Math.min(proactiveFireCount + 1, MAX_PROACTIVE_FIRES_PER_TRIAL);
+            lastProactiveFireTime = Date.now();
+            hasSubstantiveChangeSinceLastFire = false;
+            proactiveFiredThisTrial = true;
+
             hasInteractedThisTrial = true;
             updateSubmitGate();
         }
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
         console.error("Chat error:", error);
+    }
+}
+
+// --- PROACTIVE ADVISOR CHECK-IN ---
+// Fires at most once per trial: ~2s after the user's first substantive control change
+// followed by a pause, with a ~12s fallback ceiling so it still fires even if they never
+// pause. This is the guaranteed exchange that carries the trial's dark-pattern tactic
+// (see is_dark in main.py) and reveals any locked constraints — never a "send a message"
+// instruction, since it fires on its own.
+function resetProactiveState() {
+    cancelProactiveTimers();
+    proactiveFireCount = 0;
+    lastProactiveFireTime = null;
+    hasSubstantiveChangeSinceLastFire = false;
+}
+
+function cancelProactiveTimers() {
+    clearTimeout(proactiveDebounceTimer);
+    clearTimeout(proactiveCeilingTimer);
+    proactiveDebounceTimer = null;
+    proactiveCeilingTimer = null;
+}
+
+function scheduleProactiveCheck() {
+    if (proactiveFireCount >= MAX_PROACTIVE_FIRES_PER_TRIAL || sessionData.group.includes("Transcript")) return;
+
+    hasSubstantiveChangeSinceLastFire = true;
+
+    // The ceiling is a safety net only for the FIRST guaranteed exchange of the trial —
+    // any second fire is a bonus touchpoint and only ever happens if the debounce settles
+    // naturally, so it never forces an interjection the way the first one has to.
+    if (proactiveFireCount === 0 && !proactiveCeilingTimer) {
+        proactiveCeilingTimer = setTimeout(() => attemptProactiveFire(), PROACTIVE_CEILING_MS);
+    }
+    clearTimeout(proactiveDebounceTimer);
+    proactiveDebounceTimer = setTimeout(() => attemptProactiveFire(), PROACTIVE_DEBOUNCE_MS);
+}
+
+// The debounce/ceiling landed — fire now, unless we're still inside the cooldown from
+// the last exchange (manual or automatic), in which case wait out the remainder instead
+// of firing early and stacking two AI turns close together.
+function attemptProactiveFire() {
+    if (proactiveFireCount >= MAX_PROACTIVE_FIRES_PER_TRIAL || !hasSubstantiveChangeSinceLastFire) return;
+
+    const elapsed = lastProactiveFireTime ? Date.now() - lastProactiveFireTime : Infinity;
+    if (elapsed < PROACTIVE_COOLDOWN_MS) {
+        clearTimeout(proactiveDebounceTimer);
+        proactiveDebounceTimer = setTimeout(() => attemptProactiveFire(), PROACTIVE_COOLDOWN_MS - elapsed);
+        return;
+    }
+
+    triggerProactiveAdvisorNote();
+}
+
+// Appends newly-revealed constraints to the live list as real <li> items (they were
+// never pre-rendered with a placeholder), then refreshes statuses/the submit gate.
+function revealLockedConstraints(ids) {
+    if (!ids || !ids.length) return;
+    const list = document.getElementById('constraintList');
+    let revealedAny = false;
+
+    ids.forEach(id => {
+        const c = currentTrialConstraints.find(cc => cc.id === id);
+        if (!c || !c.locked) return;
+        c.locked = false;
+        revealedAny = true;
+        if (list) {
+            const li = document.createElement('li');
+            li.className = 'constraint-item';
+            li.id = c.id;
+            li.innerHTML = `<div class="c-status"></div><span>${c.text}</span>`;
+            list.appendChild(li);
+        }
+    });
+
+    if (!revealedAny) return;
+    const loadLevel = sessionData.trialSequence[currentTrial - 1];
+    if (isP2Task()) updateDashboardP2(loadLevel);
+    else if (isP3Task()) updateDashboardP3(loadLevel);
+    else updateDashboard(loadLevel);
+}
+
+async function triggerProactiveAdvisorNote() {
+    if (proactiveFireCount >= MAX_PROACTIVE_FIRES_PER_TRIAL || sessionData.group.includes("Transcript")) return;
+    cancelProactiveTimers();
+    const isFirstFire = proactiveFireCount === 0;
+    proactiveFireCount++;
+    lastProactiveFireTime = Date.now();
+    hasSubstantiveChangeSinceLastFire = false;
+    cancelProactiveTimers();
+
+    const loadLevel = sessionData.trialSequence[currentTrial - 1];
+    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
+    if (allConstraintsMet) darkTurnCounter++;
+    const allocationsAtSend = { ...currentAllocations };
+    const lockedIds = currentTrialConstraints.filter(c => c.locked).map(c => c.id);
+
+    try {
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: sessionData.participantId,
+                primary_task: sessionData.primaryTask,
+                message: "",
+                task_id: 1,
+                group: sessionData.group,
+                trial_num: currentTrial,
+                turn_in_trial: darkTurnCounter,
+                dark_delivered: darkDeliveredThisTrial,
+                roi_score: trialScorePct,
+                all_constraints_met: allConstraintsMet,
+                allocations: currentAllocations,
+                shadow_history: shadowHistory,
+                load_level: loadLevel,
+                p2_product: isP2Task() ? getP2Product().name : null,
+                actual_post_length: isP2Task() ? getEffectivePostLength() : null,
+                dropped_category_index: sessionData.droppedCategoryIndex,
+                constraint_bounds: currentTrialConstraints.filter(c => !c.locked).map(c => c.bound).filter(Boolean),
+                locked_bounds: currentTrialConstraints.filter(c => c.locked).map(c => c.bound).filter(Boolean),
+                is_proactive: true,
+                is_repeat_proactive: !isFirstFire
+            })
+        });
+
+        const data = await response.json();
+        if (data.status !== "success") return;
+
+        addMessage(data.reply, 'ai');
+        if (data.target_channel) currentTargetChannel = data.target_channel;
+        if (data.isDark) darkDeliveredThisTrial = true;
+
+        logEvent('ai_proactive_message', {
+            text: data.reply,
+            decoy: data.clean_decoy,
+            category: data.category,
+            pattern_id: data.pattern_id,
+            isDark: data.isDark,
+            is_repeat: !isFirstFire,
+            revealed_ids: lockedIds,
+            allocations_at_request: allocationsAtSend,
+            allocations_snapshot: { ...currentAllocations }
+        });
+
+        // Only the AI side goes into shadow history — there's no user turn to log.
+        shadowHistory.push({ role: 'ai', content: data.clean_decoy });
+
+        revealLockedConstraints(lockedIds);
+
+        hasInteractedThisTrial = true;
+        updateSubmitGate();
+    } catch (error) {
+        console.error("Proactive advisor note failed:", error);
     }
 }
 
@@ -1566,118 +1861,46 @@ async function saveSessionData() {
     }
 }
 
-async function requestScoreHint() {
-    if (totalHintsUsed >= MAX_HINTS) return;
-
-    const chip = document.getElementById('scoreHintChip');
-    chip.disabled = true;
-
-    const stateNoun = isP3Task() ? "itinerary" : (isP2Task() ? "post" : "allocation");
-    const canned = `Can you tell me how my current ${stateNoun} is doing?`;
-    addMessage(canned, 'user');
-
-    totalHintsUsed++;
-    hintsUsedThisTrial++;
-    turnsInTrial++;
-    sessionData.metrics.turnsElapsed++;
-
-    document.getElementById('hintsLeftDisplay').innerText = MAX_HINTS - totalHintsUsed;
-
-    const loadLevel = sessionData.trialSequence[currentTrial - 1];
-    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
-    if (allConstraintsMet) darkTurnCounter++;
-    const allocationsAtSend = { ...currentAllocations };
-
-    logEvent('score_hint_requested', {
-        text: canned,
-        trial: currentTrial,
-        hints_remaining_total: MAX_HINTS - totalHintsUsed,
-        allocations_snapshot: { ...currentAllocations }
-    });
-
-    try {
-        const response = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                user_id: sessionData.participantId,
-                primary_task: sessionData.primaryTask,
-                message: canned,
-                task_id: 1,
-                group: sessionData.group,
-                trial_num: currentTrial,
-                turn_in_trial: darkTurnCounter,
-                dark_delivered: darkDeliveredThisTrial,
-                hints_used_this_trial: hintsUsedThisTrial,
-                roi_score: trialScorePct,
-                all_constraints_met: allConstraintsMet,
-                allocations: currentAllocations,
-                shadow_history: shadowHistory,
-                load_level: loadLevel,
-                p2_product: isP2Task() ? getP2Product().name : null,
-                actual_post_length: isP2Task() ? getEffectivePostLength() : null,
-                dropped_category_index: sessionData.droppedCategoryIndex,
-                constraint_bounds: currentTrialConstraints.map(c => c.bound).filter(Boolean),
-                is_score_hint: true
-            })
-        });
-
-        const data = await response.json();
-
-        if (data.status === "success") {
-            addMessage(data.reply, 'ai');
-            if (data.target_channel) currentTargetChannel = data.target_channel;
-
-            if (data.isDark) darkDeliveredThisTrial = true;
-
-            logEvent('ai_response', {
-                text: data.reply,
-                decoy: data.clean_decoy,
-                category: data.category,
-                pattern_id: data.pattern_id,
-                isDark: data.isDark,
-                allocations_at_request: allocationsAtSend, // State the AI actually saw when generating this reply
-                allocations_snapshot: { ...currentAllocations } // Captures state immediately as AI message lands
-            });
-
-            shadowHistory.push({ role: 'user', content: canned });
-            shadowHistory.push({ role: 'ai', content: data.clean_decoy });
-
-            hasInteractedThisTrial = true;
-            updateSubmitGate();
+// Unlocks any currently-locked constraints the backend says this reply just disclosed
+// (see revealed_locked_ids in main.py's /api/chat) — swaps in the real requirement text
+// and lets check() evaluate for real instead of always failing.
+function applyRevealedConstraints(ids) {
+    if (!ids || !ids.length) return;
+    let anyRevealed = false;
+    currentTrialConstraints.forEach(c => {
+        if (c.locked && ids.includes(c.id)) {
+            c.locked = false;
+            c.text = c.revealedText;
+            if (c.bound) c.bound = { ...c.bound, locked: false };
+            const li = document.getElementById(c.id);
+            const span = li?.querySelector('span');
+            if (span) span.innerText = c.text;
+            li?.classList.remove('locked');
+            anyRevealed = true;
+            logEvent('constraint_revealed', { id: c.id, text: c.text });
         }
-    } catch (error) {
-        console.error("Score hint error:", error);
+    });
+    if (anyRevealed) {
+        const loadLevel = sessionData.trialSequence[currentTrial - 1];
+        if (isP2Task()) updateDashboardP2(loadLevel);
+        else if (isP3Task()) updateDashboardP3(loadLevel);
+        else updateDashboard(loadLevel);
     }
-
-    if (totalHintsUsed < MAX_HINTS) chip.disabled = false;
 }
 
 function updateSubmitBanner(allConstraintsMet) {
     const banner = document.getElementById('submitBanner');
     if (!banner) return;
-    
-    if (!allConstraintsMet) { 
-        banner.style.display = 'none'; 
-        return; 
-    }
-    
-    banner.style.display = 'block';
-    
-    if (!sessionData.hintTipShown) {
-        banner.innerText = "You're allowed to submit! You may want to check your score though.";
-        sessionData.hintTipShown = true;
-        logEvent('hint_tip_shown', {});
-    } else {
-        banner.innerText = "Requirements met — you may submit.";
-    }
+
+    banner.style.display = allConstraintsMet ? 'block' : 'none';
+    if (allConstraintsMet) banner.innerText = "Requirements met — you may submit.";
 }
 
 function updateSubmitGate() {
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
     updateSubmitBanner(allConstraintsMet);
     const btn = document.getElementById('submitTrialBtn');
-    if (btn) btn.disabled = !(allConstraintsMet && hasInteractedThisTrial);
+    if (btn) btn.disabled = !allConstraintsMet;
 }
 
 // Did the participant's state ever match the dark suggestion's target at ANY point

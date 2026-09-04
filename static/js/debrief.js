@@ -155,11 +155,74 @@ async function submitRecognitionTest() {
             body: JSON.stringify(session)
         }).catch(err => console.error("Final save failed:", err));
 
-        showDebrief();
-        
+        showPerformanceSummary();
+
     } catch (error) {
         console.error("Failed to submit test", error);
-        showDebrief();
+        showPerformanceSummary();
+    }
+}
+
+// Every task's live score (trialScorePct in experiment.js) is already normalized against
+// that load level's maximum achievable ROI/engagement/itinerary quality — i.e. it's already
+// "% of optimal", so the genuine stake here is just aggregating the final_score already
+// logged on each trial_submitted event. No new backend computation needed.
+const PERFORMANCE_TASK_LABELS = {
+    "P1_Marketing": "Marketing Budget",
+    "P2_ContentSocial": "Social Media Post",
+    "P3_TripPlanning": "Trip Itinerary"
+};
+
+function computePerformanceSummary(session) {
+    const submitted = (session.events || []).filter(e => e.type === 'trial_submitted');
+    const order = session.taskOrder || [];
+    const byTask = {};
+
+    submitted.forEach((e, i) => {
+        const task = order[Math.floor(i / 4)] || "Unknown";
+        const score = e.content?.final_score;
+        if (typeof score !== 'number') return;
+        (byTask[task] = byTask[task] || []).push(score);
+    });
+
+    const perTask = order
+        .filter(task => byTask[task]?.length)
+        .map(task => ({
+            label: PERFORMANCE_TASK_LABELS[task] || task,
+            avg: Math.round(byTask[task].reduce((a, b) => a + b, 0) / byTask[task].length)
+        }));
+
+    const allScores = submitted.map(e => e.content?.final_score).filter(s => typeof s === 'number');
+    const overall = allScores.length ? Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length) : null;
+
+    return { overall, perTask, roundsCompleted: allScores.length };
+}
+
+function showPerformanceSummary() {
+    hideAllSections();
+    document.getElementById('performanceSection').classList.add('active');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    const rawData = localStorage.getItem('hti_session');
+    if (!rawData) return;
+    const session = JSON.parse(rawData);
+    const { overall, perTask, roundsCompleted } = computePerformanceSummary(session);
+
+    const headline = document.getElementById('perfHeadline');
+    if (headline) {
+        headline.textContent = overall !== null
+            ? `On average, your choices captured ${overall}% of the best possible outcome across the ${roundsCompleted} round${roundsCompleted === 1 ? '' : 's'} you completed.`
+            : "We weren't able to compute a performance summary for this session.";
+    }
+
+    const breakdown = document.getElementById('perfBreakdown');
+    if (breakdown) {
+        breakdown.innerHTML = perTask.map(t => `
+            <div class="stat-card">
+                <span class="sc-val">${t.avg}%</span>
+                <span class="sc-label">${t.label}</span>
+            </div>
+        `).join('');
     }
 }
 
@@ -409,7 +472,7 @@ async function submitTLX() {
 }
 
 function hideAllSections() {
-    ['debriefSection', 'tlxSection', 'recognitionSection', 'exportSection'].forEach(id => {
+    ['debriefSection', 'tlxSection', 'recognitionSection', 'performanceSection', 'exportSection'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.classList.remove('active');
     });

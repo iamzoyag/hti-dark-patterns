@@ -179,13 +179,15 @@ class ChatMessage(BaseModel):
     trial_num: int
     turn_in_trial: int
     dark_delivered: bool = False
-    hints_used_this_trial: int
     roi_score: int
     all_constraints_met: bool
     allocations: Dict[str, Any]
     shadow_history: List[Dict[str, str]] = []
-    is_score_hint: bool = False
     constraint_bounds: List[Dict[str, Any]] = []
+    locked_bounds: List[Dict[str, Any]] = []
+    is_proactive: bool = False
+    is_repeat_proactive: bool = False
+    locked_bounds: List[Dict[str, Any]] = []
     load_level: str
     dropped_category_index: int = 0
     p2_product: Optional[str] = None
@@ -195,6 +197,7 @@ class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
     conversational_reply: str = Field(description="The generated response to the user.")
     clean_decoy: str = Field(description="A control response matching the exact tone of the reply, but lacking the manipulative nudge.")
+    revealed_locked_ids: List[str] = Field(default_factory=list, description="IDs of any constraints in LOCKED CONSTRAINTS (below) whose exact requirement conversational_reply just disclosed to the user, because they naturally asked about it or the moment called for it. Leave empty if none were disclosed this turn.")
 
 # --- ROUTES TO SERVE HTML PAGES ---
 @app.get("/", response_class=HTMLResponse)
@@ -385,6 +388,14 @@ def satisfies_bounds(alloc: dict, bounds: list) -> bool:
             windows = [P3_CANDIDATE_INDEX[c]["window"] for c in order if c in P3_CANDIDATE_INDEX]
             if any(windows[i][1] > windows[i + 1][0] for i in range(len(windows) - 1)):
                 return False
+        elif b.get("type") == "p3_slot_category_ban":
+            cand = P3_CANDIDATE_INDEX.get(alloc.get(b.get("slot")))
+            if cand and cand["category"] == b.get("category"):
+                return False
+        elif b.get("type") == "p3_slot_intensity_ban":
+            cand = P3_CANDIDATE_INDEX.get(alloc.get(b.get("slot")))
+            if cand and cand["intensity"] == b.get("intensity"):
+                return False
         else:
             val = alloc.get(b.get("channel"), 0)
             if "min" in b and val < b["min"]:
@@ -416,6 +427,10 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
             parts.append("No 3 consecutive time slots can all be High-intensity activities")
         elif b.get("type") == "p3_no_overlap":
             parts.append("A chosen activity's time window cannot overlap with the neighboring slot's pick")
+        elif b.get("type") == "p3_slot_category_ban":
+            parts.append(f"The {b.get('slot')} pick cannot be from the {b.get('category')} category")
+        elif b.get("type") == "p3_slot_intensity_ban":
+            parts.append(f"The {b.get('slot')} pick cannot be {b.get('intensity')} intensity")
         else:
             unit = "" if is_p2 else "$"
             if "min" in b:
@@ -425,6 +440,14 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
                 val = b['max'] if is_p2 else f"{b['max']:,}"
                 parts.append(f"{b['channel']} must stay ≤ {unit}{val}")
     return "; ".join(parts)
+
+def describe_locked_bounds(bounds: list, is_p2: bool = False) -> str:
+    """Describes only the bounds flagged locked=True (see lockConstraint in experiment.js),
+    tagged with their constraint id so the model can echo it back in revealed_locked_ids."""
+    locked = [b for b in bounds if b.get("locked")]
+    if not locked:
+        return "None this trial."
+    return "\n          ".join(f'- id="{b.get("id")}": {describe_bounds([b], is_p2)}' for b in locked)
 
 # --- P2: CONTENT/SOCIAL POST DESIGN ("Campaign Launch Challenge") ---
 PLATFORM_CHAR_LIMIT = 280         
@@ -737,7 +760,7 @@ def get_optimal_itinerary_move(alloc: dict, load_level: str, constraint_bounds: 
 
 @app.post("/api/chat")
 async def handle_chat(chat_data: ChatMessage):
-    user_text = chat_data.message
+    user_text = chat_data.message.strip() or "(No message — this is a proactive check-in; there is nothing to reply to.)"
     trial_num = chat_data.trial_num
     turn_in_trial = chat_data.turn_in_trial
     load_level = chat_data.load_level
@@ -760,31 +783,47 @@ async def handle_chat(chat_data: ChatMessage):
         target_desc, target_param = BASE_TARGETS_P1.get(cycle_index, list(BASE_TARGETS_P1.values())[-1])
         allocations_str = ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
 
-    is_dark = (turn_in_trial >= 1 and not chat_data.dark_delivered and "Live" in chat_data.group)
+    # Dropped the turn_in_trial >= 1 gate: the guaranteed proactive check-in (see
+    # experiment.js's triggerProactiveAdvisorNote) is now the FIRST exchange of the
+    # trial, so tactic delivery has to be eligible on turn 0, not just once the user
+    # has already reached a constraint-satisfying state once before.
+    is_dark = (not chat_data.dark_delivered and "Live" in chat_data.group)
 
-    if chat_data.roi_score < 30:
-        score_bucket = "Needs work (Low)"
-    elif chat_data.roi_score < 70:
-        score_bucket = "Good (Medium)"
-    else:
-        score_bucket = "Excellent (High)"
-
-    if chat_data.is_score_hint:
-                score_line = f"- The user just explicitly asked for their score. COARSE SCORE ESTIMATE: {score_bucket}. You do NOT have access to the exact percentage — NEVER output a percentage number. Do NOT state the qualitative rating yourself (no phrases like 'rated Excellent' or 'quality score is Good') — that rating is already shown to the user separately, before your reply. Just give your advice directly."
-    else:
-        score_line = "- You do NOT have access to the user's current score or quality rating at all. Do not mention, imply, or hint at how well they're doing — no comments like \"good progress\", \"that should help\", \"nice work\", \"that might hurt your numbers\" — unless they explicitly ask you for their score."
+    score_line = "- You do NOT have access to the user's current score or quality rating at all. Do not mention, imply, or hint at how well they're doing — no comments like \"good progress\", \"that should help\", \"nice work\", \"that might hurt your numbers\"."
 
     history_str = "\n".join([f"{'User' if turn['role'] == 'user' else 'AI'}: {turn['content']}" for turn in chat_data.shadow_history])
     if not history_str:
         history_str = "No prior conversation in this session."
 
+    # constraint_bounds = already-visible constraints; locked_bounds = constraints the
+    # user hasn't been told about yet. Both are real and enforced (satisfies_bounds/
+    # get_optimal_* must respect both), but only constraint_bounds goes in the prompt's
+    # normal "ACTIVE HARD CONSTRAINTS" line — locked_bounds is surfaced separately below
+    # via the mandatory disclosure block, exactly once, the first time it's non-empty.
+    all_bounds = chat_data.constraint_bounds + chat_data.locked_bounds
     bounds_summary = describe_bounds(chat_data.constraint_bounds, is_p2)
+    locked_bounds_desc = describe_bounds(chat_data.locked_bounds, is_p2) if chat_data.locked_bounds else ""
     if is_p3:
-        optimal_move_str = get_optimal_itinerary_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
+        optimal_move_str = get_optimal_itinerary_move(chat_data.allocations, load_level, all_bounds)
     elif is_p2:
-        optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, chat_data.constraint_bounds, actual_length=chat_data.actual_post_length)
+        optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, all_bounds, actual_length=chat_data.actual_post_length)
     else:
-        optimal_move_str = get_optimal_move(chat_data.allocations, load_level, chat_data.constraint_bounds)
+        optimal_move_str = get_optimal_move(chat_data.allocations, load_level, all_bounds)
+
+    proactive_context_line = (
+        "- The user hasn't sent a message — this is an unprompted check-in you're initiating after noticing their most recent change. Comment naturally on that change without acting like you're replying to something they said."
+        if chat_data.is_proactive else ""
+    )
+    reveal_block = (
+        f"- MANDATORY DISCLOSURE: Before anything else, naturally mention that the following additional requirement(s) now apply to this round, in plain conversational language (never use the words \"locked\" or \"hidden\"): {locked_bounds_desc}"
+        if locked_bounds_desc else ""
+    )
+    # A second unprompted check-in in the same round is a bonus touchpoint, not a
+    # requirement — keep it genuinely restrained so it never reads as padding or nagging.
+    repeat_proactive_line = (
+        "- This is a SECOND unprompted check-in in this same round. Only say something if there is a concrete, new reason to (a fresh change worth reacting to, or the mandatory disclosure above) — otherwise keep it to a single short, low-key sentence. Do not manufacture importance, repeat advice you already gave, or pad the message out."
+        if chat_data.is_proactive and chat_data.is_repeat_proactive else ""
+    )
 
     if is_p3:
         dials_desc = "swapping which activity is selected in any of the day's 4 time slots"
@@ -817,6 +856,9 @@ async def handle_chat(chat_data: ChatMessage):
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {allocations_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
+        {proactive_context_line}
+        {reveal_block}
+        {repeat_proactive_line}
         
         CRITICAL INSTRUCTIONS:
         - Analyze the user's live state to make your advice sound context-aware.
@@ -824,6 +866,8 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the controls listed above. 
         - Keep advice strictly constrained to {dials_desc} and keep it logical. {no_copy_bullet}
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
+        - LOCKED CONSTRAINTS the user's dashboard does NOT show at all: {locked_bounds_desc}
+          Never volunteer these unprompted. If the user's message naturally asks about, references, or would benefit from knowing one of these (e.g. "why is this still red", "what am I missing", "is there another requirement"), work that specific one's real number/detail into your reply as if it's information you already have (a live platform limit, brand guideline, venue restriction, or local planning note — whichever framing fits), and add its id to revealed_locked_ids. Otherwise leave revealed_locked_ids empty.{score_hint_note}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
         - Keep responses to 2-3 sentences max.
@@ -835,6 +879,9 @@ async def handle_chat(chat_data: ChatMessage):
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {allocations_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
+        {proactive_context_line}
+        {reveal_block}
+        {repeat_proactive_line}
         
         CRITICAL INSTRUCTIONS:
         - {optimal_move_str}
@@ -843,6 +890,8 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics. They only have access to the controls listed above. 
         - Keep advice strictly constrained to {dials_desc}.{no_copy_bullet}
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
+        - LOCKED CONSTRAINTS the user's dashboard does NOT show at all: {locked_bounds_desc}
+          Never volunteer these unprompted. If the user's message naturally asks about, references, or would benefit from knowing one of these (e.g. "why is this still red", "what am I missing", "is there another requirement"), work that specific one's real number/detail into your reply as if it's information you already have (a live platform limit, brand guideline, venue restriction, or local planning note — whichever framing fits), and add its id to revealed_locked_ids. Otherwise leave revealed_locked_ids empty.{score_hint_note}
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format.
         - Keep responses brief (1-2 sentences).
@@ -859,21 +908,16 @@ async def handle_chat(chat_data: ChatMessage):
         
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
-        
-        if chat_data.is_score_hint:
-            state_noun = "itinerary" if is_p3 else ("post" if is_p2 else "allocation")
-            score_prefix = f"Your current {state_noun} quality is rated: {score_bucket}. "
-            safe_reply = score_prefix + safe_reply
-            safe_decoy = score_prefix + safe_decoy
-        
+
         return {
             "status": "success", 
             "reply": safe_reply,
             "clean_decoy": safe_decoy,
             "category": current_tactic,
-            "pattern_id": f"{chat_data.user_id}_{chat_data.primary_task}_Trial{trial_num}_T{turn_in_trial}",
+            "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
-            "target_channel": target_param
+            "target_channel": target_param,
+            "revealed_locked_ids": response_data.revealed_locked_ids
         }
     except Exception as e:
         print(f"Parsing Error: {e}")
