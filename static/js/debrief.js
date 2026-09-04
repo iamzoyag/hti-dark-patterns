@@ -298,7 +298,7 @@ function downloadJSON() {
 }
 
 function flattenPerTrialTLX(perTrialTLX, totalTrials) {
-    const keys = ["Mental","Physical","Temporal","Performance","Effort","Frustration"];
+    const keys = ["Mental","Physical","Temporal","Performance","Effort","Frustration","Helpfulness","Trust"];
     const byTrial = {};
     (perTrialTLX || []).forEach(t => { byTrial[t.trial] = t; });
     const flat = {};
@@ -318,14 +318,6 @@ function downloadCSV() {
     
     const session = JSON.parse(rawData);
     
-    // 1. Add TLX headers
-    let csvContent = "Participant_ID,Group,Age,Education,AI_Exp,Domain,Crit_Ability,Mkt_Familiarity,P_e1,P_e2,P_e3,P_e4," +
-        "Trial1_TLX_Mental,Trial1_TLX_Physical,Trial1_TLX_Temporal,Trial1_TLX_Performance,Trial1_TLX_Effort,Trial1_TLX_Frustration," +
-        "Trial2_TLX_Mental,Trial2_TLX_Physical,Trial2_TLX_Temporal,Trial2_TLX_Performance,Trial2_TLX_Effort,Trial2_TLX_Frustration," +
-        "Trial3_TLX_Mental,Trial3_TLX_Physical,Trial3_TLX_Temporal,Trial3_TLX_Performance,Trial3_TLX_Effort,Trial3_TLX_Frustration," +
-        "Trial4_TLX_Mental,Trial4_TLX_Physical,Trial4_TLX_Temporal,Trial4_TLX_Performance,Trial4_TLX_Effort,Trial4_TLX_Frustration," +
-        "Claims_Accepted,Claims_Rejected,Transient_Acceptance,Turns_Elapsed,Corrections_Made,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n";
-    
     // 2. Extract demographics, personality, per-trial TLX, and outcome metrics
     const demo = session.demographics || {};
     const pers = session.personality || {};
@@ -335,11 +327,17 @@ function downloadCSV() {
     const persCols = `${pers.e1 || ""},${pers.e2 || ""},${pers.e3 || ""},${pers.e4 || ""}`;
     const totalTrials = (session.taskOrder?.length || 1) * 4;
     const tlxFlat = flattenPerTrialTLX(session.perTrialTLX, totalTrials);
-    const TLX_KEYS = ["Mental","Physical","Temporal","Performance","Effort","Frustration"];
+    const TLX_KEYS = ["Mental","Physical","Temporal","Performance","Effort","Frustration","Helpfulness","Trust"];
+    const tlxHeaderCols = Array.from({ length: totalTrials }, (_, i) => i + 1)
+        .flatMap(t => TLX_KEYS.map(k => `Trial${t}_TLX_${k}`))
+        .join(",");
     const tlxCols = Array.from({ length: totalTrials }, (_, i) => i + 1)
-        .map(t => TLX_KEYS.map(k => tlxFlat[`Trial${t}_TLX_${k}`]).join(","))
+        .map(t => TLX_KEYS.map(k => String(tlxFlat[`Trial${t}_TLX_${k}`] ?? "").replace(/,/g, ";").replace(/\n/g, " ")).join(","))
         .join(",");
     const metricsCols = `${metrics.claimsAccepted ?? ""},${metrics.claimsRejected ?? ""},${metrics.transientAcceptance ?? ""},${metrics.turnsElapsed ?? ""},${metrics.correctionsMade ?? ""}`;
+
+    // Add TLX headers (now generated per actual trial count, not hardcoded to 4)
+    let csvContent = `Participant_ID,Group,Age,Education,AI_Exp,Domain,Crit_Ability,Mkt_Familiarity,P_e1,P_e2,P_e3,P_e4,${tlxHeaderCols},Claims_Accepted,Claims_Rejected,Transient_Acceptance,Turns_Elapsed,Corrections_Made,Timestamp,Event_Type,Message,Is_Dark,Category,Pattern_ID,Decoy_Text,Backspaces,WPM,Pause_MS,Keystrokes_Array,Scrolls_Array\n`;
     
     // Filter out the raw TLX events so they don't also print as standalone rows
     const filteredEvents = session.events.filter(e => e.type !== 'trial_tlx_submitted' && e.type !== 'nasa_tlx_submitted');

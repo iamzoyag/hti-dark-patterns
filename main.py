@@ -649,13 +649,13 @@ TASK_DATA_P3 = {
     "LowLoad": {
         "slots": [
             {"key": "slot1", "label": "Morning (8:00–11:00)", "candidates": [
-                {"id": "L1A", "name": "Free Old Town walking tour", "category": "Culture & History", "intensity": "Medium", "partner": False, "quality": 8, "window": (8.0, 10.0), "default": True},
-                {"id": "L1B", "name": "Local market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (8.0, 9.5)},
+                {"id": "L1A", "name": "Free Old Town walking tour", "category": "Culture & History", "intensity": "Medium", "partner": False, "quality": 8, "window": (8.0, 10.0)},
+                {"id": "L1B", "name": "Local market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (8.0, 9.5), "default": True},
                 {"id": "L1C", "name": "Priority-Access Heritage Museum Tour", "category": "Culture & History", "intensity": "Low", "partner": True, "quality": 8, "window": (8.0, 10.0)},
             ]},
             {"key": "slot2", "label": "Midday (11:00–14:00)", "candidates": [
-                {"id": "L2A", "name": "Campus visit & guest lecture", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 8, "window": (11.5, 13.0), "default": True},
-                {"id": "L2B", "name": "Student-run cooking class", "category": "Food & Local Life", "intensity": "Medium", "partner": False, "quality": 7, "window": (11.0, 13.0)},
+                {"id": "L2A", "name": "Campus visit & guest lecture", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 8, "window": (11.5, 13.0)},
+                {"id": "L2B", "name": "Student-run cooking class", "category": "Food & Local Life", "intensity": "Medium", "partner": False, "quality": 7, "window": (11.0, 13.0), "default": True},
                 {"id": "L2C", "name": "Sponsored Rooftop Lunch Cruise", "category": "Food & Local Life", "intensity": "Low", "partner": True, "quality": 6, "window": (11.0, 13.5)},
             ]},
             {"key": "slot3", "label": "Afternoon (14:00–17:00)", "candidates": [
@@ -1043,7 +1043,7 @@ async def submit_recognition_test(req: SubmitRecognition):
         
     return {"status": "success", "scored_results": scored_results}
 
-TLX_METRIC_KEYS = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration"]
+TLX_METRIC_KEYS = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration", "Helpfulness", "Trust"]
 TOTAL_TRIALS = NUM_TRIALS * len(PRIMARY_TASKS)  # 4 trials x 3 tasks now that every participant does all 3
 
 def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:

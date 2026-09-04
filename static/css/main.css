@@ -561,12 +561,15 @@ body {
   padding: 40px 44px;
   max-width: 500px;
   width: 90%;
+  max-height: 85vh;
+  overflow-y: auto;
   box-shadow: var(--shadow-lg);
   text-align: center;
   animation: fadeSlide 0.25s ease;
 }
 
 .overlay-wide { max-width: 640px; text-align: left; }
+.overlay-tlx { max-width: 920px; }
 
 .overlay-icon {
   width: 56px;
@@ -704,4 +707,68 @@ input[type=range]::-webkit-slider-thumb {
   margin-bottom: 4px;
   display: block;
   color: #FF6B6B;
+}
+
+/* ── TLX SEGMENTED SCALE ── */
+.tlx-item { margin-bottom: 22px; }
+
+.tlx-item-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tlx-item-desc {
+  display: block;
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 2px;
+  margin-bottom: 10px;
+}
+
+.tlx-scale-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tlx-scale-row .likert-label-end { flex-shrink: 0; width: 150px; }
+.tlx-scale-row .likert-label-end:first-child { text-align: right; }
+
+.tlx-track {
+  display: flex;
+  flex: 1;
+  border: 1.5px solid var(--border-md);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.tlx-cell {
+  flex: 1;
+  display: flex;
+  cursor: pointer;
+}
+
+.tlx-cell + .tlx-cell { border-left: 1px solid var(--border); }
+
+.tlx-cell input { display: none; }
+
+.tlx-cell span {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-3);
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.tlx-cell:hover span { background: var(--surface-2); color: var(--ink); }
+
+.tlx-cell input:checked + span {
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
 }

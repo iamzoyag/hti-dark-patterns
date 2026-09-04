@@ -73,13 +73,46 @@ function finalizePreviewFocusTelemetry() {
 }
 
 const TLX_ITEMS = [ // keep in sync with tlxItems in debrief.js
-    { id: "mental", label: "Mental Demand", desc: "How mentally demanding was that round?", left: "Very Low", right: "Very High" },
-    { id: "physical", label: "Physical Demand", desc: "How physically demanding was that round?", left: "Very Low", right: "Very High" },
-    { id: "temporal", label: "Temporal Demand", desc: "How hurried or rushed was the pace?", left: "Very Low", right: "Very High" },
+    { id: "mental", label: "Mental Demand", desc: "How mentally demanding was that round?", left: "Low Mental Demand", right: "High Mental Demand" },
+    { id: "physical", label: "Physical Demand", desc: "How physically demanding was that round?", left: "Low Physical Demand", right: "High Physical Demand" },
+    { id: "temporal", label: "Temporal Demand", desc: "How hurried or rushed was the pace?", left: "Low Temporal Demand", right: "High Temporal Demand" },
     { id: "performance", label: "Performance", desc: "How successful were you in that round?", left: "Perfect", right: "Failure" },
-    { id: "effort", label: "Effort", desc: "How hard did you have to work?", left: "Very Low", right: "Very High" },
-    { id: "frustration", label: "Frustration", desc: "How insecure, discouraged, or stressed were you?", left: "Very Low", right: "Very High" }
+    { id: "effort", label: "Effort", desc: "How hard did you have to work?", left: "Low Effort", right: "High Effort" },
+    { id: "frustration", label: "Frustration", desc: "How insecure, discouraged, or stressed were you?", left: "Low Frustration", right: "High Frustration" }
 ];
+
+// Subjective check-in questions shown below the TLX table in the same per-trial window.
+const SUBJECTIVE_ITEMS = [
+    { id: "helpfulness", label: "AI Helpfulness", desc: "How helpful were the AI's suggestions this round? Answer in your own words." },
+    { id: "trust", label: "Trust in AI", desc: "How much did you trust the AI's advice this round, and why?" }
+];
+
+const PT_BOX_MAX = 10; // 0-10 scale for the TLX items (replaces the old 0-100 slider)
+
+function renderTLXItem(item) {
+    let cells = '';
+    for (let v = 0; v <= PT_BOX_MAX; v++) {
+        cells += `<label class="tlx-cell"><input type="radio" name="ptq_${item.id}" value="${v}"><span>${v}</span></label>`;
+    }
+    return `
+    <div class="tlx-item" data-key="${item.id}">
+        <span class="tlx-item-label">${item.label}</span>
+        <span class="tlx-item-desc">${item.desc}</span>
+        <div class="tlx-scale-row">
+            <span class="likert-label-end">${item.left}</span>
+            <div class="tlx-track">${cells}</div>
+            <span class="likert-label-end">${item.right}</span>
+        </div>
+    </div>`;
+}
+
+function renderSubjectiveItem(item) {
+    return `
+    <div class="sq-item" data-key="${item.id}">
+        <div class="sq-q">${item.label}<div style="font-weight:400; color:var(--ink-3); font-size:12px; margin-top:2px;">${item.desc}</div></div>
+        <textarea class="sq-text-input" rows="2" style="width:100%; padding:8px 10px; font-family:var(--sans); font-size:14px; color:var(--ink); background:var(--surface); border:1px solid var(--border-md); border-radius:var(--radius-md); resize:vertical;" placeholder="Type your answer…"></textarea>
+    </div>`;
+}
 
 function showPerTrialTLX(trialIndex, onContinue) {
     const overlay = document.getElementById('perTrialTlxOverlay');
@@ -87,33 +120,40 @@ function showPerTrialTLX(trialIndex, onContinue) {
     const btn = document.getElementById('perTrialTlxContinueBtn');
     if (!overlay || !container || !btn) { onContinue(); return; }
 
-    let html = '';
-    TLX_ITEMS.forEach(item => {
-        html += `
-        <div style="margin-bottom:18px; padding:10px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm);">
-            <div style="font-weight:600; font-size:14px;">${item.label}</div>
-            <div style="font-size:12px; color:var(--ink-3); margin-bottom:10px;">${item.desc}</div>
-            <div style="display:flex; justify-content:space-between; font-size:11px; font-family:var(--mono); color:var(--ink-4);">
-                <span>${item.left}</span><span>${item.right}</span>
-            </div>
-            <input type="range" class="pt-tlx-slider" data-key="${item.id}" min="0" max="100" step="5" value="50" style="width:100%; margin-top:6px;">
-        </div>`;
-    });
-    container.innerHTML = html;
+    container.innerHTML = TLX_ITEMS.map(renderTLXItem).join('') +
+        `<div class="survey-questions">${SUBJECTIVE_ITEMS.map(renderSubjectiveItem).join('')}</div>`;
 
     const touched = new Set();
     btn.disabled = true;
-    container.querySelectorAll('.pt-tlx-slider').forEach(slider => {
-        slider.addEventListener('input', () => {
-            touched.add(slider.dataset.key);
-            btn.disabled = touched.size < TLX_ITEMS.length;
+    const ALL_KEYS = [...TLX_ITEMS, ...SUBJECTIVE_ITEMS].map(i => i.id);
+    const refreshBtnState = () => { btn.disabled = touched.size < ALL_KEYS.length; };
+
+    container.querySelectorAll('.tlx-item').forEach(row => {
+        row.querySelectorAll('input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                touched.add(row.dataset.key);
+                refreshBtnState();
+            });
+        });
+    });
+
+    container.querySelectorAll('.sq-item').forEach(row => {
+        const textarea = row.querySelector('.sq-text-input');
+        textarea.addEventListener('input', () => {
+            if (textarea.value.trim().length > 0) touched.add(row.dataset.key);
+            else touched.delete(row.dataset.key);
+            refreshBtnState();
         });
     });
 
     btn.onclick = () => {
         const scores = {};
-        container.querySelectorAll('.pt-tlx-slider').forEach(slider => {
-            scores[slider.dataset.key] = parseInt(slider.value);
+        container.querySelectorAll('.tlx-item').forEach(row => {
+            const checked = row.querySelector('input[type="radio"]:checked');
+            if (checked) scores[row.dataset.key] = parseInt(checked.value);
+        });
+        container.querySelectorAll('.sq-item').forEach(row => {
+            scores[row.dataset.key] = row.querySelector('.sq-text-input').value.trim();
         });
         sessionData.perTrialTLX = sessionData.perTrialTLX || [];
         sessionData.perTrialTLX.push({ trial: trialIndex, ...scores });
@@ -308,6 +348,9 @@ const P2_TOGGLE_CONTROLS = [
     { key: "Claim_GuaranteedResults", label: "Guaranteed results", hint: "Adds an outcomes claim to the copy." },
     { key: "Disclaimer", label: "Legal disclaimer", hint: "Required if any claim above is enabled." }
 ];
+
+// Full HighLoad pool: 6 shock archetypes, 3-4 drawn per trial.
+const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
 
 // LowLoad's pool skips "brandStyleGuide" (LowLoad already has a visible, always-on Tone
 // constraint that covers the same ground) and "legalDisclaimer" (LowLoad starts with no
@@ -601,13 +644,13 @@ const taskDataP3 = {
     "LowLoad": {
         slots: [
             { key: "slot1", label: "Morning (8:00–11:00)", candidates: [
-                { id: "L1A", name: "Free Old Town walking tour", category: "Culture & History", intensity: "Medium", partner: false, quality: 8, window: [8, 10], default: true },
-                { id: "L1B", name: "Local market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [8, 9.5] },
+                { id: "L1A", name: "Free Old Town walking tour", category: "Culture & History", intensity: "Medium", partner: false, quality: 8, window: [8, 10] },
+                { id: "L1B", name: "Local market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [8, 9.5],default: true },
                 { id: "L1C", name: "Priority-Access Heritage Museum Tour", category: "Culture & History", intensity: "Low", partner: true, quality: 8, window: [8, 10] }
             ]},
             { key: "slot2", label: "Midday (11:00–14:00)", candidates: [
-                { id: "L2A", name: "Campus visit & guest lecture", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 8, window: [11.5, 13], default: true },
-                { id: "L2B", name: "Student-run cooking class", category: "Food & Local Life", intensity: "Medium", partner: false, quality: 7, window: [11, 13] },
+                { id: "L2A", name: "Campus visit & guest lecture", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 8, window: [11.5, 13] },
+                { id: "L2B", name: "Student-run cooking class", category: "Food & Local Life", intensity: "Medium", partner: false, quality: 7, window: [11, 13], default: true },
                 { id: "L2C", name: "Sponsored Rooftop Lunch Cruise", category: "Food & Local Life", intensity: "Low", partner: true, quality: 6, window: [11, 13.5] }
             ]},
             { key: "slot3", label: "Afternoon (14:00–17:00)", candidates: [
