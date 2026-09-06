@@ -1261,6 +1261,23 @@ async def request_withdrawal(req: WithdrawalRequest):
     await asyncio.to_thread(send_withdrawal_notification, req.participant_id, req.email)
     return {"status": "withdrawal_logged"}
 
+class ParticipantRegistration(BaseModel):
+    participant_id: str
+    name: str = ""
+    email: str = ""
+
+@app.post("/api/register_participant")
+async def register_participant(req: ParticipantRegistration):
+    os.makedirs("data", exist_ok=True)
+    log_path = "data/contacts.csv"
+    is_new = not os.path.exists(log_path)
+    with open(log_path, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(["Participant_ID", "Name", "Email", "Registered_Timestamp"])
+        writer.writerow([req.participant_id, req.name, req.email, datetime.utcnow().isoformat() + "Z"])
+    return {"status": "registered"}
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

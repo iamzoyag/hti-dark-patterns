@@ -81,9 +81,20 @@ async function startExperiment() {
     // Generate a random Participant ID
     const participantId = 'P' + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
 
+    // Name/email are for the completion roster only — sent straight to their own
+    // contacts log, never folded into the behavioral session data or its CSV.
+    const participantName = document.getElementById('participantName').value.trim();
+    const participantEmail = document.getElementById('participantEmail').value.trim();
+    fetch('/api/register_participant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ participant_id: participantId, name: participantName, email: participantEmail })
+    }).catch(err => console.error("Participant registration failed:", err));
+
     // Gather Demographics
     const demoData = {
         age: document.getElementById('age').value,
+        gender: document.getElementById('gender').value,
         education: document.getElementById('education').value,
         aiExp: document.getElementById('aiExp').value,
         domain: document.getElementById('domain').value,
