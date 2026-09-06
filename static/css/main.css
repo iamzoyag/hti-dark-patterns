@@ -239,6 +239,8 @@ body {
 
 .field-group select,
 .field-group input[type="text"],
+.field-group input[type="email"],
+.field-group input[type="number"],
 .field-group textarea {
   width: 100%;
   max-width: 100%;
@@ -256,10 +258,16 @@ body {
 
 .field-group select:focus,
 .field-group input[type="text"]:focus,
+.field-group input[type="email"]:focus,
+.field-group input[type="number"]:focus,
 .field-group textarea:focus {
   border-color: var(--accent);
   background: white;
 }
+
+.field-group input.input-invalid { border-color: #d64545; }
+.field-error { font-size: 11px; color: #d64545; margin-top: 2px; display: none; }
+.field-error.visible { display: block; }
 
 /* ── LIKERT ── */
 .likert-row {

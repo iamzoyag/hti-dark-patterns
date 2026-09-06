@@ -270,12 +270,28 @@ function finishDebrief() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+function isValidEmail(value) {
+    const probe = document.createElement('input');
+    probe.type = 'email';
+    probe.value = value;
+    return value.trim().length > 0 && probe.validity.valid;
+}
+
 async function submitWithdrawal() {
     const rawData = localStorage.getItem('hti_session');
     const session = rawData ? JSON.parse(rawData) : null;
     const email = document.getElementById('withdrawEmail')?.value.trim() || '';
     const btn = document.getElementById('withdrawSubmitBtn');
     const confirmMsg = document.getElementById('withdrawConfirm');
+    const errorMsg = document.getElementById('withdrawEmailError');
+
+    if (email && !isValidEmail(email)) {
+        errorMsg?.classList.add('visible');
+        document.getElementById('withdrawEmail')?.classList.add('input-invalid');
+        return;
+    }
+    errorMsg?.classList.remove('visible');
+    document.getElementById('withdrawEmail')?.classList.remove('input-invalid');
 
     if (email && session) {
         try {
@@ -303,4 +319,10 @@ function hideAllSections() {
         const el = document.getElementById(id);
         if (el) el.classList.remove('active');
     });
+}
+
+function updateDebriefContinueState() {
+    const btn = document.getElementById('debriefContinueBtn');
+    const filled = document.getElementById('dcText')?.value.trim().length > 0;
+    if (btn) btn.disabled = !filled;
 }

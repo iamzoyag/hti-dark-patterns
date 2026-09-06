@@ -23,10 +23,45 @@ function goToStep(stepNumber) {
 }
 
 // --- 2. CONSENT LOGIC ---
+function isValidEmail(value) {
+    // Reuses the browser's native email format check via the Constraint Validation API.
+    const probe = document.createElement('input');
+    probe.type = 'email';
+    probe.value = value;
+    return value.trim().length > 0 && probe.validity.valid;
+}
+
+function updateLandingNextState() {
+    const consentOk = document.getElementById('consentBox').checked;
+
+    const emailField = document.getElementById('participantEmail');
+    const email = emailField.value.trim();
+    const emailOk = isValidEmail(email);
+    emailField.classList.toggle('input-invalid', email.length > 0 && !emailOk);
+    const emailError = document.getElementById('emailError');
+    if (emailError) emailError.classList.toggle('visible', email.length > 0 && !emailOk);
+
+    const ageField = document.getElementById('age');
+    const ageOk = ageField.value.trim().length > 0 && ageField.checkValidity();
+
+    const requiredSelects = [
+        document.getElementById('gender').value,
+        document.getElementById('education').value,
+        document.getElementById('aiExp').value,
+        document.getElementById('domain').value
+    ];
+
+    const allFieldsFilled = document.getElementById('participantName').value.trim().length > 0
+        && ageOk
+        && requiredSelects.every(v => v !== "")
+        && document.querySelector('input[name="critAbility"]:checked')
+        && document.querySelector('input[name="mktFamiliarity"]:checked');
+
+    document.getElementById('landingNext').disabled = !(consentOk && emailOk && allFieldsFilled);
+}
+
 function checkConsent() {
-    const box = document.getElementById('consentBox');
-    const btn = document.getElementById('landingNext');
-    btn.disabled = !box.checked;
+    updateLandingNextState();
 }
 
 function checkBriefing() {
@@ -43,6 +78,14 @@ const personalityItems = [
     { id: "e3", text: "I tend to seek reassurance from others when making decisions." },
     { id: "e4", text: "I am easily moved by the emotional experiences of others." }
 ];
+
+function updatePersonalityNextState() {
+    const allAnswered = personalityItems.every(item =>
+        document.querySelector(`input[name="${item.id}"]:checked`)
+    );
+    const btn = document.getElementById('personalityNext');
+    if (btn) btn.disabled = !allAnswered;
+}
 
 function renderPersonalityScale() {
     const container = document.getElementById('personalityScale');
@@ -61,6 +104,8 @@ function renderPersonalityScale() {
         </tr>`;
     });
     container.innerHTML = html;
+    container.addEventListener('change', updatePersonalityNextState);
+    updatePersonalityNextState();
 }
 
 // Inject the questions when the page loads

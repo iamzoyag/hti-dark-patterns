@@ -55,12 +55,12 @@
         <div class="consent-block dc-check">
           <h4>One final question</h4>
           <p>During the study, what did you think was being measured? Please write freely — there is no wrong answer, and this helps us understand how well our cover story worked.</p>
-          <textarea id="dcText" rows="4" placeholder="Write what you believed the study was measuring…" style="width:100%; margin-top:10px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
+          <textarea id="dcText" rows="4" placeholder="Write what you believed the study was measuring…" oninput="updateDebriefContinueState()" style="width:100%; margin-top:10px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
         </div>
 
       </div>
 
-      <button class="btn-primary" onclick="finishDebrief()">Continue →</button>
+      <button class="btn-primary" id="debriefContinueBtn" disabled onclick="finishDebrief()">Continue →</button>
     </div>
   </section>
 
@@ -115,6 +115,7 @@
       <div class="consent-block">
         <label style="font-size: 13px; font-weight: 500;">Email (only needed if you want to withdraw)</label>
         <input type="email" id="withdrawEmail" placeholder="you@example.com" style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px;">
+        <p class="field-error" id="withdrawEmailError">Please enter a valid email address, or leave this blank.</p>
       </div>
 
       <button class="btn-primary" id="withdrawSubmitBtn" onclick="submitWithdrawal()" style="margin-top: 20px;">Finish →</button>
