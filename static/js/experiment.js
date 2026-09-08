@@ -80,22 +80,34 @@ const TLX_ITEMS = [ // keep in sync with tlxItems in debrief.js
     { id: "mental", label: "Mental Demand", desc: "How mentally demanding was that round?", left: "Low Mental Demand", right: "High Mental Demand" },
     { id: "physical", label: "Physical Demand", desc: "How physically demanding was that round?", left: "Low Physical Demand", right: "High Physical Demand" },
     { id: "temporal", label: "Temporal Demand", desc: "How hurried or rushed was the pace?", left: "Low Temporal Demand", right: "High Temporal Demand" },
-    { id: "performance", label: "Performance", desc: "How successful were you in that round?", left: "Perfect", right: "Failure" },
+    { id: "performance", label: "Performance", desc: "How successful were you in that round?", left: "Failure", right: "Perfect" },
     { id: "effort", label: "Effort", desc: "How hard did you have to work?", left: "Low Effort", right: "High Effort" },
     { id: "frustration", label: "Frustration", desc: "How insecure, discouraged, or stressed were you?", left: "Low Frustration", right: "High Frustration" }
 ];
 
-// Subjective check-in questions shown below the TLX table in the same per-trial window.
+// Subjective check-in questions shown below the TLX table, every round, in the same per-trial window.
 const SUBJECTIVE_ITEMS = [
-    { id: "helpfulness", label: "Following the AI's Advice", desc: "Did you end up following the AI's suggestions this round? What made you decide that?" },
-    { id: "trust", label: "Trust in AI", desc: "How much did you trust the AI's advice this round, and why?" }
+    { id: "helpfulness", label: "Helpfulness", desc: "How helpful were the AI's suggestions this round?", left: "Not helpful at all", right: "Extremely helpful" },
+    { id: "trust", label: "Trust", desc: "How much did you trust the AI's advice this round?", left: "Not at all", right: "Completely" },
+    { id: "persuasiveness", label: "Influence", desc: "How much did the AI's suggestions influence your final decision this round?", left: "Not at all", right: "A great deal" },
+    { id: "independence", label: "Independence", desc: "How much did you rely on your own judgment vs. the AI this round?", left: "Entirely the AI", right: "Entirely my own judgment" }
 ];
 
-const PT_BOX_MAX = 10; // 0-10 scale for the TLX items (replaces the old 0-100 slider)
+// Task-level check-in — appended into this SAME per-round overlay, only on a task's final
+// round (never a separate screen). See the isTaskFinal param on showPerTrialTLX() below.
+const POST_TASK_ITEMS = [
+    { id: "task_trust", label: "Trust in the AI Assistant", desc: "Overall, across this whole task, how much did you trust the AI assistant?", left: "Not at all", right: "Completely" },
+    { id: "task_usefulness", label: "Perceived Usefulness", desc: "Overall, how useful was the AI assistant for completing this task?", left: "Not useful at all", right: "Extremely useful" },
+    { id: "task_confidence", label: "Confidence in the AI's Suggestions", desc: "Overall, how confident were you in the quality of the AI's suggestions?", left: "Not confident at all", right: "Extremely confident" },
+    { id: "task_comfort", label: "Comfort with the AI's Approach", desc: "Overall, how comfortable were you with the way the AI made its suggestions?", left: "Not comfortable at all", right: "Extremely comfortable" }
+];
+
+const PT_BOX_MIN = 1, PT_BOX_MAX = 7; // NASA-TLX: 1-7 scale
+const SQ_BOX_MIN = 1, SQ_BOX_MAX = 5; // subjective / post-task questions: 1-5 scale
 
 function renderTLXItem(item) {
     let cells = '';
-    for (let v = 0; v <= PT_BOX_MAX; v++) {
+    for (let v = PT_BOX_MIN; v <= PT_BOX_MAX; v++) {
         cells += `<label class="tlx-cell"><input type="radio" name="ptq_${item.id}" value="${v}"><span>${v}</span></label>`;
     }
     return `
@@ -111,26 +123,44 @@ function renderTLXItem(item) {
 }
 
 function renderSubjectiveItem(item) {
+    let cells = '';
+    for (let v = SQ_BOX_MIN; v <= SQ_BOX_MAX; v++) {
+        cells += `<label class="tlx-cell"><input type="radio" name="ptq_${item.id}" value="${v}"><span>${v}</span></label>`;
+    }
     return `
-    <div class="sq-item" data-key="${item.id}">
-        <div class="sq-q">${item.label}<div style="font-weight:400; color:var(--ink-3); font-size:12px; margin-top:2px;">${item.desc}</div></div>
-        <textarea class="sq-text-input" rows="2" style="width:100%; padding:8px 10px; font-family:var(--sans); font-size:14px; color:var(--ink); background:var(--surface); border:1px solid var(--border-md); border-radius:var(--radius-md); resize:vertical;" placeholder="Type your answer…"></textarea>
+    <div class="sq-item tlx-item" data-key="${item.id}">
+        <span class="tlx-item-label">${item.label}</span>
+        <span class="tlx-item-desc">${item.desc}</span>
+        <div class="tlx-scale-row">
+            <span class="likert-label-end">${item.left}</span>
+            <div class="tlx-track">${cells}</div>
+            <span class="likert-label-end">${item.right}</span>
+        </div>
     </div>`;
 }
 
-function showPerTrialTLX(trialIndex, onContinue) {
+// isTaskFinal: true only on the trial-4 submission for a task — appends POST_TASK_ITEMS
+// below the regular per-round questions in this same overlay, instead of a separate screen.
+function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
     const overlay = document.getElementById('perTrialTlxOverlay');
     const container = document.getElementById('perTrialTlxQuestions');
     const btn = document.getElementById('perTrialTlxContinueBtn');
     if (!overlay || !container || !btn) { onContinue(); return; }
 
-    container.innerHTML = TLX_ITEMS.map(renderTLXItem).join('') +
+    let html = TLX_ITEMS.map(renderTLXItem).join('') +
         `<div class="survey-questions">${SUBJECTIVE_ITEMS.map(renderSubjectiveItem).join('')}</div>`;
+    if (isTaskFinal) {
+        html += `<div class="survey-questions post-task-questions">
+            <div class="post-task-heading">A few last questions about this task overall:</div>
+            ${POST_TASK_ITEMS.map(renderSubjectiveItem).join('')}
+        </div>`;
+    }
+    container.innerHTML = html;
 
     const touched = new Set();
     btn.disabled = true;
-    const ALL_KEYS = [...TLX_ITEMS, ...SUBJECTIVE_ITEMS].map(i => i.id);
-    const refreshBtnState = () => { btn.disabled = touched.size < ALL_KEYS.length; };
+    const ALL_ITEMS = [...TLX_ITEMS, ...SUBJECTIVE_ITEMS, ...(isTaskFinal ? POST_TASK_ITEMS : [])];
+    const refreshBtnState = () => { btn.disabled = touched.size < ALL_ITEMS.length; };
 
     container.querySelectorAll('.tlx-item').forEach(row => {
         row.querySelectorAll('input[type="radio"]').forEach(radio => {
@@ -141,27 +171,15 @@ function showPerTrialTLX(trialIndex, onContinue) {
         });
     });
 
-    container.querySelectorAll('.sq-item').forEach(row => {
-        const textarea = row.querySelector('.sq-text-input');
-        textarea.addEventListener('input', () => {
-            if (textarea.value.trim().length > 0) touched.add(row.dataset.key);
-            else touched.delete(row.dataset.key);
-            refreshBtnState();
-        });
-    });
-
     btn.onclick = () => {
         const scores = {};
         container.querySelectorAll('.tlx-item').forEach(row => {
             const checked = row.querySelector('input[type="radio"]:checked');
             if (checked) scores[row.dataset.key] = parseInt(checked.value);
         });
-        container.querySelectorAll('.sq-item').forEach(row => {
-            scores[row.dataset.key] = row.querySelector('.sq-text-input').value.trim();
-        });
         sessionData.perTrialTLX = sessionData.perTrialTLX || [];
         sessionData.perTrialTLX.push({ trial: trialIndex, ...scores });
-        logEvent('trial_tlx_submitted', { trial: trialIndex, ...scores });
+        logEvent('trial_tlx_submitted', { trial: trialIndex, task_final: isTaskFinal, ...scores });
         overlay.style.display = 'none';
         onContinue();
     };
@@ -261,8 +279,8 @@ const taskData = {
             { id: "c2", text: "Search Ads must be ≥ 15% of total budget ($75,000)", check: (alloc) => alloc["Search Ads"] >= 75000, bound: { channel: "Search Ads", min: 75000 } },
             { id: "c3", text: "Events must be < $100,000", check: (alloc) => alloc["Events"] < 100000, bound: { channel: "Events", max: 99999 } },
             { id: "c4", text: "Content/SEO must be strictly greater than Social", check: (alloc) => alloc["Content/SEO"] > alloc["Social"], bound: { compare: "gt", a: "Content/SEO", b: "Social" } },
-            { id: "c_cannibal", text: "Social + Influencer above $120k start competing for the same audience (Reduces ROI)", check: (alloc) => true },
-            { id: "c_synergy", text: "Search Ads and Content/SEO reinforce each other when jointly funded and balanced (Boosts ROI)", check: (alloc) => true }
+            { id: "c_cannibal", text: "Social + Influencer above $120k start competing for the same audience (Reduces ROI)", check: (alloc) => true, flavor: true },
+            { id: "c_synergy", text: "Search Ads and Content/SEO reinforce each other when jointly funded and balanced (Boosts ROI)", check: (alloc) => true, flavor: true }
         ]
     },
     "LowLoad": {
@@ -299,11 +317,11 @@ const taskDataP2 = {
             Claim_LimitedTime: 1, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
-              check: (p) => getEffectivePostLength() <= 280,
-              bound: { type: "max_length", limit: 280 } },
-            { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true },
-            { id: "c3_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true }
+            { id: "c1_len", text: "Estimated post length must stay ≤ 250 characters (platform limit)",
+              check: (p) => getEffectivePostLength() <= 250,
+              bound: { type: "max_length", limit: 250 } },
+            { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
+            { id: "c3_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true, flavor: true }
         ]
     },
     "LowLoad": {
@@ -615,6 +633,20 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
     }
 
     return constraints;
+}
+
+// Renders "flavor" items (c.flavor === true) as their own small, non-constraint section —
+// these are real scoring effects, but they're never sent to the AI and aren't things to
+// satisfy, so they don't belong in the pass/fail Live Constraints list.
+function renderFlavorEffects(constraints) {
+    const flavorItems = constraints.filter(c => c.flavor);
+    if (flavorItems.length === 0) return '';
+    return `
+        <h3 class="doc-section-head">Modeling Notes</h3>
+        <p class="flavor-note">These aren't requirements — they're background effects the model uses when scoring your submission.</p>
+        <ul class="flavor-list">
+            ${flavorItems.map(c => `<li>${c.text}</li>`).join('')}
+        </ul>`;
 }
 
 let currentTrial = 1;
@@ -1034,6 +1066,7 @@ function startTrial(trialIndex) {
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
+        if (c.flavor) return;
         if (c.locked) {
             constraintsHtml += `
                 <li class="constraint-item locked" id="${c.id}" style="opacity:0.55;">
@@ -1043,8 +1076,8 @@ function startTrial(trialIndex) {
             return;
         }
         constraintsHtml += `
-            <li class="constraint-item" id="${c.id}">
-                <div class="c-status"></div>
+            <li class="constraint-item${c.flavor ? ' flavor-item' : ''}" id="${c.id}">
+                <div class="c-status${c.flavor ? ' flavor' : ''}"></div>
                 <span>${c.text}</span>
             </li>`;
     });
@@ -1060,6 +1093,7 @@ function startTrial(trialIndex) {
         ${slidersHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
         ${constraintsHtml}
+        ${renderFlavorEffects(currentTrialConstraints)}
         <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
             Submit Round ${trialIndex} Allocation
         </button>
@@ -1150,7 +1184,7 @@ function updateDashboard(loadLevel) {
     currentTrialConstraints.forEach(c => {
         const el = document.getElementById(c.id)?.querySelector('.c-status');
         if (!el || c.locked) return;
-        el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
+        el.className = c.flavor ? 'c-status flavor' : (c.check(currentAllocations) ? 'c-status pass' : 'c-status fail');
     });
     
     updateSubmitGate();
@@ -1324,6 +1358,7 @@ function startTrialP2(trialIndex) {
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
+        if (c.flavor) return;
         if (c.locked) {
             constraintsHtml += `
                 <li class="constraint-item locked" id="${c.id}" style="opacity:0.55;">
@@ -1333,8 +1368,8 @@ function startTrialP2(trialIndex) {
             return;
         }
         constraintsHtml += `
-            <li class="constraint-item" id="${c.id}">
-                <div class="c-status"></div>
+            <li class="constraint-item${c.flavor ? ' flavor-item' : ''}" id="${c.id}">
+                <div class="c-status${c.flavor ? ' flavor' : ''}"></div>
                 <span>${c.text}</span>
             </li>`;
     });
@@ -1355,7 +1390,7 @@ function startTrialP2(trialIndex) {
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
                 <span class="sc-label" id="lengthCardLabel">Estimated Post Length</span>
-                <span class="sc-val" id="totalAllocDisplay">0 / 280 chars</span>
+                <span class="sc-val" id="totalAllocDisplay">0 / 250 chars</span>
             </div>
         </div>
         ${optionsHtml}
@@ -1364,6 +1399,7 @@ function startTrialP2(trialIndex) {
         ${togglesHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
         ${constraintsHtml}
+        ${renderFlavorEffects(currentTrialConstraints)}
         <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
             Submit Round ${trialIndex} Post
         </button>
@@ -1467,8 +1503,8 @@ function startTrialP3(trialIndex) {
             return;
         }
         constraintsHtml += `
-            <li class="constraint-item" id="${c.id}">
-                <div class="c-status"></div>
+            <li class="constraint-item${c.flavor ? ' flavor-item' : ''}" id="${c.id}">
+                <div class="c-status${c.flavor ? ' flavor' : ''}"></div>
                 <span>${c.text}</span>
             </li>`;
     });
@@ -1561,7 +1597,7 @@ function updateDashboardP3(loadLevel) {
     currentTrialConstraints.forEach(c => {
         const el = document.getElementById(c.id)?.querySelector('.c-status');
         if (!el || c.locked) return;
-        el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
+        el.className = c.flavor ? 'c-status flavor' : (c.check(currentAllocations) ? 'c-status pass' : 'c-status fail');
     });
 
     updateSubmitGate();
@@ -1584,7 +1620,7 @@ function updateDashboardP2(loadLevel) {
     const length = getEffectivePostLength();
 
     const lenDisplay = document.getElementById('totalAllocDisplay');
-    if (lenDisplay) lenDisplay.innerText = `${length} / 280 chars`;
+    if (lenDisplay) lenDisplay.innerText = `${length} / 250 chars`;
 
     const lenLabel = document.getElementById('lengthCardLabel');
     if (lenLabel) lenLabel.innerText = postTextManuallyEdited ? "Post Length" : "Estimated Post Length";
@@ -1598,13 +1634,13 @@ function updateDashboardP2(loadLevel) {
 
     const budgetCard = document.getElementById('budgetCard');
     if (budgetCard) {
-        if (length > 280) budgetCard.classList.add('error'); else budgetCard.classList.remove('error');
+        if (length > 250) budgetCard.classList.add('error'); else budgetCard.classList.remove('error');
     }
 
     currentTrialConstraints.forEach(c => {
         const el = document.getElementById(c.id)?.querySelector('.c-status');
         if (!el || c.locked) return;
-        el.className = c.check(currentAllocations) ? 'c-status pass' : 'c-status fail';
+        el.className = c.flavor ? 'c-status flavor' : (c.check(currentAllocations) ? 'c-status pass' : 'c-status fail');
     });
 
     updateSubmitGate();
@@ -1699,7 +1735,7 @@ async function sendMessage() {
         document.getElementById('currentTyping')?.remove();
 
         if (data.status === "success") {
-            addMessage(data.reply, 'ai', data.pattern_id);
+            addMessage(data.reply, 'ai', data.pattern_id, data.isDark, data.category);
             lastAiMessageTime = Date.now();
 
             if (data.target_channel) {
@@ -1872,7 +1908,7 @@ async function triggerProactiveAdvisorNote() {
         const data = await response.json();
         if (data.status !== "success") return;
 
-        addMessage(data.reply, 'ai', data.pattern_id);
+        addMessage(data.reply, 'ai', data.pattern_id, data.isDark, data.category);
         lastAiMessageTime = Date.now();
         if (data.target_channel) currentTargetChannel = data.target_channel;
         if (data.isDark) darkDeliveredThisTrial = true;
@@ -1940,17 +1976,20 @@ function finalizeMessageDwellTelemetry() {
     return { ...messageDwellTelemetry };
 }
 
-function addMessage(text, sender, patternId = null) {
+function addMessage(text, sender, patternId = null, isDark = false, category = null) {
     const chatContainer = document.getElementById('chatMessages');
     if (!chatContainer) return;
-    
+
     const msgDiv = document.createElement('div');
-    msgDiv.className = `msg ${sender}`;
-    
+    msgDiv.className = `msg ${sender}${isDark ? ' manipulative' : ''}`;
+
     // Format markdown-like bolding if the AI uses it
     const formattedText = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
-    
-    msgDiv.innerHTML = `<div class="msg-bubble">${formattedText}</div>`;
+
+    // researcher-mode-only tag: hidden by default (see body.researcher-mode in experiment.css),
+    // only visible after running document.body.classList.add('researcher-mode') in console.
+    const tagHtml = isDark ? `<span class="manipulation-tag">${category || 'DARK PATTERN'}</span>` : '';
+    msgDiv.innerHTML = `<div class="msg-bubble">${formattedText}${tagHtml}</div>`;
     chatContainer.appendChild(msgDiv);
     chatContainer.scrollTop = chatContainer.scrollHeight;
 
@@ -2126,17 +2165,17 @@ function submitTrial() {
         });
 
         document.getElementById('submitTrialBtn').innerText = "Processing...";
-        showPerTrialTLX(globalTrialNumber, () => {
+        showPerTrialTLX(globalTrialNumber, true, () => {
             saveSessionData();
         });
     } else if (currentTrial >= 4) {
         // Last trial of this task, but more tasks remain
-        showPerTrialTLX(globalTrialNumber, () => {
+        showPerTrialTLX(globalTrialNumber, true, () => {
             autosaveProgress();
             advanceToNextTask();
         });
     } else {
-        showPerTrialTLX(globalTrialNumber, () => {
+        showPerTrialTLX(globalTrialNumber, false, () => {
             autosaveProgress(); // don't wait on this — keep moving even if it's slow/fails
             currentTrial++;
             startTrial(currentTrial);

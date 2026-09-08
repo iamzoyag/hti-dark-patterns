@@ -243,6 +243,10 @@ function showTaskBriefing(primaryTask) {
           <p>The assistant will chime in on its own as you make changes — you don't need to message it first, though you're welcome to chat with it any time.</p>
         </div>
         <div class="consent-block">
+          <h4>A note on some rounds</h4>
+          <p>In some rounds, you'll notice numbers continuously changing in a box on the screen. During these rounds, you'll be given a specific target number, such as <strong>5</strong> — your task is to watch the changing numbers and click "Match" whenever the target appears. Successfully spotting the target counts toward a completion bonus.</p>
+        </div>
+        <div class="consent-block">
           <h4>Submitting a round</h4>
           <p>Once all requirements are met, submit the round and rate your experience, then move to the next one.</p>
         </div>

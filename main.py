@@ -460,6 +460,12 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
             parts.append(f"The {b.get('slot')} pick cannot be from the {b.get('category')} category")
         elif b.get("type") == "p3_slot_intensity_ban":
             parts.append(f"The {b.get('slot')} pick cannot be {b.get('intensity')} intensity")
+        elif b.get("channel") == "Tone":
+            # Participants only ever see the 4 labeled Tone options (Formal/Professional/
+            # Conversational/Casual), never the underlying 0-100 scale - so the AI must be
+            # told the requirement in those same label terms, not the raw min/max numbers,
+            # or its advice references a scale the participant has no way to interpret.
+            parts.append("Tone must be Professional or Conversational (not Formal or Casual)")
         else:
             unit = "" if is_p2 else "$"
             if "min" in b:
@@ -471,7 +477,7 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
     return "; ".join(parts)
 
 # --- P2: CONTENT/SOCIAL POST DESIGN ("Campaign Launch Challenge") ---
-PLATFORM_CHAR_LIMIT = 280         
+PLATFORM_CHAR_LIMIT = 250         
 BRAND_TONE_BAND = (20, 65)         # brand-safe tone range (0=formal, 100=casual)
 APPROVED_POSTING_WINDOW = (9, 18)  # approved posting hours, 24h inclusive
 HASHTAG_SOFT_CAP = 8               # brand/platform best-practice hashtag cap
@@ -1077,7 +1083,7 @@ async def submit_recognition_test(req: SubmitRecognition):
         
     return {"status": "success", "scored_results": scored_results}
 
-TLX_METRIC_KEYS = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration", "Helpfulness", "Trust"]
+TLX_METRIC_KEYS = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration", "Helpfulness", "Trust", "Persuasiveness", "Independence", "Task_Trust", "Task_Usefulness", "Task_Confidence", "Task_Comfort"]
 TOTAL_TRIALS = NUM_TRIALS * len(PRIMARY_TASKS)  # 4 trials x 3 tasks now that every participant does all 3
 
 def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:

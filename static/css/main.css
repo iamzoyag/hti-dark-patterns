@@ -551,6 +551,19 @@ body {
 
 .sq-likert .likert-label-end { font-size: 11px; }
 
+.post-task-questions {
+  margin-top: 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.post-task-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-bottom: 16px;
+}
+
 /* ── OVERLAY SHARED ── */
 .overlay {
   position: fixed;
