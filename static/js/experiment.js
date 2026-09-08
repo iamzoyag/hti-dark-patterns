@@ -56,6 +56,9 @@ let lastAiMessageTime = null; // when the most recent AI message landed — used
 let messageDwellTelemetry = {}; // patternId -> { totalVisibleMs, visibleSince, firstVisibleAt } — actual time each AI bubble spent visible, not just "was sent"
 let dwellObserver = null;
 
+const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
+let isAiRequestInFlight = false; 
+
 let previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
 
 function onPreviewFocus() {
@@ -399,22 +402,32 @@ const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindo
 // claims active, so it'd be trivially satisfied and wouldn't read as a genuine constraint).
 const SHOCK_ARCHETYPES_P2_LOWLOAD = ["postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
 
-function sampleShockArchetypesP2(loadLevel) {
-    const pool = loadLevel === "HighLoad" ? SHOCK_ARCHETYPES_P2 : SHOCK_ARCHETYPES_P2_LOWLOAD;
-    let picked;
-    do {
-        const shuffled = [...pool].sort(() => Math.random() - 0.5);
-        const count = loadLevel === "HighLoad" ? (Math.random() < 0.5 ? 3 : 4) : 1;
-        picked = shuffled.slice(0, count);
-        // Reject the one 3-archetype combo that collapses to a single toggle click
-        // (legalDisclaimer + claimUrgencyCap both resolve by turning off the active claim,
-        // and disclaimerToneLock already passes at the default Disclaimer=0) — resample instead.
-    } while (
-        loadLevel === "HighLoad" &&
-        picked.length === 3 &&
-        ["legalDisclaimer", "claimUrgencyCap", "disclaimerToneLock"].every(a => picked.includes(a))
-    );
-    return picked;
+// legalDisclaimer/claimUrgencyCap/disclaimerToneLock are all conditional ("IF a claim is
+// active..." / "IF disclaimer is on...") — if the antecedent isn't already true for the
+// CURRENT allocation, the constraint is vacuously satisfied the instant it's revealed and
+// never actually requires the participant to do anything. Only draw them when their
+// antecedent is genuinely active right now; postingWindow/hashtagCap are always eligible
+// because buildTrialConstraintsP2 below computes their thresholds relative to the current
+// allocation, so they're guaranteed to be violated regardless of starting values.
+function isArchetypeEligibleP2(archetype, alloc) {
+    switch (archetype) {
+        case "legalDisclaimer":
+            return REGULATED_CLAIMS.some(c => alloc[c]) && !alloc.Disclaimer;
+        case "claimUrgencyCap":
+            return REGULATED_CLAIMS.some(c => alloc[c]) && alloc.Urgency > 60;
+        case "disclaimerToneLock":
+            return !!alloc.Disclaimer && alloc.Tone >= 80;
+        default:
+            return true;
+    }
+}
+
+function sampleShockArchetypesP2(loadLevel, alloc) {
+    const basePool = loadLevel === "HighLoad" ? SHOCK_ARCHETYPES_P2 : SHOCK_ARCHETYPES_P2_LOWLOAD;
+    const pool = basePool.filter(a => isArchetypeEligibleP2(a, alloc));
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    const count = loadLevel === "HighLoad" ? Math.min(pool.length, (Math.random() < 0.5 ? 3 : 4)) : Math.min(pool.length, 1);
+    return shuffled.slice(0, count);
 }
 
 // Hides a constraint's real requirement behind a natural nudge to ask the AI advisor;
@@ -450,12 +463,12 @@ function buildLowLoadLockedConstraintP2() {
     }, "Hashtag count is subject to an additional requirement for this launch (exact cap not shown on this dashboard).");
 }
 
-function buildTrialConstraintsP2(loadLevel) {
+function buildTrialConstraintsP2(loadLevel, alloc) {
     const constraints = taskDataP2[loadLevel].constraints.map(c => ({ ...c }));
 
     // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
     // proactive advisor check-in always has something genuine to reveal, on both loads.
-    const selected = sampleShockArchetypesP2(loadLevel);
+    const selected = sampleShockArchetypesP2(loadLevel, alloc);
 
     if (selected.includes("legalDisclaimer")) {
         constraints.push(lockConstraint({
@@ -474,19 +487,35 @@ function buildTrialConstraintsP2(loadLevel) {
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
     }
     if (selected.includes("postingWindow")) {
+        // Anchor the approved window so it excludes the CURRENT posting time, guaranteeing
+        // a real violation instead of possibly already being met (e.g. LowLoad's default
+        // PostingTime=12 sat inside the old fixed 9:00-18:00 window).
+        const width = APPROVED_POSTING_WINDOW[1] - APPROVED_POSTING_WINDOW[0]; // 9
+        let winMin = alloc.PostingTime + 2;
+        let winMax = winMin + width;
+        if (winMax > 23) {
+            winMax = alloc.PostingTime - 2;
+            winMin = winMax - width;
+        }
+        winMin = Math.max(0, winMin);
+        winMax = Math.min(23, winMax);
         constraints.push(lockConstraint({
             id: "shock_posting_window",
-            text: `Posting time must fall within the approved window (${APPROVED_POSTING_WINDOW[0]}:00–${APPROVED_POSTING_WINDOW[1]}:00)`,
-            check: (p) => p.PostingTime >= APPROVED_POSTING_WINDOW[0] && p.PostingTime <= APPROVED_POSTING_WINDOW[1],
-            bound: { channel: "PostingTime", min: APPROVED_POSTING_WINDOW[0], max: APPROVED_POSTING_WINDOW[1] }
+            text: `Posting time must fall within the approved window (${winMin}:00–${winMax}:00)`,
+            check: (p) => p.PostingTime >= winMin && p.PostingTime <= winMax,
+            bound: { channel: "PostingTime", min: winMin, max: winMax }
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
     }
     if (selected.includes("hashtagCap")) {
+        // Cap strictly below the CURRENT hashtag count (never above HASHTAG_SOFT_CAP), so
+        // it's always a real reduction instead of possibly already met (e.g. LowLoad's
+        // default Hashtags=5 already sat under the old fixed cap of 8).
+        const cap = Math.max(2, Math.min(HASHTAG_SOFT_CAP, alloc.Hashtags - 1));
         constraints.push(lockConstraint({
             id: "shock_hashtag_cap",
-            text: "Hashtag set must be Broad or fewer (not Maximum)",
-            check: (p) => p.Hashtags <= HASHTAG_SOFT_CAP,
-            bound: { channel: "Hashtags", max: HASHTAG_SOFT_CAP }
+            text: `Hashtag set must stay at ${cap} or fewer for this launch`,
+            check: (p) => p.Hashtags <= cap,
+            bound: { channel: "Hashtags", max: cap }
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
     }
     if (selected.includes("urgencyNightCap")) {
@@ -771,29 +800,6 @@ function getItineraryScore(alloc, loadLevel) {
 function getItineraryPercentage(alloc, loadLevel) {
     const raw = getItineraryScore(alloc, loadLevel);
     return Math.max(0, Math.min(Math.round((raw / P3_MAX_SCORE[loadLevel]) * 100), 100));
-}
-
-function sampleP3LockedConstraints(loadLevel, count) {
-    const slots = taskDataP3[loadLevel].slots;
-    const chosenSlots = [1, 2, 3, 4].sort(() => Math.random() - 0.5).slice(0, count);
-    const hint = "One of today's slots carries an additional planning requirement this trial (details not shown on this dashboard).";
-
-    return chosenSlots.map((slotNum, i) => {
-        const dflt = slots[slotNum - 1].candidates.find(c => c.default);
-        return i === 0
-            ? lockConstraint({
-                id: `shock_p3_category_ban_${slotNum}`,
-                text: `Slot ${slotNum}'s pick cannot be a ${dflt.category} activity (Local guide note)`,
-                check: (alloc) => P3_CANDIDATE_INDEX[alloc[`slot${slotNum}`]]?.category !== dflt.category,
-                bound: { type: "p3_slot_category_ban", slot: slotNum, category: dflt.category }
-            }, hint)
-            : lockConstraint({
-                id: `shock_p3_intensity_ban_${slotNum}`,
-                text: `Slot ${slotNum}'s pick cannot be a ${dflt.intensity}-intensity activity (Local guide note)`,
-                check: (alloc) => P3_CANDIDATE_INDEX[alloc[`slot${slotNum}`]]?.intensity !== dflt.intensity,
-                bound: { type: "p3_slot_intensity_ban", slot: slotNum, intensity: dflt.intensity }
-            }, hint);
-    });
 }
 
 // Bans an attribute (category or intensity) of whichever candidate is CURRENTLY the
@@ -1295,7 +1301,7 @@ function startTrialP2(trialIndex) {
 
     currentAllocations = { ...task.startingAllocation };
     startOfTrialAllocations = { ...currentAllocations };
-    currentTrialConstraints = buildTrialConstraintsP2(loadLevel);
+    currentTrialConstraints = buildTrialConstraintsP2(loadLevel, currentAllocations);
 
     if (loadLevel === "HighLoad") {
         const activeShocks = currentTrialConstraints.filter(c => c.id.startsWith("shock_"));
@@ -1650,6 +1656,11 @@ async function sendMessage() {
     const inputEl = document.getElementById('chatInput');
     const text = inputEl.value.trim();
     if (!text) return;
+    if (isAiRequestInFlight) return; // a reply is already pending — ignore repeat clicks instead of stacking requests
+
+    isAiRequestInFlight = true;
+    const sendBtn = document.querySelector('.send-btn');
+    if (sendBtn) sendBtn.disabled = true;
 
     cancelProactiveTimers(); // they're about to get a real reply to what they just wrote — don't let the automatic check-in land on top of it
 
@@ -1659,6 +1670,7 @@ async function sendMessage() {
 
     addMessage(text, 'user');
     inputEl.value = '';
+    showTypingIndicator();
 
     turnsInTrial++; // Increment strictly on send
     sessionData.metrics.turnsElapsed++;
@@ -1671,10 +1683,10 @@ async function sendMessage() {
         const firstKeyTime = telemetry.keystrokes[0].time;
         const sendKeyTime = Date.now();
         const typingDurationMs = sendKeyTime - firstKeyTime;
-        
+
         // Pause: Time between the AI's last message (or round start) and the first keystroke
         pauseMs = firstKeyTime - (window.lastTurnTimestamp || taskStartTime);
-        
+
         // WPM: Standardized as (Characters / 5) / Minutes
         if (typingDurationMs > 0) {
             const minutes = typingDurationMs / 60000;
@@ -1684,18 +1696,18 @@ async function sendMessage() {
     }
 
     // --- INJECT TELEMETRY INTO PAYLOAD ---
-    logEvent('user_message', { 
+    logEvent('user_message', {
         text: text,
         allocations_snapshot: { ...currentAllocations }, // Captures exact state before AI replies
         telemetry: {
             backspaces: telemetry.backspaces,
             wpm: calculatedWpm,
             pause_ms: pauseMs,
-            keystrokes: [...telemetry.keystrokes], 
+            keystrokes: [...telemetry.keystrokes],
             scrollEvents: [...telemetry.scrollEvents]
         }
     });
-    
+
     // --- RESET TRACKERS FOR NEXT TURN ---
     window.lastTurnTimestamp = Date.now(); // Mark the end of this turn
     telemetry = {
@@ -1703,7 +1715,7 @@ async function sendMessage() {
         scrollEvents: [],
         backspaces: 0
     };
-    
+
     try {
         const response = await fetch('/api/chat', {
             method: 'POST',
@@ -1712,7 +1724,7 @@ async function sendMessage() {
                 user_id: sessionData.participantId,
                 primary_task: sessionData.primaryTask,
                 message: text,
-                task_id: 1, 
+                task_id: 1,
                 group: sessionData.group,
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
@@ -1774,6 +1786,9 @@ async function sendMessage() {
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
         console.error("Chat error:", error);
+    } finally {
+        isAiRequestInFlight = false;
+        if (sendBtn) sendBtn.disabled = false;
     }
 }
 
@@ -1819,9 +1834,12 @@ function attemptProactiveFire() {
     if (proactiveFireCount >= MAX_PROACTIVE_FIRES_PER_TRIAL || !hasSubstantiveChangeSinceLastFire) return;
 
     const elapsed = lastProactiveFireTime ? Date.now() - lastProactiveFireTime : Infinity;
-    if (elapsed < PROACTIVE_COOLDOWN_MS) {
+    if (elapsed < PROACTIVE_COOLDOWN_MS || isAiRequestInFlight) {
+        // Either still in the cooldown window, or a manual send is mid-flight — wait it out
+        // instead of firing a second concurrent /api/chat call.
+        const wait = elapsed < PROACTIVE_COOLDOWN_MS ? (PROACTIVE_COOLDOWN_MS - elapsed) : 1000;
         clearTimeout(proactiveDebounceTimer);
-        proactiveDebounceTimer = setTimeout(() => attemptProactiveFire(), PROACTIVE_COOLDOWN_MS - elapsed);
+        proactiveDebounceTimer = setTimeout(() => attemptProactiveFire(), wait);
         return;
     }
 
@@ -1863,12 +1881,18 @@ function revealLockedConstraints(ids) {
 
 async function triggerProactiveAdvisorNote() {
     if (proactiveFireCount >= MAX_PROACTIVE_FIRES_PER_TRIAL || sessionData.group.includes("Transcript")) return;
+    if (isAiRequestInFlight) return; // defense in depth — attemptProactiveFire should already have deferred this
     cancelProactiveTimers();
     const isFirstFire = proactiveFireCount === 0;
     proactiveFireCount++;
     lastProactiveFireTime = Date.now();
     hasSubstantiveChangeSinceLastFire = false;
     cancelProactiveTimers();
+
+    isAiRequestInFlight = true;
+    const sendBtn = document.querySelector('.send-btn');
+    if (sendBtn) sendBtn.disabled = true;
+    showTypingIndicator();
 
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
@@ -1906,6 +1930,7 @@ async function triggerProactiveAdvisorNote() {
         });
 
         const data = await response.json();
+        document.getElementById('currentTyping')?.remove();
         if (data.status !== "success") return;
 
         addMessage(data.reply, 'ai', data.pattern_id, data.isDark, data.category);
@@ -1933,7 +1958,11 @@ async function triggerProactiveAdvisorNote() {
         hasInteractedThisTrial = true;
         updateSubmitGate();
     } catch (error) {
+        document.getElementById('currentTyping')?.remove();
         console.error("Proactive advisor note failed:", error);
+    } finally {
+        isAiRequestInFlight = false;
+        if (sendBtn) sendBtn.disabled = false;
     }
 }
 
@@ -1974,6 +2003,17 @@ function finalizeMessageDwellTelemetry() {
         }
     });
     return { ...messageDwellTelemetry };
+}
+
+function showTypingIndicator() {
+    const chatContainer = document.getElementById('chatMessages');
+    if (!chatContainer || document.getElementById('currentTyping')) return;
+    const msgDiv = document.createElement('div');
+    msgDiv.id = 'currentTyping';
+    msgDiv.className = 'msg ai typing-indicator';
+    msgDiv.innerHTML = `<div class="msg-bubble"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
+    chatContainer.appendChild(msgDiv);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
 function addMessage(text, sender, patternId = null, isDark = false, category = null) {
