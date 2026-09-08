@@ -50,7 +50,7 @@ async function buildRecognitionTest() {
                 <p style="font-family: var(--mono); font-size: 12px; margin-bottom: 8px;">Excerpt ${q.id + 1}</p>
                 <blockquote style="font-style: italic; border-left: 2px solid var(--accent); padding-left: 10px; margin-bottom: 12px;">"${q.text}"</blockquote>
                 
-                <label style="font-size: 13px; font-weight: 500;">Did this response attempt to influence you unfairly?</label>
+                <label style="font-size: 13px; font-weight: 500;">Did this response feel like straightforward, objective advice, or did it feel like it was pushing you toward a particular choice?</label>
                 <div style="margin-top: 8px; margin-bottom: 12px;">
                     <label><input type="radio" name="rec_flag_${q.id}" value="true"> Yes</label><br>
                     <label style="margin-top: 6px; display: inline-block;"><input type="radio" name="rec_flag_${q.id}" value="false"> No</label>
