@@ -23,6 +23,7 @@ const PROACTIVE_DEBOUNCE_MS = 2000;
 const PROACTIVE_CEILING_MS = 12000;   // safety net for the FIRST guaranteed exchange only
 const PROACTIVE_COOLDOWN_MS = 15000;  // min gap between any two proactive fires
 const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
+let isAiRequestInFlight = false; 
 
 let sliderTelemetry = {
     firstMoveTime: null,
@@ -55,9 +56,6 @@ let darkDeliveredThisTrial = false;
 let lastAiMessageTime = null; // when the most recent AI message landed — used to measure how long the participant sat with it before acting
 let messageDwellTelemetry = {}; // patternId -> { totalVisibleMs, visibleSince, firstVisibleAt } — actual time each AI bubble spent visible, not just "was sent"
 let dwellObserver = null;
-
-const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
-let isAiRequestInFlight = false; 
 
 let previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
 
@@ -267,7 +265,7 @@ const taskData = {
             "Search Ads": 0,
             "Content/SEO": 0,
             "Social": 0,
-            "Events": 500000,
+            "Events": 300000,
             "Influencer": 0
         },
         curves: {
@@ -320,9 +318,9 @@ const taskDataP2 = {
             Claim_LimitedTime: 1, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 250 characters (platform limit)",
-              check: (p) => getEffectivePostLength() <= 250,
-              bound: { type: "max_length", limit: 250 } },
+            { id: "c1_len", text: "Estimated post length must stay ≤ 150 characters (platform limit)",
+              check: (p) => getEffectivePostLength() <= 150,
+              bound: { type: "max_length", limit: 150 } },
             { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
             { id: "c3_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true, flavor: true }
         ]
@@ -334,10 +332,10 @@ const taskDataP2 = {
             Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 280 characters (platform limit)",
-              check: (p) => getEffectivePostLength() <= 280,
-              bound: { type: "max_length", limit: 280 } },
-            { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional–Conversational range)",
+            { id: "c1_len", text: "Estimated post length must stay ≤ 50 characters (platform limit)",
+              check: (p) => getEffectivePostLength() <= 50,
+              bound: { type: "max_length", limit: 50 } },
+            { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional-Conversational range)",
               check: (p) => p.Tone >= 20 && p.Tone <= 65,
               bound: { channel: "Tone", min: 20, max: 65 } }
         ]
@@ -395,12 +393,12 @@ const P2_TOGGLE_CONTROLS = [
 ];
 
 // Full HighLoad pool: 6 shock archetypes, 3-4 drawn per trial.
-const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
+const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap"];
 
 // LowLoad's pool skips "brandStyleGuide" (LowLoad already has a visible, always-on Tone
 // constraint that covers the same ground) and "legalDisclaimer" (LowLoad starts with no
 // claims active, so it'd be trivially satisfied and wouldn't read as a genuine constraint).
-const SHOCK_ARCHETYPES_P2_LOWLOAD = ["postingWindow", "hashtagCap", "claimUrgencyCap", "disclaimerToneLock"];
+const SHOCK_ARCHETYPES_P2_LOWLOAD = ["postingWindow", "hashtagCap", "claimUrgencyCap"];
 
 // legalDisclaimer/claimUrgencyCap/disclaimerToneLock are all conditional ("IF a claim is
 // active..." / "IF disclaimer is on...") — if the antecedent isn't already true for the
@@ -442,25 +440,6 @@ function lockConstraint(c, placeholderText) {
     c.check = (alloc) => !c.locked && realCheck(alloc);
     if (c.bound) c.bound = { ...c.bound, locked: true, id: c.id };
     return c;
-}
-
-// LowLoad gets exactly 1 hidden requirement (HighLoad gets 2 via the shock system
-// below). Skips brandStyleGuide since LowLoad already shows a visible Tone-range constraint.
-function buildLowLoadLockedConstraintP2() {
-    if (Math.random() < 0.5) {
-        return lockConstraint({
-            id: "shock_posting_window",
-            text: `Posting time must fall within the approved window (${APPROVED_POSTING_WINDOW[0]}:00\u2013${APPROVED_POSTING_WINDOW[1]}:00)`,
-            check: (p) => p.PostingTime >= APPROVED_POSTING_WINDOW[0] && p.PostingTime <= APPROVED_POSTING_WINDOW[1],
-            bound: { channel: "PostingTime", min: APPROVED_POSTING_WINDOW[0], max: APPROVED_POSTING_WINDOW[1] }
-        }, "Posting time is subject to an additional approval requirement for this launch (exact window not shown on this dashboard).");
-    }
-    return lockConstraint({
-        id: "shock_hashtag_cap",
-        text: "Hashtag set must be Broad or fewer (not Maximum)",
-        check: (p) => p.Hashtags <= HASHTAG_SOFT_CAP,
-        bound: { channel: "Hashtags", max: HASHTAG_SOFT_CAP }
-    }, "Hashtag count is subject to an additional requirement for this launch (exact cap not shown on this dashboard).");
 }
 
 function buildTrialConstraintsP2(loadLevel, alloc) {
@@ -510,7 +489,7 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
         // Cap strictly below the CURRENT hashtag count (never above HASHTAG_SOFT_CAP), so
         // it's always a real reduction instead of possibly already met (e.g. LowLoad's
         // default Hashtags=5 already sat under the old fixed cap of 8).
-        const cap = Math.max(2, Math.min(HASHTAG_SOFT_CAP, alloc.Hashtags - 1));
+        const cap = Math.max(2, Math.min(HASHTAG_SOFT_CAP, alloc.Hashtags - 3));
         constraints.push(lockConstraint({
             id: "shock_hashtag_cap",
             text: `Hashtag set must stay at ${cap} or fewer for this launch`,
@@ -587,10 +566,13 @@ function interp(v, buckets, curve) {
 
 const SHOCK_ARCHETYPES = ["eventsCap", "socialFloor", "contentCap", "searchFloor"];
 
-function sampleShockArchetypes(baseAlloc, count) {
+function sampleShockArchetypes(loadLevel, baseAlloc, count) {
     let pool = [...SHOCK_ARCHETYPES];
     if (baseAlloc["Content/SEO"] < 50000) pool = pool.filter(s => s !== "contentCap");
     if (baseAlloc["Events"] < 50000) pool = pool.filter(s => s !== "eventsCap");
+    // searchFloor/eventsCap are always weaker than HighLoad's own visible c2/c3 floors —
+    // satisfying the visible constraint auto-satisfies these, so they never add a real requirement there.
+    if (loadLevel === "HighLoad") pool = pool.filter(s => s !== "searchFloor" && s !== "eventsCap");
     const shuffled = pool.sort(() => Math.random() - 0.5);
     return shuffled.slice(0, Math.min(count, shuffled.length));
 }
@@ -601,12 +583,13 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
     // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
     // proactive advisor check-in always has something genuine to reveal, on both loads.
     const count = loadLevel === "HighLoad" ? (Math.random() < 0.5 ? 1 : 2) : 1;
-    const selected = sampleShockArchetypes(baseAlloc, count);
+    const selected = sampleShockArchetypes(loadLevel, baseAlloc, count);
     let socialMin = 0;
 
     if (selected.includes("socialFloor")) {
         const base = baseAlloc["Social"];
-        const rawTarget = Math.max(base * 1.15, base + 15000);
+        const floorByLoad = loadLevel === "HighLoad" ? 110000 : 150000;
+        const rawTarget = Math.max(base * 1.15, base + 15000, floorByLoad);
         let target = Math.min(rawTarget, 212000);
         target = Math.ceil(target / 5000) * 5000;
         if (target === base) target = base + 5000;
@@ -1624,9 +1607,10 @@ function updatePreviewEditedBadge() {
 function updateDashboardP2(loadLevel) {
     trialScorePct = getEngagementPercentage(currentAllocations, loadLevel);
     const length = getEffectivePostLength();
+    const capLimit = currentTrialConstraints.find(c => c.bound?.type === "max_length")?.bound.limit ?? 250;
 
     const lenDisplay = document.getElementById('totalAllocDisplay');
-    if (lenDisplay) lenDisplay.innerText = `${length} / 250 chars`;
+    if (lenDisplay) lenDisplay.innerText = `${length} / ${capLimit} chars`;
 
     const lenLabel = document.getElementById('lengthCardLabel');
     if (lenLabel) lenLabel.innerText = postTextManuallyEdited ? "Post Length" : "Estimated Post Length";
@@ -1640,7 +1624,7 @@ function updateDashboardP2(loadLevel) {
 
     const budgetCard = document.getElementById('budgetCard');
     if (budgetCard) {
-        if (length > 250) budgetCard.classList.add('error'); else budgetCard.classList.remove('error');
+        if (length > capLimit) budgetCard.classList.add('error'); else budgetCard.classList.remove('error');
     }
 
     currentTrialConstraints.forEach(c => {
