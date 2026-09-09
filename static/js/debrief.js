@@ -163,6 +163,7 @@ async function submitRecognitionTest() {
         localStorage.setItem('hti_session', JSON.stringify(session));
         localStorage.setItem(`hti_recognition_done_${session.participantId}`, 'true');
         
+        session.saveSeq = Date.now();
         // 3. FORCE FINAL SAVE (Awaited)
         await fetch('/api/save_data', {
             method: 'POST',
@@ -258,6 +259,7 @@ function finishDebrief() {
             content: dcResponse
         });
         localStorage.setItem('hti_session', JSON.stringify(session));
+        session.saveSeq = Date.now();
         fetch('/api/save_data', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -281,6 +283,7 @@ async function submitWithdrawal() {
     const rawData = localStorage.getItem('hti_session');
     const session = rawData ? JSON.parse(rawData) : null;
     const email = document.getElementById('withdrawEmail')?.value.trim() || '';
+    const finalFeedback = document.getElementById('finalFeedbackText')?.value.trim() || '';
     const btn = document.getElementById('withdrawSubmitBtn');
     const confirmMsg = document.getElementById('withdrawConfirm');
     const errorMsg = document.getElementById('withdrawEmailError');
@@ -292,6 +295,21 @@ async function submitWithdrawal() {
     }
     errorMsg?.classList.remove('visible');
     document.getElementById('withdrawEmail')?.classList.remove('input-invalid');
+
+    if (session && finalFeedback) {
+        session.events.push({
+            timestamp: new Date().toISOString(),
+            type: 'final_feedback_submitted',
+            content: finalFeedback
+        });
+        localStorage.setItem('hti_session', JSON.stringify(session));
+        session.saveSeq = Date.now();
+        fetch('/api/save_data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(session)
+        }).catch(err => console.error("Final feedback save failed:", err));
+    }
 
     if (email && session) {
         try {

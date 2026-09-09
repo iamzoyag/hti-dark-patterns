@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 import csv
 import os
+import io
 import re
 import random
 import ast
@@ -195,6 +196,9 @@ class ChatMessage(BaseModel):
     dropped_category_index: int = 0
     p2_product: Optional[str] = None
     actual_post_length: Optional[int] = None
+    actual_post_text: Optional[str] = None
+    actual_hashtag_text: Optional[str] = None
+    claim_text_mismatches: List[str] = []
 
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
@@ -910,18 +914,28 @@ async def handle_chat(chat_data: ChatMessage):
         external_metrics_desc = "specific costs, walking distances, or weather conditions"
         state_label = "TODAY'S ITINERARY SELECTIONS"
         advisor_desc = f"AI Trip-Planning Assistant helping plan Day {trial_num} of a 4-day study-abroad itinerary"
+        post_text_line = ""
     elif is_p2:
         dials_desc = "adjusting tone, urgency language, hashtag count, posting time, or the claim/disclaimer toggles"
         no_copy_bullet = "\n        - Never draft, quote, or suggest exact wording for the post's claims, disclaimer, or any other on-post copy — discuss the settings/toggles only."
         external_metrics_desc = "CTR, follower growth, or revenue"
         state_label = "CURRENT POST PARAMETERS"
         advisor_desc = f"AI Social Media Advisor helping launch {chat_data.p2_product}" if chat_data.p2_product else "AI Social Media Advisor"
+        mismatch_note = (
+            f" MISMATCHES DETECTED BETWEEN TOGGLES AND ACTUAL TEXT: {'; '.join(chat_data.claim_text_mismatches)}. If it fits naturally in this reply, gently flag ONE of these to the participant so they can fix it before publishing — this is a factual accuracy note, not part of any persuasion tactic. Don't force it into every message."
+            if chat_data.claim_text_mismatches else ""
+        )
+        post_text_line = (
+            f"- ACTUAL POST TEXT AS IT WILL BE PUBLISHED: \"{chat_data.actual_post_text}\" | Hashtags: \"{chat_data.actual_hashtag_text or '(none)'}\" — this is the literal text/hashtags, which may not perfectly match the toggle settings above if the participant hand-edited it. Treat this as ground truth for what the post actually says; never contradict it, and still never draft or suggest new wording yourself.{mismatch_note}"
+            if chat_data.actual_post_text else ""
+        )
     else:
         dials_desc = "moving funds between the 5 available channels based on general strategy"
         no_copy_bullet = ""
         external_metrics_desc = "Cost-Per-Acquisition, Conversion Rates, or Revenue"
         state_label = "CURRENT ALLOCATIONS"
         advisor_desc = "AI Marketing Advisor"
+        post_text_line = ""
 
     if is_dark:
         tactics = TACTICS_P3 if is_p3 else (TACTICS_P2 if is_p2 else TACTICS_P1)
@@ -936,6 +950,7 @@ async def handle_chat(chat_data: ChatMessage):
         
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {allocations_str}
+        {post_text_line}
         - PARTICIPANT'S ACTUAL CHANGES THIS ROUND SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
@@ -959,6 +974,7 @@ async def handle_chat(chat_data: ChatMessage):
         
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {allocations_str}
+        {post_text_line}
         - PARTICIPANT'S ACTUAL CHANGES THIS ROUND SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
@@ -1139,7 +1155,7 @@ async def submit_recognition_test(req: SubmitRecognition):
         
     return {"status": "success", "scored_results": scored_results}
 
-TLX_METRIC_KEYS = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration", "Helpfulness", "Trust", "Persuasiveness", "Independence", "Task_Trust", "Task_Usefulness", "Task_Confidence", "Task_Comfort"]
+TLX_METRIC_KEYS = ["Mental", "Physical", "Temporal", "Performance", "Effort", "Frustration", "Helpfulness", "Trust", "Persuasiveness", "Independence"]
 TOTAL_TRIALS = NUM_TRIALS * len(PRIMARY_TASKS)  # 4 trials x 3 tasks now that every participant does all 3
 
 def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1151,16 +1167,25 @@ def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
             flat[f"Trial{trial_num}_TLX_{k}"] = entry.get(k.lower(), "")
     return flat
 
-def send_completion_email(participant_id: str, csv_path: str) -> None:
+class _TeeWriter:
+    """Lets csv.writer() write to the real file and an in-memory buffer at once,
+    so we can email the exact bytes just written without a separate, racy disk re-read."""
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+
+def send_completion_email(participant_id: str, csv_path: str, csv_bytes: bytes) -> None:
     """Best-effort off-server backup: emails the finished session's CSV as an attachment.
     Silently no-ops if SMTP env vars aren't configured. Must never raise -- a failed
-    email must never break data saving."""
+    email must never break data saving.
+    Takes the CSV bytes captured at write time rather than re-reading the file from disk,
+    so a delayed/out-of-order autosave overwriting the file afterward can never cause the
+    emailed attachment to mismatch what this request actually saved."""
     if not (SMTP_HOST and SMTP_USER and SMTP_PASS and NOTIFY_EMAIL_TO):
         return
     try:
-        with open(csv_path, "rb") as f:
-            csv_bytes = f.read()
-
         msg = EmailMessage()
         msg["Subject"] = f"HTI Study -- completed session {participant_id}"
         msg["From"] = SMTP_USER
@@ -1193,14 +1218,33 @@ def send_withdrawal_notification(participant_id: str, email: str) -> None:
     except Exception as e:
         print(f"[withdrawal notification] failed for {participant_id}: {e}")
 
+def _read_save_seq(participant_id: str) -> int:
+    try:
+        with open(f"data/.saveseq_{participant_id}", "r") as f:
+            return int(f.read().strip() or "0")
+    except (FileNotFoundError, ValueError):
+        return 0
+
+def _write_save_seq(participant_id: str, seq: int) -> None:
+    with open(f"data/.saveseq_{participant_id}", "w") as f:
+        f.write(str(seq))
+
 @app.post("/api/save_data")
 async def save_data(payload: Dict[str, Any]):
     os.makedirs("data", exist_ok=True)
     participant_id = payload.get("participantId", "UNKNOWN")
     filename = f"data/HTI_Study_{participant_id}.csv"
+
+    incoming_seq = payload.get("saveSeq", 0)
+    if incoming_seq < _read_save_seq(participant_id):
+        # A newer save already landed for this participant — this one arrived late/out
+        # of order (a straggling autosave). Skip the write so it can't clobber more
+        # complete data with a stale snapshot.
+        return {"status": "skipped_stale"}
     
     try:
         with open(filename, mode="w", newline="", encoding="utf-8") as file:
+            csv_buffer = io.StringIO()
             writer = csv.writer(file)
             
             # --- SECTION 1: INTAKE & TLX DATA ---
@@ -1293,11 +1337,13 @@ async def save_data(payload: Dict[str, Any]):
                     str(event.get("content", "")).replace("\n", " ")
                 ])
 
+            _write_save_seq(participant_id, incoming_seq)
+
             is_complete = any(e.get("type") == "recognition_test_submitted" for e in payload.get("events", []))
             if is_complete:
                 marker = f"data/.emailed_{participant_id}"
                 if not os.path.exists(marker):
-                    await asyncio.to_thread(send_completion_email, participant_id, filename)
+                    await asyncio.to_thread(send_completion_email, participant_id, filename, csv_buffer.getvalue().encode("utf-8"))
                     open(marker, "w").close()
                 
         return {"status": "success"}

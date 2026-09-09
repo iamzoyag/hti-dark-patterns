@@ -1276,6 +1276,10 @@ function showTaskBriefingOverlay(taskId) {
           <p>You'll complete <strong>4 rounds</strong>. Each round starts with a preset configuration that does <em>not</em> yet meet the round's requirements — adjust it until the "Live Constraints" panel shows everything satisfied. Some rounds have more requirements to juggle than others.</p>
         </div>
         <div class="consent-block">
+          <h4>Two kinds of requirements</h4>
+          <p>The "Live Constraints" panel shows <strong>hard requirements</strong> you must satisfy before you can submit. Some rounds also show a separate <strong>"Modeling Notes"</strong> section below that — these are <em>not</em> requirements and won't block your submission. They describe background effects the scoring model applies (certain combinations boost or reduce your modeled outcome), so you can use them strategically for a higher score, but you're never required to act on them.</p>
+        </div>
+        <div class="consent-block">
           <h4>Using the ${briefing.advisor}</h4>
           <p>The assistant will chime in on its own as you make changes — you don't need to message it first, though you're welcome to chat with it any time.</p>
         </div>
@@ -1500,6 +1504,33 @@ function buildPostPreview(p) {
     return text;
 }
 
+function detectClaimTextMismatches() {
+    if (!postTextManuallyEdited) return [];
+    const claimPhrases = {
+        Claim_LimitedTime: "Limited stock available.",
+        Claim_BestSelling: "Our #1 best-seller.",
+        Claim_GuaranteedResults: "Guaranteed results or your money back."
+    };
+    const mismatches = [];
+    for (const [key, phrase] of Object.entries(claimPhrases)) {
+        const label = key.replace('Claim_', '').replace(/([A-Z])/g, ' $1').trim();
+        const toggledOn = !!currentAllocations[key];
+        const phrasePresent = currentPostText.includes(phrase);
+        if (toggledOn && !phrasePresent) {
+            mismatches.push(`"${label}" is toggled ON but that claim text isn't actually in the post`);
+        } else if (!toggledOn && phrasePresent) {
+            mismatches.push(`the post text includes the "${label}" claim but that toggle is OFF`);
+        }
+    }
+    const hasDisclaimerText = currentPostText.includes("Terms and conditions apply");
+    if (currentAllocations.Disclaimer && !hasDisclaimerText) {
+        mismatches.push(`the Disclaimer toggle is ON but the "Terms and conditions apply" text isn't in the post`);
+    } else if (!currentAllocations.Disclaimer && hasDisclaimerText) {
+        mismatches.push(`the post text includes a disclaimer but the Disclaimer toggle is OFF`);
+    }
+    return mismatches;
+}
+
 function selectP2Option(key, value) {
     if (currentAllocations[key] === value) return; // no-op click on the already-selected chip
     const now = Date.now();
@@ -1678,7 +1709,14 @@ function startTrialP2(trialIndex) {
                   oninput="onPreviewTextInput()" onkeydown="onPreviewKeydown(event)"
                   onscroll="onPreviewScroll(event)" onpaste="onPreviewPaste(event)"
                   onfocus="onPreviewFocus()" onblur="onPreviewBlur()"></textarea>
-        <div class="post-preview-note">Editing this text is optional. It does count toward your character limit and engagement score — just like a real post would — but it won't change the claim/disclaimer checkboxes below; those always reflect your selections, not this text. Once you edit it, chip/checkbox changes won't overwrite your words — use "Reset to template" to go back to auto-generated text.</div>
+        <div class="post-preview-note">
+            <strong>You can edit this text directly — it's optional.</strong>
+            <ul style="margin:6px 0 0 18px; padding:0;">
+                <li>Edited text still counts toward your character limit and engagement score, just like a real post.</li>
+                <li>It does <strong>not</strong> change the claim/disclaimer checkboxes below — those always reflect your own selections, not this text.</li>
+                <li>Once you start editing, checkbox/chip changes stop auto-updating this box. Click "Reset to template" to discard your edits and go back to the auto-generated version.</li>
+            </ul>
+        </div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
                 <span class="sc-label" id="lengthCardLabel">Estimated Post Length</span>
@@ -2030,6 +2068,9 @@ async function sendMessage() {
                 load_level: sessionData.trialSequence[currentTrial - 1],
                 p2_product: isP2Task() ? getP2Product().name : null,
                 actual_post_length: isP2Task() ? getEffectivePostLength() : null,
+                actual_post_text: isP2Task() ? currentPostText : null,
+                actual_hashtag_text: isP2Task() ? getHashtagText() : null,
+                claim_text_mismatches: isP2Task() ? detectClaimTextMismatches() : [],
                 dropped_category_index: sessionData.droppedCategoryIndex,
                 constraint_bounds: currentTrialConstraints.filter(c => !c.locked).map(c => c.bound).filter(Boolean),
                 locked_bounds: currentTrialConstraints.filter(c => c.locked).map(c => c.bound).filter(Boolean)
@@ -2218,6 +2259,9 @@ async function triggerProactiveAdvisorNote() {
                 load_level: loadLevel,
                 p2_product: isP2Task() ? getP2Product().name : null,
                 actual_post_length: isP2Task() ? getEffectivePostLength() : null,
+                actual_post_text: isP2Task() ? currentPostText : null,
+                actual_hashtag_text: isP2Task() ? getHashtagText() : null,
+                claim_text_mismatches: isP2Task() ? detectClaimTextMismatches() : [],
                 dropped_category_index: sessionData.droppedCategoryIndex,
                 constraint_bounds: currentTrialConstraints.filter(c => !c.locked).map(c => c.bound).filter(Boolean),
                 locked_bounds: currentTrialConstraints.filter(c => c.locked).map(c => c.bound).filter(Boolean),
@@ -2356,6 +2400,7 @@ function logEvent(type, content) {
 // calls (here or in debrief.js) simply supersede this with a more complete version.
 async function autosaveProgress() {
     try {
+        sessionData.saveSeq = Date.now();
         await fetch('/api/save_data', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2369,6 +2414,7 @@ async function autosaveProgress() {
 async function saveSessionData() {
     for (let attempt = 1; attempt <= 2; attempt++) {
         try {
+            sessionData.saveSeq = Date.now();
             const response = await fetch('/api/save_data', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2380,7 +2426,7 @@ async function saveSessionData() {
         } catch (error) {
             console.error(`Save attempt ${attempt} failed:`, error);
             if (attempt === 2) {
-                alert("We couldn't confirm your data was saved due to a connection issue. Please stay on this page and try again, or use the Download buttons on the next screen to save a local copy and send it to the research team.");
+                alert("We couldn't confirm your data was saved due to a connection issue. Please stay on this page and try again.");
                 window.location.href = '/debrief';
             }
         }
