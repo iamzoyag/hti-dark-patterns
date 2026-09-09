@@ -176,6 +176,22 @@ body {
   margin-bottom: 0;
 }
 
+.briefing-screenshot {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  margin: 4px auto 8px;
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-sm);
+}
+
+.briefing-screenshot-caption {
+  font-size: 12px !important;
+  color: var(--ink-3) !important;
+  text-align: center;
+  font-style: italic;
+}
+
 .checkbox-row {
   display: flex;
   align-items: flex-start;

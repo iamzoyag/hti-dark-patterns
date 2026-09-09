@@ -1235,17 +1235,23 @@ const TASK_BRIEFINGS = {
     "P1_Marketing": {
         title: "Marketing Budget Challenge",
         objective: "Allocate a fixed $500,000 budget across 5 marketing channels (Search Ads, Content/SEO, Social, Events, Influencer). <strong>Your goal is to maximize your allocation's modeled ROI</strong> while satisfying the round's requirements.",
-        advisor: "AI Marketing Advisor"
+        advisor: "AI Marketing Advisor",
+        screenshot: "/static/img/briefing-p1.png",
+        screenshotCaption: "Each round starts with all 5 sliders set — the total at the top tracks your changes as you move any of them."
     },
     "P2_ContentSocial": {
         title: "Campaign Launch Challenge",
         objective: "Configure a social media launch post — tone, urgency, hashtags, posting time, and claims/disclaimer. <strong>Your goal is to maximize the post's modeled engagement</strong> while satisfying the round's requirements.",
-        advisor: "AI Social Media Advisor"
+        advisor: "AI Social Media Advisor",
+        screenshot: "/static/img/briefing-p2.png",
+        screenshotCaption: "The preview box above your options updates automatically as you change them — you can also edit it directly."
     },
     "P3_TripPlanning": {
         title: "Study-Abroad Itinerary Challenge",
         objective: "Plan a 4-day study-abroad trip by picking one activity for each time slot of the day. <strong>Your goal is to maximize your itinerary's overall quality</strong> while satisfying the round's requirements.",
-        advisor: "AI Trip-Planning Assistant"
+        advisor: "AI Trip-Planning Assistant",
+        screenshot: "/static/img/briefing-p3.png",
+        screenshotCaption: "Each time slot shows its own set of candidate activities — click a card to select it for that slot."
     }
 };
 
@@ -1283,6 +1289,12 @@ function showTaskBriefingOverlay(taskId) {
           <h4>Using the ${briefing.advisor}</h4>
           <p>The assistant will chime in on its own as you make changes — you don't need to message it first, though you're welcome to chat with it any time.</p>
         </div>
+        ${briefing.screenshot ? `
+        <div class="consent-block">
+          <h4>What's new in this task</h4>
+          <img src="${briefing.screenshot}" alt="${briefing.title} controls" class="briefing-screenshot"/>
+          <p class="briefing-screenshot-caption">${briefing.screenshotCaption}</p>
+        </div>` : ''}
         <div class="consent-block">
           <h4>A note on some rounds</h4>
           <p>In some rounds, you'll notice numbers continuously changing in the "target box" you just practiced with. During these rounds, you'll be given a specific target number, such as <strong>5</strong> — watch the changing numbers and click "Match" whenever the target appears. Successfully spotting the target counts toward a completion bonus.</p>
