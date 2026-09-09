@@ -94,15 +94,6 @@ const SUBJECTIVE_ITEMS = [
     { id: "independence", label: "Independence", desc: "How much did you rely on your own judgment vs. the AI this round?", left: "Entirely the AI", right: "Entirely my own judgment" }
 ];
 
-// Task-level check-in — appended into this SAME per-round overlay, only on a task's final
-// round (never a separate screen). See the isTaskFinal param on showPerTrialTLX() below.
-const POST_TASK_ITEMS = [
-    { id: "task_trust", label: "Trust in the AI Assistant", desc: "Overall, across this whole task, how much did you trust the AI assistant?", left: "Not at all", right: "Completely" },
-    { id: "task_usefulness", label: "Perceived Usefulness", desc: "Overall, how useful was the AI assistant for completing this task?", left: "Not useful at all", right: "Extremely useful" },
-    { id: "task_confidence", label: "Confidence in the AI's Suggestions", desc: "Overall, how confident were you in the quality of the AI's suggestions?", left: "Not confident at all", right: "Extremely confident" },
-    { id: "task_comfort", label: "Comfort with the AI's Approach", desc: "Overall, how comfortable were you with the way the AI made its suggestions?", left: "Not comfortable at all", right: "Extremely comfortable" }
-];
-
 const PT_BOX_MIN = 1, PT_BOX_MAX = 7; // NASA-TLX: 1-7 scale
 const SQ_BOX_MIN = 1, SQ_BOX_MAX = 5; // subjective / post-task questions: 1-5 scale
 
@@ -140,7 +131,7 @@ function renderSubjectiveItem(item) {
     </div>`;
 }
 
-// isTaskFinal: true only on the trial-4 submission for a task — appends POST_TASK_ITEMS
+// isTaskFinal: true only on the trial-4 submission for a task
 // below the regular per-round questions in this same overlay, instead of a separate screen.
 function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
     const overlay = document.getElementById('perTrialTlxOverlay');
@@ -150,17 +141,11 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
 
     let html = TLX_ITEMS.map(renderTLXItem).join('') +
         `<div class="survey-questions">${SUBJECTIVE_ITEMS.map(renderSubjectiveItem).join('')}</div>`;
-    if (isTaskFinal) {
-        html += `<div class="survey-questions post-task-questions">
-            <div class="post-task-heading">A few last questions about this task overall:</div>
-            ${POST_TASK_ITEMS.map(renderSubjectiveItem).join('')}
-        </div>`;
-    }
     container.innerHTML = html;
 
     const touched = new Set();
     btn.disabled = true;
-    const ALL_ITEMS = [...TLX_ITEMS, ...SUBJECTIVE_ITEMS, ...(isTaskFinal ? POST_TASK_ITEMS : [])];
+    const ALL_ITEMS = [...TLX_ITEMS, ...SUBJECTIVE_ITEMS];
     const refreshBtnState = () => { btn.disabled = touched.size < ALL_ITEMS.length; };
 
     container.querySelectorAll('.tlx-item').forEach(row => {
@@ -304,7 +289,8 @@ const taskData = {
             "Influencer": [0, 1.5, 2.0, 2.5, 3.0, 3.5]
         },
         constraints: [
-            { id: "c1", text: "Total must equal exactly $500,000", check: (alloc) => sumAllocations(alloc) === 500000 }
+            { id: "c1", text: "Total must equal exactly $500,000", check: (alloc) => sumAllocations(alloc) === 500000 },
+            { id: "c_concentration", text: "Putting more than $250,000 into any single channel shows diminishing real-world capacity (Reduces ROI)", check: (alloc) => true, flavor: true }
         ]
     }
 };
@@ -337,7 +323,9 @@ const taskDataP2 = {
               bound: { type: "max_length", limit: 50 } },
             { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional-Conversational range)",
               check: (p) => p.Tone >= 20 && p.Tone <= 65,
-              bound: { channel: "Tone", min: 20, max: 65 } }
+              bound: { channel: "Tone", min: 20, max: 65 } },
+            { id: "c3_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
+            { id: "c4_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true, flavor: true }
         ]
     }
 };
@@ -664,6 +652,7 @@ let attentionIntervalId = null;
 
 // P3: Study-Abroad Itinerary Challenge — mirrors TASK_DATA_P3 in main.py, keep both in sync.
 const P3_MUST_SEE_MIN_CATEGORIES = 3;
+const P3_QUALITY_FLOOR = { HighLoad: 27, LowLoad: 28 };
 const P3_MAX_SCORE = { HighLoad: 38, LowLoad: 39 };
 
 const taskDataP3 = {
@@ -810,7 +799,11 @@ function buildTrialConstraintsP3(loadLevel) {
     const constraints = [
         { id: "c1_categories", text: `At least ${P3_MUST_SEE_MIN_CATEGORIES} of these 4 categories must be represented across the day: Culture & History, Food & Local Life, Nature & Outdoors, Academic & Campus Life`,
         check: (alloc) => new Set(getP3OrderedCandidates(alloc).map(c => c.category)).size >= P3_MUST_SEE_MIN_CATEGORIES,
-        bound: { type: "p3_category_coverage", min_categories: P3_MUST_SEE_MIN_CATEGORIES } }
+        bound: { type: "p3_category_coverage", min_categories: P3_MUST_SEE_MIN_CATEGORIES } },
+        { id: "c1b_quality", text: `Your itinerary's combined quality score (sum of each pick's rating) must be at least ${P3_QUALITY_FLOOR[loadLevel]}`,
+        check: (alloc) => getP3OrderedCandidates(alloc).reduce((s, c) => s + c.quality, 0) >= P3_QUALITY_FLOOR[loadLevel],
+        bound: { type: "p3_quality_floor", min_quality: P3_QUALITY_FLOOR[loadLevel] } },
+        { id: "c_diversity_bonus", text: "Each additional distinct category represented beyond the required minimum adds to your itinerary's overall quality score (Boosts score)", check: () => true, flavor: true }
     ];
 
     // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
@@ -862,6 +855,13 @@ function getImprovementPercentage(alloc, loadLevel) {
         const content = alloc["Content/SEO"];
         if (sa + content >= 180000 && Math.min(sa, content) >= 0.6 * Math.max(sa, content)) {
             currentROI += 0.4;
+        }
+    }
+
+    if (loadLevel === "LowLoad") {
+        const maxChannel = Math.max(...Object.values(alloc));
+        if (maxChannel > 250000) {
+            currentROI -= 0.8 * ((maxChannel - 250000) / 100000);
         }
     }
 
@@ -1475,6 +1475,7 @@ function startTrialP3(trialIndex) {
 
     let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
     currentTrialConstraints.forEach(c => {
+        if (c.flavor) return;
         if (c.locked) {
             constraintsHtml += `
                 <li class="constraint-item locked" id="${c.id}" style="opacity:0.55;">
@@ -1502,6 +1503,7 @@ function startTrialP3(trialIndex) {
         ${slotsHtml}
         <h3 class="doc-section-head">Live Constraints</h3>
         ${constraintsHtml}
+        ${renderFlavorEffects(currentTrialConstraints)}
         <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
             Submit Day ${trialIndex} Itinerary
         </button>
