@@ -393,7 +393,7 @@ const P2_TOGGLE_CONTROLS = [
 ];
 
 // Full HighLoad pool: 6 shock archetypes, 3-4 drawn per trial.
-const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap"];
+const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap", "urgencyNightCap"];
 
 // LowLoad's pool skips "brandStyleGuide" (LowLoad already has a visible, always-on Tone
 // constraint that covers the same ground) and "legalDisclaimer" (LowLoad starts with no
@@ -498,13 +498,12 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
     }
     if (selected.includes("urgencyNightCap")) {
-        constraints.push({
+        constraints.push(lockConstraint({
             id: "shock_urgency_night_cap",
-            text: "If Urgency is Aggressive, Posting Slot cannot be Late Night (low-traffic hours undercut urgency messaging)",
-            check: (p) => !(p.Urgency >= 90 && p.PostingTime >= 22),
-            bound: { type: "urgency_night_cap" },
-            locked: true
-        });
+            text: "Urgency must be brought to Moderate or below, AND the post must go out at 18:00 or earlier",
+            check: (p) => p.Urgency <= 60 && p.PostingTime <= 18,
+            bound: { type: "urgency_night_cap" }
+        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
     }
     if (selected.includes("claimUrgencyCap")) {
         constraints.push(lockConstraint({
@@ -514,16 +513,6 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
             bound: { type: "claim_urgency_cap" },
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
     }
-    if (selected.includes("disclaimerToneLock")) {
-        constraints.push(lockConstraint({
-            id: "shock_disclaimer_tone_lock",
-            text: "If the legal disclaimer is on, Tone cannot be Casual (disclaimers read poorly in a casual voice)",
-            check: (p) => !p.Disclaimer || p.Tone < 80,
-            bound: { type: "disclaimer_tone_lock" },
-            locked: true
-        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
-    }
-
     return constraints;
 }
 
@@ -570,9 +559,6 @@ function sampleShockArchetypes(loadLevel, baseAlloc, count) {
     let pool = [...SHOCK_ARCHETYPES];
     if (baseAlloc["Content/SEO"] < 50000) pool = pool.filter(s => s !== "contentCap");
     if (baseAlloc["Events"] < 50000) pool = pool.filter(s => s !== "eventsCap");
-    // searchFloor/eventsCap are always weaker than HighLoad's own visible c2/c3 floors —
-    // satisfying the visible constraint auto-satisfies these, so they never add a real requirement there.
-    if (loadLevel === "HighLoad") pool = pool.filter(s => s !== "searchFloor" && s !== "eventsCap");
     const shuffled = pool.sort(() => Math.random() - 0.5);
     return shuffled.slice(0, Math.min(count, shuffled.length));
 }
@@ -618,7 +604,10 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
 
     if (selected.includes("searchFloor")) {
         const base = baseAlloc["Search Ads"];
-        const rawTarget = Math.max(base * 1.15, base + 15000);
+        // Must clear c2's visible $75,000 floor by a wide, deliberate margin — not just
+        // match it — or this is auto-satisfied the moment c2 is. $200,000 is calibrated
+        // against generic-solution data so it isn't cleared by accident either.
+        const rawTarget = Math.max(base * 1.15, base + 15000, 200000);
         const maxFeasible = 500000 - socialMin;
         let target = Math.min(rawTarget, maxFeasible);
         target = Math.ceil(target / 5000) * 5000;
@@ -633,7 +622,10 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
 
     if (selected.includes("eventsCap")) {
         const base = baseAlloc["Events"];
-        const rawTarget = Math.max(0, base - Math.max(base * 0.15, 15000));
+        // Must land meaningfully UNDER c3's visible $100,000 ceiling — not just at it —
+        // or this is auto-satisfied the moment c3 is. Takes whichever of the flat $50,000
+        // cap or the base-relative cut is tighter, so it stays hard even if base changes.
+        const rawTarget = Math.min(50000, Math.max(0, base - Math.max(base * 0.15, 15000)));
         let target = Math.floor(rawTarget / 5000) * 5000;
         if (target === base) target = Math.max(0, base - 5000);
         constraints.push(lockConstraint({
