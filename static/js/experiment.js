@@ -1486,6 +1486,13 @@ function updateDashboard(loadLevel) {
     updateSubmitGate();
 }
 
+const CLAIM_PHRASES = {
+    Claim_LimitedTime: " Limited stock available.",
+    Claim_BestSelling: " Our #1 best-seller.",
+    Claim_GuaranteedResults: " Guaranteed results or your money back."
+};
+const DISCLAIMER_PHRASE = "\n\n*Terms and conditions apply.";
+
 function buildPostPreview(p) {
     const toneOpeners = {
         10: "We are pleased to announce our newest product line.",
@@ -1497,32 +1504,47 @@ function buildPostPreview(p) {
     if (p.Urgency >= 90) text += " Offer ends TONIGHT — don't miss out!";
     else if (p.Urgency >= 60) text += " Available for a limited time.";
     else if (p.Urgency >= 35) text += " Don't wait too long on this one.";
-    if (p.Claim_LimitedTime) text += " Limited stock available.";
-    if (p.Claim_BestSelling) text += " Our #1 best-seller.";
-    if (p.Claim_GuaranteedResults) text += " Guaranteed results or your money back.";
-    if (p.Disclaimer) text += `\n\n*Terms and conditions apply.`;
+    if (p.Claim_LimitedTime) text += CLAIM_PHRASES.Claim_LimitedTime;
+    if (p.Claim_BestSelling) text += CLAIM_PHRASES.Claim_BestSelling;
+    if (p.Claim_GuaranteedResults) text += CLAIM_PHRASES.Claim_GuaranteedResults;
+    if (p.Disclaimer) text += DISCLAIMER_PHRASE;
     return text;
+}
+
+function applyClaimPhraseToggle(key, turningOn) {
+    const phrase = key === "Disclaimer" ? DISCLAIMER_PHRASE : CLAIM_PHRASES[key];
+    if (!phrase) return;
+
+    if (turningOn) {
+        if (!currentPostText.includes(phrase.trim())) {
+            currentPostText += phrase;
+        }
+    } else if (currentPostText.includes(phrase)) {
+        currentPostText = currentPostText.split(phrase).join('');
+    } else if (currentPostText.includes(phrase.trim())) {
+        // Exact whitespace didn't match (participant may have retyped around it) — still
+        // remove the sentence itself and tidy up any leftover double-space.
+        currentPostText = currentPostText.split(phrase.trim()).join(' ').replace(/ {2,}/g, ' ').trim();
+    }
+
+    const box = document.getElementById('postPreviewBox');
+    if (box) box.value = currentPostText;
 }
 
 function detectClaimTextMismatches() {
     if (!postTextManuallyEdited) return [];
-    const claimPhrases = {
-        Claim_LimitedTime: "Limited stock available.",
-        Claim_BestSelling: "Our #1 best-seller.",
-        Claim_GuaranteedResults: "Guaranteed results or your money back."
-    };
     const mismatches = [];
-    for (const [key, phrase] of Object.entries(claimPhrases)) {
+    for (const [key, phrase] of Object.entries(CLAIM_PHRASES)) {
         const label = key.replace('Claim_', '').replace(/([A-Z])/g, ' $1').trim();
         const toggledOn = !!currentAllocations[key];
-        const phrasePresent = currentPostText.includes(phrase);
+        const phrasePresent = currentPostText.includes(phrase.trim());
         if (toggledOn && !phrasePresent) {
             mismatches.push(`"${label}" is toggled ON but that claim text isn't actually in the post`);
         } else if (!toggledOn && phrasePresent) {
             mismatches.push(`the post text includes the "${label}" claim but that toggle is OFF`);
         }
     }
-    const hasDisclaimerText = currentPostText.includes("Terms and conditions apply");
+    const hasDisclaimerText = currentPostText.includes(DISCLAIMER_PHRASE.trim());
     if (currentAllocations.Disclaimer && !hasDisclaimerText) {
         mismatches.push(`the Disclaimer toggle is ON but the "Terms and conditions apply" text isn't in the post`);
     } else if (!currentAllocations.Disclaimer && hasDisclaimerText) {
@@ -1543,11 +1565,17 @@ function selectP2Option(key, value) {
     });
     currentAllocations[key] = value;
 
-    const affectsTemplate = ["Tone", "Urgency", "Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults", "Disclaimer"];
-    if (affectsTemplate.includes(key) && !postTextManuallyEdited) {
-        currentPostText = buildPostPreview(currentAllocations);
-        const box = document.getElementById('postPreviewBox');
-        if (box) box.value = currentPostText;
+    const CLAIM_KEYS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults", "Disclaimer"];
+    if (CLAIM_KEYS.includes(key)) {
+        // These toggles just add/remove one fixed sentence — keep them in sync with the
+        // post text even after a manual edit, instead of being locked out like Tone/Urgency.
+        applyClaimPhraseToggle(key, !!value);
+    } else if (key === "Tone" || key === "Urgency") {
+        if (!postTextManuallyEdited) {
+            currentPostText = buildPostPreview(currentAllocations);
+            const box = document.getElementById('postPreviewBox');
+            if (box) box.value = currentPostText;
+        }
     }
 
     updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
