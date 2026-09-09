@@ -992,10 +992,10 @@ function advanceToNextTask() {
 
     logEvent('task_transition', { next_task: nextTask, task_position: sessionData.currentTaskIndex });
 
-    const info = NEXT_TASK_INFO[nextTask];
-    document.getElementById('taskTransitionTitle').innerText = `Up next: ${info.name}`;
-    document.getElementById('taskTransitionBody').innerText = info.blurb;
-    document.getElementById('taskTransitionOverlay').style.display = 'flex';
+    // Same full briefing (objective, structure, advisor, target-box note, submitting),
+    // gated behind the "I understand" checkbox, that Task 1 gets after the practice
+    // round — every task's kickoff is consistent, not just the first one.
+    showTaskBriefingOverlay(nextTask);
 }
 
 function continueToNextTask() {
@@ -1193,10 +1193,28 @@ function stopTutorialAttentionDemo() {
     setAttentionBarVisible(false);
 }
 
-// Ends the tutorial and hands off into the real Task 1 / Round 1 via the existing
-// task-transition overlay + continueToNextTask() (which just calls startTrial(1)) —
-// no new overlay markup needed, and currentTrial/currentTaskIndex are untouched by
-// tutorial code, so the real task starts exactly as if the tutorial never happened.
+// Same content that used to be shown on the intake page, before /experiment ever
+// loaded. It now shows here instead, after the practice round, so task-specific
+// instructions land right before the real (recorded) Task 1 Round 1 — not before
+// the practice round.
+const TASK_BRIEFINGS = {
+    "P1_Marketing": {
+        title: "Marketing Budget Challenge",
+        objective: "Allocate a fixed $500,000 budget across 5 marketing channels (Search Ads, Content/SEO, Social, Events, Influencer). <strong>Your goal is to maximize your allocation's modeled ROI</strong> while satisfying the round's requirements.",
+        advisor: "AI Marketing Advisor"
+    },
+    "P2_ContentSocial": {
+        title: "Campaign Launch Challenge",
+        objective: "Configure a social media launch post — tone, urgency, hashtags, posting time, and claims/disclaimer. <strong>Your goal is to maximize the post's modeled engagement</strong> while satisfying the round's requirements.",
+        advisor: "AI Social Media Advisor"
+    },
+    "P3_TripPlanning": {
+        title: "Study-Abroad Itinerary Challenge",
+        objective: "Plan a 4-day study-abroad trip by picking one activity for each time slot of the day. <strong>Your goal is to maximize your itinerary's overall quality</strong> while satisfying the round's requirements.",
+        advisor: "AI Trip-Planning Assistant"
+    }
+};
+
 function submitTutorialRound() {
     isTutorialActive = false;
     stopTutorialAttentionDemo();
@@ -1204,11 +1222,58 @@ function submitTutorialRound() {
     sessionData.tutorialCompleted = true;
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
 
-    const info = NEXT_TASK_INFO[sessionData.primaryTask];
-    document.getElementById('taskTransitionTitle').innerText = "You're all set!";
-    document.getElementById('taskTransitionBody').innerText =
-        `That's the interface. ${info ? info.blurb : ''} From here on, your choices are the real task and are recorded.`;
+    showTaskBriefingOverlay(sessionData.primaryTask);
+}
+
+// Shows the assigned task's full briefing (objective, structure, advisor, etc.) in
+// the same overlay used for between-task transitions, gated behind an "I understand"
+// checkbox — mirrors the consent-style gate the old intake-page briefing step used.
+function showTaskBriefingOverlay(taskId) {
+    const briefing = TASK_BRIEFINGS[taskId] || TASK_BRIEFINGS["P1_Marketing"];
+
+    document.getElementById('taskTransitionTitle').innerText = briefing.title;
+    document.getElementById('taskTransitionBody').innerHTML = `
+        <div class="consent-block highlight-block">
+          <h4>Your objective</h4>
+          <p>${briefing.objective}</p>
+        </div>
+        <div class="consent-block">
+          <h4>How it's structured</h4>
+          <p>You'll complete <strong>4 rounds</strong>. Each round starts with a preset configuration that does <em>not</em> yet meet the round's requirements — adjust it until the "Live Constraints" panel shows everything satisfied. Some rounds have more requirements to juggle than others.</p>
+        </div>
+        <div class="consent-block">
+          <h4>Using the ${briefing.advisor}</h4>
+          <p>The assistant will chime in on its own as you make changes — you don't need to message it first, though you're welcome to chat with it any time.</p>
+        </div>
+        <div class="consent-block">
+          <h4>A note on some rounds</h4>
+          <p>In some rounds, you'll notice numbers continuously changing in the "target box" you just practiced with. During these rounds, you'll be given a specific target number, such as <strong>5</strong> — watch the changing numbers and click "Match" whenever the target appears. Successfully spotting the target counts toward a completion bonus.</p>
+        </div>
+        <div class="consent-block">
+          <h4>Submitting a round</h4>
+          <p>Once all requirements are met, submit the round and rate your experience, then move to the next one. From this point on, everything is recorded.</p>
+        </div>
+        <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
+          <input type="checkbox" id="taskBriefingBox" onchange="onTaskBriefingCheckChange()"/>
+          <span class="checkbox-custom"></span>
+          <span>I understand the task instructions and wish to proceed.</span>
+        </label>
+    `;
+
+    const btn = document.getElementById('taskTransitionContinueBtn');
+    btn.disabled = true;
+    btn.onclick = () => {
+        document.getElementById('taskTransitionOverlay').style.display = 'none';
+        startTrial(1);
+    };
+
     document.getElementById('taskTransitionOverlay').style.display = 'flex';
+}
+
+function onTaskBriefingCheckChange() {
+    const box = document.getElementById('taskBriefingBox');
+    const btn = document.getElementById('taskTransitionContinueBtn');
+    if (box && btn) btn.disabled = !box.checked;
 }
 
 function startTrial(trialIndex) {
