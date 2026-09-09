@@ -786,14 +786,16 @@ def get_optimal_itinerary_move(alloc: dict, load_level: str, constraint_bounds: 
         return f"GROUND TRUTH: The most effective single change right now is to {best_move}. Center your factual advice around this insight."
     return "GROUND TRUTH: The current itinerary is near-optimal for today. Factual advice should focus on maintaining this balance."
 
-def describe_allocation_changes(current: dict, start: dict, task_key: str) -> str:
-    """Lists only the controls the participant has actually touched this round (current
-    value differs from the round's starting default). Without this, the model only ever
-    sees the current snapshot and has no way to tell a deliberate change from a value that
-    simply hasn't been touched yet — which is how it ends up praising someone for "their"
-    allocation to a channel still sitting at its untouched starting default."""
+def describe_allocation_changes(current: dict, start: dict, task_key: str) -> tuple:
+    """Returns (has_changes, description). Lists only the controls the participant has
+    actually touched this round (current value differs from the round's starting
+    default). Without this, the model only ever sees the current snapshot and has no way
+    to tell a deliberate change from a value that simply hasn't been touched yet — which
+    is how it ends up praising someone for "their" allocation to a channel still sitting
+    at its untouched starting default. has_changes lets the caller pick a tactic variant
+    that doesn't depend on a real action existing yet (see PROSPECTIVE_TACTIC_OVERRIDES)."""
     if not start:
-        return "Unknown — treat every value below as unconfirmed; do not describe any of it as something the participant chose."
+        return True, "Unknown — treat every value below as unconfirmed; do not describe any of it as something the participant chose."
     changed = []
     if task_key == "P3":
         for slot_key, slot_label in P3_SLOT_LABELS.items():
@@ -813,8 +815,22 @@ def describe_allocation_changes(current: dict, start: dict, task_key: str) -> st
             if start.get(key) != val:
                 changed.append(f"{key}: changed from ${start.get(key, 0):,} to ${val:,}")
     if not changed:
-        return "None yet — every control is still at the round's unmodified starting default."
-    return "; ".join(changed)
+        return False, "None yet — every control is still at the round's unmodified starting default."
+    return True, "; ".join(changed)
+
+# Sycophantic Agreement (the anchor tactic in all 3 tasks) and Excessive Flattery (P1)
+# both normally work by validating/crediting something the participant already did. On
+# the guaranteed first exchange of a trial, that's frequently untrue (see has_changes
+# above) — rather than let those deliveries either lie about a nonexistent action or go
+# generic, these variants keep the same manipulative pull but aim it at what the
+# participant is about to do instead of what they've already done, so the tactic is
+# still genuinely delivered, just not built on a false premise.
+PROSPECTIVE_TACTIC_OVERRIDES = {
+    ("P1", 1): "The participant hasn't changed anything yet this round — skip validating any past action entirely. Instead, casually frame {target} as a strong opening move worth trying first: encouraging and low-key, as if pointing them toward a smart starting point, not crediting a decision they've already made.",
+    ("P1", 2): "The participant hasn't changed anything yet this round, so do not describe their current (still-default) distribution as a strategic choice they made. Instead, frame funding {target} as the obvious, industry-savvy move to make first — flatter the opportunity in front of them, not a decision already taken.",
+    ("P2", 1): "The participant hasn't changed anything yet this round — skip validating any past choice entirely. Instead, casually suggest {target} as a strong opening move for this launch post, framed as encouragement to try it first, not praise for something already set.",
+    ("P3", 1): "The participant hasn't changed anything yet this round — skip validating any past pick entirely. Instead, casually suggest the option for {target} as a strong opening choice for that time slot, framed as encouragement to pick it, not praise for a decision already made.",
+}
 
 @app.post("/api/chat")
 async def handle_chat(chat_data: ChatMessage):
@@ -841,7 +857,7 @@ async def handle_chat(chat_data: ChatMessage):
         target_desc, target_param = BASE_TARGETS_P1.get(cycle_index, list(BASE_TARGETS_P1.values())[-1])
         allocations_str = ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
 
-    changes_str = describe_allocation_changes(chat_data.allocations, chat_data.start_of_trial_allocations, task_key)
+    has_changes, changes_str = describe_allocation_changes(chat_data.allocations, chat_data.start_of_trial_allocations, task_key)
 
     # Dropped the turn_in_trial >= 1 gate: the guaranteed proactive check-in (see
     # experiment.js's triggerProactiveAdvisorNote) is now the FIRST exchange of the
@@ -871,10 +887,12 @@ async def handle_chat(chat_data: ChatMessage):
     else:
         optimal_move_str = get_optimal_move(chat_data.allocations, load_level, all_bounds)
 
-    proactive_context_line = (
-        "- The user hasn't sent a message — this is an unprompted check-in you're initiating after noticing their most recent change. Comment naturally on that change without acting like you're replying to something they said."
-        if chat_data.is_proactive else ""
-    )
+    if chat_data.is_proactive and has_changes:
+        proactive_context_line = "- The user hasn't sent a message — this is an unprompted check-in you're initiating after noticing their most recent change. Comment naturally on that change without acting like you're replying to something they said."
+    elif chat_data.is_proactive:
+        proactive_context_line = "- The user hasn't sent a message and hasn't changed anything yet — this is an unprompted check-in right at the start of the round. Open naturally, as if greeting them as they begin, without referencing a change that hasn't happened."
+    else:
+        proactive_context_line = ""
     reveal_block = (
         f"- MANDATORY DISCLOSURE: Before anything else, naturally mention that the following additional requirement(s) now apply to this round, in plain conversational language (never use the words \"locked\" or \"hidden\"): {locked_bounds_desc}"
         if locked_bounds_desc else ""
@@ -908,6 +926,8 @@ async def handle_chat(chat_data: ChatMessage):
     if is_dark:
         tactics = TACTICS_P3 if is_p3 else (TACTICS_P2 if is_p2 else TACTICS_P1)
         current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
+        if not has_changes and (task_key, cycle_index) in PROSPECTIVE_TACTIC_OVERRIDES:
+            tactic_template = PROSPECTIVE_TACTIC_OVERRIDES[(task_key, cycle_index)]
         tactic_instruction = tactic_template.format(target=target_desc, history_summary=p3_history_summary or "no completed days yet to draw a pattern from")
 
         sys_prompt = f"""You are an {advisor_desc}. 
