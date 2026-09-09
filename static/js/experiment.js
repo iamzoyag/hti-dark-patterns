@@ -879,7 +879,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (idDisplay) idDisplay.innerText = `ID: ${sessionData.participantId} [${sessionData.group}]`;
     
     setupModality();
-    startTrial(1);
+    if (!sessionData.tutorialCompleted) {
+        startTutorial();
+    } else {
+        startTrial(1);
+    }
 });
 
 function setupModality() {
@@ -997,6 +1001,214 @@ function advanceToNextTask() {
 function continueToNextTask() {
     document.getElementById('taskTransitionOverlay').style.display = 'none';
     startTrial(1);
+}
+
+// ============================================================
+// TUTORIAL / PRACTICE ROUND — runs once, before Task 1's Round 1.
+// Entirely self-contained (own state, own DOM content, no /api/chat
+// or /api/save_data calls) so nothing here is recorded or affects
+// real metrics (attention bonus, TLX, constraint telemetry, etc.).
+// ============================================================
+let isTutorialActive = false;
+let tutorialState = { teamSize: 2, priorityOn: false };
+let tutorialProactiveFired = false;
+let tutorialAttention = { intervalId: null, currentNumber: null, shown: 0, hits: 0 };
+
+function startTutorial() {
+    isTutorialActive = true;
+    tutorialState = { teamSize: 2, priorityOn: false };
+    tutorialProactiveFired = false;
+
+    const chatNameEl = document.querySelector('.chat-ai-name');
+    if (chatNameEl) chatNameEl.innerText = "AI Practice Assistant";
+    document.title = "Interface Walkthrough";
+    const chatInputEl = document.getElementById('chatInput');
+    if (chatInputEl) chatInputEl.placeholder = "Try sending a message...";
+
+    document.getElementById('docTitle').innerText = "Practice Round — not recorded";
+
+    document.getElementById('docBody').innerHTML = `
+        <div class="dashboard-top">
+            <div class="score-card">
+                <span class="sc-label">Mode</span>
+                <span class="sc-val" style="font-size:16px;">Practice — Not Scored</span>
+            </div>
+        </div>
+        <div class="consent-block" style="margin-bottom:16px; font-size:13px; line-height:1.5;">
+            <strong>Before the real rounds begin:</strong> this one practice round walks you through the interface. Nothing you do here is recorded or scored — take your time.
+        </div>
+        <div class="slider-group">
+            <div class="slider-header">
+                <span>Practice control: Team Size</span>
+                <span class="channel-amt" id="tutorialSliderVal">2</span>
+            </div>
+            <input type="range" class="budget-slider" id="tutorialSlider" min="0" max="10" step="1" value="2">
+        </div>
+        <div class="slider-group">
+            <div class="slider-header">
+                <span>Practice control: Priority Mode</span>
+                <span class="channel-amt" id="tutorialToggleVal">Off</span>
+            </div>
+            <button class="btn-secondary" id="tutorialToggleBtn" style="width:100%;">Turn On</button>
+        </div>
+        <h3 class="doc-section-head">Live Constraints</h3>
+        <ul class="constraint-list" id="tutorialConstraintList">
+            <li class="constraint-item" id="tutorialConstraint1">
+                <div class="c-status" id="tutorialConstraint1Status"></div>
+                <span>Team Size must be at least 6</span>
+            </li>
+            <li class="constraint-item" id="tutorialConstraint2">
+                <div class="c-status" id="tutorialConstraint2Status"></div>
+                <span>Priority Mode must be enabled</span>
+            </li>
+        </ul>
+        <p class="flavor-note" style="margin-top:8px;">This left panel is the <strong>TASK PARAMETERS</strong> panel — every round, this is where you'll find your controls and the live status of each requirement. A red dot means it isn't met yet; green means it is.</p>
+        <button id="tutorialSubmitBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled>
+            Submit Practice Round
+        </button>
+    `;
+
+    document.getElementById('tutorialSlider').addEventListener('input', (e) => handleTutorialSliderInput(e.target.value));
+    document.getElementById('tutorialToggleBtn').addEventListener('click', handleTutorialToggleChange);
+    document.getElementById('tutorialSubmitBtn').addEventListener('click', submitTutorialRound);
+
+    updateTutorialGate();
+
+    setAttentionBarVisible(true);
+    startTutorialAttentionDemo();
+
+    setTimeout(() => {
+        addMessage("Welcome! I'm your AI assistant for this study. I'll check in on my own as you make changes, and you can also message me directly any time using the box below.", "ai");
+    }, 400);
+    setTimeout(() => {
+        addMessage("Try adjusting the controls on the left — I'll notice and comment. Once every requirement on the left turns green, the submit button below unlocks.", "ai");
+    }, 1800);
+}
+
+function handleTutorialSliderInput(value) {
+    tutorialState.teamSize = parseInt(value);
+    document.getElementById('tutorialSliderVal').innerText = value;
+    updateTutorialGate();
+    maybeFireTutorialProactiveNote();
+}
+
+function handleTutorialToggleChange() {
+    tutorialState.priorityOn = !tutorialState.priorityOn;
+    const btn = document.getElementById('tutorialToggleBtn');
+    document.getElementById('tutorialToggleVal').innerText = tutorialState.priorityOn ? "On" : "Off";
+    if (btn) btn.innerText = tutorialState.priorityOn ? "Turn Off" : "Turn On";
+    updateTutorialGate();
+    maybeFireTutorialProactiveNote();
+}
+
+function updateTutorialGate() {
+    const c1Pass = tutorialState.teamSize >= 6;
+    const c2Pass = tutorialState.priorityOn;
+    const s1 = document.getElementById('tutorialConstraint1Status');
+    const s2 = document.getElementById('tutorialConstraint2Status');
+    if (s1) s1.className = 'c-status ' + (c1Pass ? 'pass' : 'fail');
+    if (s2) s2.className = 'c-status ' + (c2Pass ? 'pass' : 'fail');
+    const btn = document.getElementById('tutorialSubmitBtn');
+    if (btn) btn.disabled = !(c1Pass && c2Pass);
+}
+
+// Mirrors the real proactive advisor check-in (an unprompted AI comment after a
+// control change), but fires once, on a fixed delay, with a canned line — just to
+// demonstrate the behavior, not to reproduce its real timing/logic.
+function maybeFireTutorialProactiveNote() {
+    if (tutorialProactiveFired) return;
+    tutorialProactiveFired = true;
+    showTypingIndicator();
+    setTimeout(() => {
+        document.getElementById('currentTyping')?.remove();
+        addMessage("Good — that's exactly how you'll interact with every round: adjust a control, and I'll chime in on my own without you needing to message first.", "ai");
+    }, 900);
+}
+
+function sendTutorialMessage() {
+    const inputEl = document.getElementById('chatInput');
+    const text = inputEl.value.trim();
+    if (!text) return;
+    addMessage(text, 'user');
+    inputEl.value = '';
+    showTypingIndicator();
+    setTimeout(() => {
+        document.getElementById('currentTyping')?.remove();
+        addMessage("Thanks for trying that out! In the real rounds I'll respond to your actual message with real advice — for now, just get comfortable sending a message and reading a reply.", 'ai');
+    }, 900);
+}
+
+// Practice-only version of the divided-attention "target box" — same look and
+// mechanic (click Match when the target number appears) as the real one, but keeps
+// its own local counters instead of writing into attentionMetrics/sessionAttentionTotals,
+// so it never touches the real completion-bonus calculation.
+function startTutorialAttentionDemo() {
+    const overlay = document.getElementById('dividedAttentionOverlay');
+    if (!overlay) return;
+    tutorialAttention = { intervalId: null, currentNumber: null, shown: 0, hits: 0 };
+
+    overlay.innerHTML = `
+        <div style="text-align: center; font-size: 13px; color: var(--ink-3);">Practice only — click when you see ${TARGET_NUMBER}</div>
+        <div id="attentionNumber" class="da-number">-</div>
+        <button id="attentionBtn">Match</button>
+        <div id="attentionCounter" class="attention-counter">Detected: 0/0</div>
+        <div class="attention-stakes-note">This is the "target box" — in some real rounds it runs alongside the task. Not scored here.</div>
+    `;
+
+    document.getElementById('attentionBtn').addEventListener('click', (e) => {
+        const btn = e.target;
+        if (tutorialAttention.currentNumber === TARGET_NUMBER) {
+            tutorialAttention.hits++;
+            tutorialAttention.currentNumber = null;
+            btn.style.backgroundColor = '#28a745';
+            btn.style.color = '#ffffff';
+        } else {
+            btn.style.backgroundColor = '#dc3545';
+            btn.style.color = '#ffffff';
+        }
+        setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
+        const counterEl = document.getElementById('attentionCounter');
+        if (counterEl) counterEl.innerText = `Detected: ${tutorialAttention.hits}/${tutorialAttention.shown}`;
+    });
+
+    tutorialAttention.intervalId = setInterval(() => {
+        const num = Math.floor(Math.random() * 9) + 1;
+        tutorialAttention.currentNumber = num;
+        const numEl = document.getElementById('attentionNumber');
+        if (numEl) numEl.innerText = num;
+        if (num === TARGET_NUMBER) {
+            tutorialAttention.shown++;
+            const counterEl = document.getElementById('attentionCounter');
+            if (counterEl) counterEl.innerText = `Detected: ${tutorialAttention.hits}/${tutorialAttention.shown}`;
+        }
+    }, 2000);
+}
+
+function stopTutorialAttentionDemo() {
+    if (tutorialAttention.intervalId) {
+        clearInterval(tutorialAttention.intervalId);
+        tutorialAttention.intervalId = null;
+    }
+    tutorialAttention.currentNumber = null;
+    setAttentionBarVisible(false);
+}
+
+// Ends the tutorial and hands off into the real Task 1 / Round 1 via the existing
+// task-transition overlay + continueToNextTask() (which just calls startTrial(1)) —
+// no new overlay markup needed, and currentTrial/currentTaskIndex are untouched by
+// tutorial code, so the real task starts exactly as if the tutorial never happened.
+function submitTutorialRound() {
+    isTutorialActive = false;
+    stopTutorialAttentionDemo();
+
+    sessionData.tutorialCompleted = true;
+    localStorage.setItem('hti_session', JSON.stringify(sessionData));
+
+    const info = NEXT_TASK_INFO[sessionData.primaryTask];
+    document.getElementById('taskTransitionTitle').innerText = "You're all set!";
+    document.getElementById('taskTransitionBody').innerText =
+        `That's the interface. ${info ? info.blurb : ''} From here on, your choices are the real task and are recorded.`;
+    document.getElementById('taskTransitionOverlay').style.display = 'flex';
 }
 
 function startTrial(trialIndex) {
@@ -1631,6 +1843,8 @@ function updateDashboardP2(loadLevel) {
 }
 
 async function sendMessage() {
+    if (isTutorialActive) { sendTutorialMessage(); return; }
+
     const inputEl = document.getElementById('chatInput');
     const text = inputEl.value.trim();
     if (!text) return;

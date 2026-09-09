@@ -186,6 +186,7 @@ async function startExperiment() {
         primaryTask: firstTask,
         trialSequence: taskAssignments[firstTask].trial_sequence,
         droppedCategoryIndex: taskAssignments[firstTask].dropped_category_index,
+        tutorialCompleted: false,
         startTime: new Date().toISOString(),
         demographics: demoData,
         personality: personalityData,
