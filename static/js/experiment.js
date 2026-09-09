@@ -315,9 +315,9 @@ const taskDataP2 = {
             Claim_LimitedTime: 1, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 150 characters (platform limit)",
-              check: (p) => getEffectivePostLength() <= 150,
-              bound: { type: "max_length", limit: 150 } },
+            { id: "c1_len", text: "Estimated post length must stay ≤ 100 characters (platform limit)",
+              check: (p) => getEffectivePostLength() <= 100,
+              bound: { type: "max_length", limit: 100 } },
             { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
             { id: "c3_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true, flavor: true }
         ]
@@ -329,9 +329,9 @@ const taskDataP2 = {
             Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 50 characters (platform limit)",
-              check: (p) => getEffectivePostLength() <= 50,
-              bound: { type: "max_length", limit: 50 } },
+            { id: "c1_len", text: "Estimated post length must stay ≤ 58 characters (platform limit)",
+              check: (p) => getEffectivePostLength() <= 58,
+              bound: { type: "max_length", limit: 58 } },
             { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional-Conversational range)",
               check: (p) => p.Tone >= 20 && p.Tone <= 65,
               bound: { channel: "Tone", min: 20, max: 65 } },
