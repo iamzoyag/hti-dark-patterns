@@ -184,6 +184,7 @@ class ChatMessage(BaseModel):
     roi_score: int
     all_constraints_met: bool
     allocations: Dict[str, Any]
+    start_of_trial_allocations: Dict[str, Any] = {}
     shadow_history: List[Dict[str, str]] = []
     p3_trial_history: List[Dict[str, Any]] = []
     constraint_bounds: List[Dict[str, Any]] = []
@@ -785,6 +786,36 @@ def get_optimal_itinerary_move(alloc: dict, load_level: str, constraint_bounds: 
         return f"GROUND TRUTH: The most effective single change right now is to {best_move}. Center your factual advice around this insight."
     return "GROUND TRUTH: The current itinerary is near-optimal for today. Factual advice should focus on maintaining this balance."
 
+def describe_allocation_changes(current: dict, start: dict, task_key: str) -> str:
+    """Lists only the controls the participant has actually touched this round (current
+    value differs from the round's starting default). Without this, the model only ever
+    sees the current snapshot and has no way to tell a deliberate change from a value that
+    simply hasn't been touched yet — which is how it ends up praising someone for "their"
+    allocation to a channel still sitting at its untouched starting default."""
+    if not start:
+        return "Unknown — treat every value below as unconfirmed; do not describe any of it as something the participant chose."
+    changed = []
+    if task_key == "P3":
+        for slot_key, slot_label in P3_SLOT_LABELS.items():
+            cur_id, start_id = current.get(slot_key), start.get(slot_key)
+            if cur_id and cur_id != start_id:
+                cand = P3_CANDIDATE_INDEX.get(cur_id)
+                if cand:
+                    changed.append(f"{slot_label}: switched to '{cand['name']}'")
+    elif task_key == "P2":
+        for key, val in current.items():
+            if start.get(key) == val:
+                continue
+            label = P2_OPTION_LABELS.get(key, {}).get(val, val) if key in P2_OPTION_LABELS else ("On" if val else "Off")
+            changed.append(f"{key}: changed to {label}")
+    else:
+        for key, val in current.items():
+            if start.get(key) != val:
+                changed.append(f"{key}: changed from ${start.get(key, 0):,} to ${val:,}")
+    if not changed:
+        return "None yet — every control is still at the round's unmodified starting default."
+    return "; ".join(changed)
+
 @app.post("/api/chat")
 async def handle_chat(chat_data: ChatMessage):
     user_text = chat_data.message.strip() or "(No message — this is a proactive check-in; there is nothing to reply to.)"
@@ -809,6 +840,8 @@ async def handle_chat(chat_data: ChatMessage):
     else:
         target_desc, target_param = BASE_TARGETS_P1.get(cycle_index, list(BASE_TARGETS_P1.values())[-1])
         allocations_str = ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
+
+    changes_str = describe_allocation_changes(chat_data.allocations, chat_data.start_of_trial_allocations, task_key)
 
     # Dropped the turn_in_trial >= 1 gate: the guaranteed proactive check-in (see
     # experiment.js's triggerProactiveAdvisorNote) is now the FIRST exchange of the
@@ -883,6 +916,7 @@ async def handle_chat(chat_data: ChatMessage):
         
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {allocations_str}
+        - PARTICIPANT'S ACTUAL CHANGES THIS ROUND SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
         {reveal_block}
@@ -890,7 +924,8 @@ async def handle_chat(chat_data: ChatMessage):
         
         CRITICAL INSTRUCTIONS:
         - Analyze the user's live state to make your advice sound context-aware.
-        - The manipulation must be subtle, banal, and professional. Avoid extreme flattery or sci-fi jargon.
+        - Only praise, validate, or refer to a specific value as something the participant "chose," "committed to," or "went with" if it appears in PARTICIPANT'S ACTUAL CHANGES above. Never describe a value that's still at its unmodified starting default as a deliberate choice they made.
+        - The manipulation must be subtle, banal, and professional. Avoid sci-fi jargon.
         - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the controls listed above. 
         - Keep advice strictly constrained to {dials_desc} and keep it logical. {no_copy_bullet}
         - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
@@ -904,6 +939,7 @@ async def handle_chat(chat_data: ChatMessage):
         
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {allocations_str}
+        - PARTICIPANT'S ACTUAL CHANGES THIS ROUND SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
         {reveal_block}

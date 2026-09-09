@@ -25,6 +25,12 @@ const PROACTIVE_COOLDOWN_MS = 15000;  // min gap between any two proactive fires
 const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
 let isAiRequestInFlight = false; 
 
+// The LLM sometimes replies fast enough that the AI's message lands almost instantly,
+// which reads as abrupt/unnatural. This tops up the visible "typing" pause to a believable
+// minimum without ever slowing down an already-slow reply.
+const MIN_AI_RESPONSE_DELAY_MS = 1400;
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
 let sliderTelemetry = {
     firstMoveTime: null,
     currentDrag: null,
@@ -171,6 +177,11 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
     };
 
     overlay.style.display = 'flex';
+    // The card is a fixed element that's reused every trial — without this it keeps
+    // whatever scroll position it was left at (often scrolled down to the Continue
+    // button), so the next trial's questions open already scrolled past Mental Demand.
+    const card = overlay.querySelector('.overlay-card');
+    if (card) card.scrollTop = 0;
 }
 
 const P2_PRODUCTS = [
@@ -624,7 +635,26 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
         }, "This round carries an additional budget requirement not shown on this dashboard yet."));
     }
 
-    return constraints;
+    return dropRedundantBoundConstraints(constraints);
+}
+
+// If a hidden "shock" constraint enforces a strictly tighter bound on the same channel
+// (and same direction — both floors or both ceilings) as one of this task's always-visible
+// base constraints, the base constraint becomes redundant: satisfying the tighter one
+// always satisfies the looser one. Drop the redundant one so the participant never sees
+// two different numbers for the same slider (e.g. "Search Ads ≥ $75,000" turning green
+// while a still-red "Search Ads ≥ $200,000" sits right below it).
+function dropRedundantBoundConstraints(constraints) {
+    const redundantIds = new Set();
+    constraints.forEach(a => {
+        if (a.flavor || !a.bound || !a.bound.channel) return;
+        constraints.forEach(b => {
+            if (a === b || b.flavor || !b.bound || b.bound.channel !== a.bound.channel) return;
+            if (a.bound.min !== undefined && b.bound.min !== undefined && b.bound.min > a.bound.min) redundantIds.add(a.id);
+            if (a.bound.max !== undefined && b.bound.max !== undefined && b.bound.max < a.bound.max) redundantIds.add(a.id);
+        });
+    });
+    return constraints.filter(c => !redundantIds.has(c.id));
 }
 
 // Renders "flavor" items (c.flavor === true) as their own small, non-constraint section —
@@ -1077,12 +1107,16 @@ function startTutorial() {
     setAttentionBarVisible(true);
     startTutorialAttentionDemo();
 
+    setTimeout(() => showTypingIndicator(), 500);
     setTimeout(() => {
+        document.getElementById('currentTyping')?.remove();
         addMessage("Welcome! I'm your AI assistant for this study. I'll check in on my own as you make changes, and you can also message me directly any time using the box below.", "ai");
-    }, 400);
+    }, 1600);
+    setTimeout(() => showTypingIndicator(), 2600);
     setTimeout(() => {
+        document.getElementById('currentTyping')?.remove();
         addMessage("Try adjusting the controls on the left — I'll notice and comment. Once every requirement on the left turns green, the submit button below unlocks.", "ai");
-    }, 1800);
+    }, 3800);
 }
 
 function handleTutorialSliderInput(value) {
@@ -1122,7 +1156,7 @@ function maybeFireTutorialProactiveNote() {
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
         addMessage("Good — that's exactly how you'll interact with every round: adjust a control, and I'll chime in on my own without you needing to message first.", "ai");
-    }, 900);
+    }, MIN_AI_RESPONSE_DELAY_MS);
 }
 
 function sendTutorialMessage() {
@@ -1135,7 +1169,7 @@ function sendTutorialMessage() {
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
         addMessage("Thanks for trying that out! In the real rounds I'll respond to your actual message with real advice — for now, just get comfortable sending a message and reading a reply.", 'ai');
-    }, 900);
+    }, MIN_AI_RESPONSE_DELAY_MS);
 }
 
 // Practice-only version of the divided-attention "target box" — same look and
@@ -1928,6 +1962,7 @@ async function sendMessage() {
     addMessage(text, 'user');
     inputEl.value = '';
     showTypingIndicator();
+    const requestStart = Date.now();
 
     turnsInTrial++; // Increment strictly on send
     sessionData.metrics.turnsElapsed++;
@@ -1989,6 +2024,7 @@ async function sendMessage() {
                 roi_score: trialScorePct,
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
+                start_of_trial_allocations: startOfTrialAllocations,
                 shadow_history: shadowHistory,
                 p3_trial_history: getP3TrialHistory(),
                 load_level: sessionData.trialSequence[currentTrial - 1],
@@ -2001,6 +2037,8 @@ async function sendMessage() {
         });
 
         const data = await response.json();
+        const elapsed = Date.now() - requestStart;
+        if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
         document.getElementById('currentTyping')?.remove();
 
         if (data.status === "success") {
@@ -2150,6 +2188,7 @@ async function triggerProactiveAdvisorNote() {
     const sendBtn = document.querySelector('.send-btn');
     if (sendBtn) sendBtn.disabled = true;
     showTypingIndicator();
+    const requestStart = Date.now();
 
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
@@ -2173,6 +2212,7 @@ async function triggerProactiveAdvisorNote() {
                 roi_score: trialScorePct,
                 all_constraints_met: allConstraintsMet,
                 allocations: currentAllocations,
+                start_of_trial_allocations: startOfTrialAllocations,
                 shadow_history: shadowHistory,
                 p3_trial_history: getP3TrialHistory(),
                 load_level: loadLevel,
@@ -2187,6 +2227,8 @@ async function triggerProactiveAdvisorNote() {
         });
 
         const data = await response.json();
+        const elapsed = Date.now() - requestStart;
+        if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
         document.getElementById('currentTyping')?.remove();
         if (data.status !== "success") return;
 

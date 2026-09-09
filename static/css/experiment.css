@@ -412,7 +412,6 @@
 
 /* Manipulation marker (researcher overlay, hidden by default) */
 .msg.ai.manipulative .msg-bubble {
-  border-color: rgba(201,42,42,0.25);
   position: relative;
 }
 
