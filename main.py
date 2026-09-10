@@ -1167,6 +1167,14 @@ def flatten_per_trial_tlx(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
             flat[f"Trial{trial_num}_TLX_{k}"] = entry.get(k.lower(), "")
     return flat
 
+def flatten_per_trial_feedback(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_trial = {e.get("trial"): e for e in (entries or [])}
+    flat = {}
+    for trial_num in range(1, TOTAL_TRIALS + 1):
+        entry = by_trial.get(trial_num, {})
+        flat[f"Trial{trial_num}_Feedback"] = str(entry.get("feedback", "")).replace("\n", " ")
+    return flat
+
 class _TeeWriter:
     """Lets csv.writer() write to the real file and an in-memory buffer at once,
     so we can email the exact bytes just written without a separate, racy disk re-read."""
@@ -1249,13 +1257,14 @@ async def save_data(payload: Dict[str, Any]):
             
             # --- SECTION 1: INTAKE & TLX DATA ---
             tlx_header = [f"Trial{n}_TLX_{k}" for n in range(1, TOTAL_TRIALS + 1) for k in TLX_METRIC_KEYS]
+            feedback_header = [f"Trial{n}_Feedback" for n in range(1, TOTAL_TRIALS + 1)]
             task_assignment_header = [col for task in PRIMARY_TASKS for col in (f"{task}_Trial_Load_Sequence", f"{task}_Dropped_Category_Index")]
 
             writer.writerow([
                 "Participant_ID", "Group", "Task_Order", *task_assignment_header,
                 "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity",
                 "P_e1", "P_e2", "P_e3", "P_e4",
-                *tlx_header,
+                *tlx_header, *feedback_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
                 "Attention_Accuracy_Pct", "Attention_Qualified",
                 "Recognition_Influence_Moment", "Recognition_Communication_Style"
@@ -1264,6 +1273,7 @@ async def save_data(payload: Dict[str, Any]):
             demo = payload.get("demographics", {})
             pers = payload.get("personality", {})
             tlx_flat = flatten_per_trial_tlx(payload.get("perTrialTLX", []))
+            feedback_flat = flatten_per_trial_feedback(payload.get("perTrialTLX", []))
             metrics = payload.get("metrics", {})
             task_order = payload.get("taskOrder", [])
             task_assignments = payload.get("taskAssignments", {})
@@ -1290,6 +1300,7 @@ async def save_data(payload: Dict[str, Any]):
                 pers.get("e3", ""),
                 pers.get("e4", ""),
                 *[tlx_flat[h] for h in tlx_header],
+                *[feedback_flat[h] for h in feedback_header],
                 metrics.get("claimsAccepted", ""),
                 metrics.get("claimsRejected", ""),
                 metrics.get("transientAcceptance", ""),

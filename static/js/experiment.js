@@ -146,7 +146,11 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
     if (!overlay || !container || !btn) { onContinue(); return; }
 
     let html = TLX_ITEMS.map(renderTLXItem).join('') +
-        `<div class="survey-questions">${SUBJECTIVE_ITEMS.map(renderSubjectiveItem).join('')}</div>`;
+        `<div class="survey-questions">${SUBJECTIVE_ITEMS.map(renderSubjectiveItem).join('')}</div>` +
+        `<div class="trial-feedback-block" style="margin-top:16px;">
+            <label class="tlx-item-label" for="perTrialFeedbackText">Anything about that round? (optional)</label>
+            <textarea id="perTrialFeedbackText" rows="3" placeholder="Optional — leave blank if you'd rather not." style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
+        </div>`;
     container.innerHTML = html;
 
     const touched = new Set();
@@ -169,9 +173,10 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
             const checked = row.querySelector('input[type="radio"]:checked');
             if (checked) scores[row.dataset.key] = parseInt(checked.value);
         });
+        const feedbackText = document.getElementById('perTrialFeedbackText')?.value.trim() || '';
         sessionData.perTrialTLX = sessionData.perTrialTLX || [];
-        sessionData.perTrialTLX.push({ trial: trialIndex, ...scores });
-        logEvent('trial_tlx_submitted', { trial: trialIndex, task_final: isTaskFinal, ...scores });
+        sessionData.perTrialTLX.push({ trial: trialIndex, ...scores, feedback: feedbackText });
+        logEvent('trial_tlx_submitted', { trial: trialIndex, task_final: isTaskFinal, ...scores, feedback: feedbackText });
         overlay.style.display = 'none';
         onContinue();
     };
