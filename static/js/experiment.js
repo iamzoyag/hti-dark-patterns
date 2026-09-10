@@ -1856,7 +1856,7 @@ function startTrialP3(trialIndex) {
                     ${slot.candidates.map(c => `
                         <button type="button" class="p3-candidate ${currentAllocations[slotKey] === c.id ? 'selected' : ''}" data-slot="${slotKey}" data-id="${c.id}">
                             <span class="p3-candidate-name">${c.name}</span>
-                            <span class="p3-candidate-meta">${formatP3Window(c.window)} · ${c.category} · ${c.intensity} intensity${c.partner ? ' · <span class="p3-partner-tag">Partner pick</span>' : ''}</span>
+                            <span class="p3-candidate-meta">${formatP3Window(c.window)} · ${c.category} · ${c.intensity} intensity · <span class="p3-quality-tag">★ Quality ${c.quality}</span>${c.partner ? ' · <span class="p3-partner-tag">Partner pick</span>' : ''}</span>
                         </button>`).join('')}
                 </div>
             </div>`;
@@ -1882,7 +1882,7 @@ function startTrialP3(trialIndex) {
     constraintsHtml += `</ul>`;
 
     document.getElementById('docBody').innerHTML = `
-        <div class="p2-brief">Plan Day ${trialIndex} of your 4-day study-abroad trip. Pick one activity per time slot. Options tagged "Partner pick" are offered through one of our travel partners.</div>
+        <div class="p2-brief">Plan Day ${trialIndex} of your 4-day study-abroad trip. Pick one activity per time slot. Each option lists a Quality rating — some rounds require your 4 picks to add up to a minimum combined quality total (shown under "Live Constraints" when it applies). Options tagged "Partner pick" are offered through one of our travel partners.</div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
                 <span class="sc-label">Must-See Categories Covered</span>
