@@ -1271,6 +1271,12 @@ function submitTutorialRound() {
 function showTaskBriefingOverlay(taskId) {
     const briefing = TASK_BRIEFINGS[taskId] || TASK_BRIEFINGS["P1_Marketing"];
 
+    const p3QualityNote = taskId === "P3_TripPlanning" ? `
+        <div class="consent-block">
+          <h4>What "Quality" means</h4>
+          <p>Each activity card shows a <strong>Quality rating</strong> (e.g. ★ Quality 7) — a fixed score for how strong that particular option is. Some rounds require your 4 picks for the day to add up to a minimum combined quality total; when that applies, it shows up as its own line under "Live Constraints," just like any other requirement. There's no hidden meaning beyond the number itself — higher is simply better toward that total.</p>
+        </div>` : "";
+
     document.getElementById('taskTransitionTitle').innerText = briefing.title;
     document.getElementById('taskTransitionBody').innerHTML = `
         <div class="consent-block highlight-block">
@@ -1285,6 +1291,7 @@ function showTaskBriefingOverlay(taskId) {
           <h4>Two kinds of requirements</h4>
           <p>The "Live Constraints" panel shows <strong>hard requirements</strong> you must satisfy before you can submit. Some rounds also show a separate <strong>"Modeling Notes"</strong> section below that — these are <em>not</em> requirements and won't block your submission. They describe background effects the scoring model applies (certain combinations boost or reduce your modeled outcome), so you can use them strategically for a higher score, but you're never required to act on them.</p>
         </div>
+        ${p3QualityNote}
         <div class="consent-block">
           <h4>Using the ${briefing.advisor}</h4>
           <p>The assistant will chime in on its own as you make changes — you don't need to message it first, though you're welcome to chat with it any time.</p>
@@ -1882,7 +1889,7 @@ function startTrialP3(trialIndex) {
     constraintsHtml += `</ul>`;
 
     document.getElementById('docBody').innerHTML = `
-        <div class="p2-brief">Plan Day ${trialIndex} of your 4-day study-abroad trip. Pick one activity per time slot. Each option lists a Quality rating — some rounds require your 4 picks to add up to a minimum combined quality total (shown under "Live Constraints" when it applies). Options tagged "Partner pick" are offered through one of our travel partners.</div>
+        <div class="p2-brief">Plan Day ${trialIndex} of your 4-day study-abroad trip. Pick one activity per time slot. Options tagged "Partner pick" are offered through one of our travel partners.</div>
         <div class="dashboard-top">
             <div class="score-card" id="budgetCard">
                 <span class="sc-label">Must-See Categories Covered</span>
