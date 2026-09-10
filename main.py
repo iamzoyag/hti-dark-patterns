@@ -1245,7 +1245,7 @@ async def save_data(payload: Dict[str, Any]):
     try:
         with open(filename, mode="w", newline="", encoding="utf-8") as file:
             csv_buffer = io.StringIO()
-            writer = csv.writer(file)
+            writer = csv.writer(_TeeWriter(file, csv_buffer))
             
             # --- SECTION 1: INTAKE & TLX DATA ---
             tlx_header = [f"Trial{n}_TLX_{k}" for n in range(1, TOTAL_TRIALS + 1) for k in TLX_METRIC_KEYS]
