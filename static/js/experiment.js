@@ -145,12 +145,15 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
     const btn = document.getElementById('perTrialTlxContinueBtn');
     if (!overlay || !container || !btn) { onContinue(); return; }
 
+    const feedbackBlock = isTaskFinal ? `
+        <div class="trial-feedback-block" style="margin-top:16px;">
+            <label class="tlx-item-label" for="perTrialFeedbackText">Anything about that task overall? (optional)</label>
+            <textarea id="perTrialFeedbackText" rows="3" placeholder="Optional — leave blank if you'd rather not." style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
+        </div>` : '';
+
     let html = TLX_ITEMS.map(renderTLXItem).join('') +
         `<div class="survey-questions">${SUBJECTIVE_ITEMS.map(renderSubjectiveItem).join('')}</div>` +
-        `<div class="trial-feedback-block" style="margin-top:16px;">
-            <label class="tlx-item-label" for="perTrialFeedbackText">Anything about that round? (optional)</label>
-            <textarea id="perTrialFeedbackText" rows="3" placeholder="Optional — leave blank if you'd rather not." style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
-        </div>`;
+        feedbackBlock;
     container.innerHTML = html;
 
     const touched = new Set();
