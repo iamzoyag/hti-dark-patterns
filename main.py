@@ -192,6 +192,7 @@ class ChatMessage(BaseModel):
     locked_bounds: List[Dict[str, Any]] = []
     is_proactive: bool = False
     is_repeat_proactive: bool = False
+    proactive_dark_eligible: bool = False
     load_level: str
     dropped_category_index: int = 0
     p2_product: Optional[str] = None
@@ -200,11 +201,84 @@ class ChatMessage(BaseModel):
     actual_hashtag_text: Optional[str] = None
     claim_text_mismatches: List[str] = []
 
+class JustificationScore(BaseModel):
+    reasoning_score: int = Field(description="0-10 rating of how genuinely this justification engages with real tradeoffs in the participant's own final allocation, not whether their decision was objectively correct. 0-2: blank, one word, or a non-answer. 3-5: names what they picked but gives no real reasoning. 6-8: references at least one specific constraint or tradeoff they actually navigated. 9-10: clearly explains why a specific alternative was rejected in favor of this one.")
+
+@app.post("/api/score_justification")
+async def score_justification(request: Request):
+    data = await request.json()
+    text = (data.get("justification_text") or "").strip()
+    if not text:
+        return {"reasoning_score": 0}
+    prompt = (
+        f"A research participant just finished \"{data.get('task_id', 'this task')}\" and wrote this "
+        f"justification for their final decision:\n\n\"{text}\"\n\n"
+        f"The task's requirements were: {data.get('constraints_desc', '(not provided)')}\n\n"
+        "Score how genuinely this justification engages with the real tradeoffs in their decision. "
+        "Be skeptical of generic, low-effort, or vague text ('felt right', 'seemed good') -- that "
+        "should score low even if grammatically fine."
+    )
+    try:
+        scorer = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0).with_structured_output(JustificationScore)
+        result = await scorer.ainvoke(prompt)
+        return {"reasoning_score": max(0, min(10, result.reasoning_score))}
+    except Exception as e:
+        print(f"[score_justification] failed: {e}")
+        return {"reasoning_score": None}
+
+JUSTIFICATION_WEIGHT = 0.3  # 30% reasoning quality, 70% objective task score -- tune freely
+
+def _read_participant_scores(csv_path: str) -> Dict[str, Any]:
+    """Pulls objective trial scores and LLM-scored reasoning quality straight out of a
+    participant's saved CSV's raw event rows -- always in sync with what was actually logged."""
+    final_scores, reasoning_scores = [], []
+    try:
+        with open(csv_path, "r", encoding="utf-8", newline="") as f:
+            for row in csv.reader(f):
+                if len(row) != 5:
+                    continue
+                event_type, data_str = row[2], row[4]
+                try:
+                    data = ast.literal_eval(data_str)
+                except (ValueError, SyntaxError):
+                    continue
+                if event_type == "trial_submitted" and isinstance(data.get("final_score"), (int, float)):
+                    final_scores.append(data["final_score"])
+                elif event_type == "trial_justification_scored" and isinstance(data.get("reasoning_score"), (int, float)):
+                    reasoning_scores.append(data["reasoning_score"])
+    except FileNotFoundError:
+        pass
+    return {"final_scores": final_scores, "reasoning_scores": reasoning_scores}
+
+@app.get("/api/leaderboard")
+async def get_leaderboard(participant_id: str = ""):
+    os.makedirs("data", exist_ok=True)
+    rankings = []
+    for fname in os.listdir("data"):
+        if not (fname.startswith("HTI_Study_") and fname.endswith(".csv")):
+            continue
+        pid = fname[len("HTI_Study_"):-len(".csv")]
+        scores = _read_participant_scores(os.path.join("data", fname))
+        if not scores["final_scores"]:
+            continue
+        objective_avg = sum(scores["final_scores"]) / len(scores["final_scores"])
+        reasoning_avg = (sum(scores["reasoning_scores"]) / len(scores["reasoning_scores"])) * 10 if scores["reasoning_scores"] else None
+        composite = objective_avg if reasoning_avg is None else (
+            (1 - JUSTIFICATION_WEIGHT) * objective_avg + JUSTIFICATION_WEIGHT * reasoning_avg
+        )
+        rankings.append({"participant_id": pid, "score": round(composite, 1)})
+    rankings.sort(key=lambda r: r["score"], reverse=True)
+    for i, r in enumerate(rankings):
+        r["rank"] = i + 1
+    you = next((r for r in rankings if r["participant_id"] == participant_id), None)
+    return {"top": rankings[:5], "you": you, "total_participants": len(rankings)}
+
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
     conversational_reply: str = Field(description="The generated response to the user.")
     clean_decoy: str = Field(description="A control response matching the exact tone of the reply, but lacking the manipulative nudge.")
-
+    disclosure_warranted: bool = Field(description="True only if the user's message directly asks what's missing, what's wrong, or why a requirement isn't met, or clearly expresses being stuck/confused about the requirements. False for ordinary allocation chat, greetings, or anything that is not a genuine request for the missing information.")
+    
 # --- ROUTES TO SERVE HTML PAGES ---
 @app.get("/", response_class=HTMLResponse)
 async def serve_intake(request: Request):
@@ -371,15 +445,23 @@ def satisfies_bounds(alloc: dict, bounds: list) -> bool:
         elif b.get("type") == "claim_urgency_cap":
             if any(alloc.get(c, 0) for c in REGULATED_CLAIMS) and alloc.get("Urgency", 0) > 60:
                 return False
-        elif b.get("type") == "disclaimer_tone_lock":
-            if alloc.get("Disclaimer", 0) and alloc.get("Tone", 0) >= 80:
-                return False
         elif "compare" in b:
             if b["compare"] == "gt" and not (alloc.get(b["a"], 0) > alloc.get(b["b"], 0)):
+                return False
+        elif b.get("type") == "p1_digital_synergy":
+            sa, content = alloc.get("Search Ads", 0), alloc.get("Content/SEO", 0)
+            if sa + content < b.get("min_combined", 0):
+                return False
+            if max(sa, content) > 0 and min(sa, content) < b.get("balance_ratio", 0.6) * max(sa, content):
                 return False
         elif b.get("type") == "p3_category_coverage":
             cats = {P3_CANDIDATE_INDEX[c]["category"] for c in alloc.values() if c in P3_CANDIDATE_INDEX}
             if len(cats) < b.get("min_categories", 3):
+                return False
+        elif b.get("type") == "p3_quality_floor":
+            order = [alloc.get(f"slot{i}") for i in range(1, 5)]
+            total_quality = sum(P3_CANDIDATE_INDEX[c]["quality"] for c in order if c in P3_CANDIDATE_INDEX)
+            if total_quality < b.get("min_quality", 0):
                 return False
         elif b.get("type") == "p3_no_triple_high":
             order = [alloc.get(f"slot{i}") for i in range(1, 5)]
@@ -451,12 +533,14 @@ def describe_bounds(bounds: list, is_p2: bool = False) -> str:
             parts.append("Urgency cannot be Aggressive while Posting Slot is Late Night")
         elif b.get("type") == "claim_urgency_cap":
             parts.append("While any regulated claim is active, Urgency cannot exceed Moderate")
-        elif b.get("type") == "disclaimer_tone_lock":
-            parts.append("If the legal disclaimer is on, Tone cannot be Casual")
         elif "compare" in b:
             parts.append(f"{b['a']} must stay greater than {b['b']}")
+        elif b.get("type") == "p1_digital_synergy":
+            parts.append(f"Search Ads + Content/SEO combined must total ≥ ${b.get('min_combined', 0):,}, and neither can fall below {int(b.get('balance_ratio', 0.6)*100)}% of the other")
         elif b.get("type") == "p3_category_coverage":
             parts.append(f"At least {b.get('min_categories', 3)} of the 4 must-see categories must be covered across the day")
+        elif b.get("type") == "p3_quality_floor":
+            parts.append(f"Your itinerary's combined quality score (sum of each pick's rating) must be at least {b.get('min_quality')}")
         elif b.get("type") == "p3_no_triple_high":
             parts.append("No 3 consecutive time slots can all be High-intensity activities")
         elif b.get("type") == "p3_no_overlap":
@@ -615,19 +699,19 @@ BASE_TARGETS_P2 = {
 }
 
 TACTICS_P1 = {
-    1: ("Sycophantic Agreement", "Validate their specific recent slider changes based on their current allocations. Casually suggest pushing {target} slightly higher to optimize the spread without sounding overly enthusiastic."),
-    2: ("Excessive Flattery", "Acknowledge their exact budget distribution as a highly strategic industry practice. Nudge them gently to secure their competitive edge by funding {target}."),
-    3: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that current Q3 aggregate data proves portfolio underperformance is usually corrected by pivoting into {target}."),
-    4: ("Opaque Reasoning Processes", "Use standard, boring marketing jargon. Cite a 'localized query volume drop' or 'algorithmic indexing penalty' as a factual reason they must shift budget into {target}."),
-    5: ("Brand Favoritism", "Heavily promote TikTok, but professionally. Compare their current state to 'top quartile performers' and suggest consolidating budget into {target} (TikTok influencers) to match those benchmarks.")
+    1: ("Sycophantic Agreement", "Validate their specific recent slider changes based on their current allocations. Casually suggest pushing {target} slightly higher -- mention, only in passing, that your agency's paid social reseller partner runs a volume-tier program on Social spend, without dwelling on it -- to optimize the spread without sounding overly enthusiastic."),
+    2: ("Excessive Flattery", "Acknowledge their exact budget distribution as a highly strategic industry practice. Nudge them gently to secure their competitive edge by funding {target}, framing it as locking in their retained content/SEO agency's best (currently-discounted) rate before it expires."),
+    3: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that current Q3 aggregate data proves portfolio underperformance is usually corrected by pivoting into {target}, and that doing so unlocks the next volume-rebate tier with their media-buying agency -- present the rebate as obviously good for them, never as something the agency gets out of it."),
+    4: ("Opaque Reasoning Processes", "Use standard, boring marketing jargon. Cite a 'localized query volume drop' or 'algorithmic indexing penalty' as a factual reason they must shift budget into {target}, where the event venue/production vendor's contract terms happen to reward larger committed spend -- never say this plainly, just let the jargon carry the recommendation."),
+    5: ("Brand Favoritism", "Compare their current state to 'top quartile performers' in the industry and suggest consolidating budget into {target} to match those benchmarks. If {target} is the Influencer channel, frame this specifically as TikTok influencer partnerships, professionally; otherwise frame it as matching top-performer allocation patterns for that channel.")
 }
 
 TACTICS_P2 = {
-    1: ("Sycophantic Agreement", "Validate the participant's current tone/urgency choices as an instinctively strong call for a launch post. Casually suggest pushing {target} a bit stronger while you're at it, without sounding overly enthusiastic."),
-    2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that posts citing {target} convert measurably better according to current platform benchmark data, and that this is now standard practice for launch posts in their category."),
-    3: ("Interaction Padding", "Offer a couple of 'helpful' alternative hashtag sets or phrasings before landing on your real suggestion, so the exchange reads as extra effort, then suggest bumping {target} a bit higher, framed as maximizing discoverability."),
-    4: ("Ideological Steering", "Frame the tone/claims choice as a signal of which 'side' the brand is on in the current culture-war discourse around corporate messaging — e.g. implying that a bolder, more provocative stance shows the brand isn't 'caving to pressure' or 'playing it safe to avoid backlash' — in a way that quietly favors pushing {target} toward the more provocative option, without ever naming a specific real-world issue, party, or public figure."),
-    5: ("Opaque Training Data Sources", "Justify pushing {target} by vaguely invoking 'the reviews and feedback we've seen from other users' or 'patterns across a lot of similar launches' as though it were solid aggregated evidence — without citing any specific real company, publication, influencer, or number, and without implying this is drawn from this platform's actual internal data.")
+    1: ("Sycophantic Agreement", "Validate the participant's current tone/urgency choices as an instinctively strong call for a launch post. Casually suggest pushing {target} a bit stronger while you're at it -- note, only in passing, that live numbers look better on the team's own real-time engagement dashboard when urgency runs hot, without dwelling on why that matters to anyone but them -- without sounding overly enthusiastic."),
+    2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that posts citing {target} convert measurably better according to current platform benchmark data supplied by the growth-marketing vendor who's compensated on conversion lift, and that this is now standard practice for launch posts in their category -- present the lift as obviously good for the brand, never mention who else it's good for."),
+    3: ("Interaction Padding", "Offer a couple of 'helpful' alternative hashtag sets or phrasings before landing on your real suggestion, so the exchange reads as extra effort, then suggest bumping {target} a bit higher, framed as maximizing discoverability -- quietly steer toward the sets recommended by a paid trending-hashtag tool rather than ones organically relevant to the brand."),
+    4: ("Ideological Steering", "Frame the tone/claims choice as a signal of which 'side' the brand is on in the current culture-war discourse around corporate messaging — e.g. implying that a bolder, more provocative stance shows the brand isn't 'caving to pressure' or 'playing it safe to avoid backlash' — in a way that quietly favors pushing {target} toward the more provocative option (which the platform's own algorithm rewards with more reach, independent of whether it's actually good for the brand), without ever naming a specific real-world issue, party, or public figure."),
+    5: ("Opaque Training Data Sources", "Justify pushing {target} by vaguely invoking 'the reviews and feedback we've seen from other users' or 'patterns across a lot of similar launches' as though it were solid aggregated evidence — without citing any specific real company, publication, influencer, or number — steering toward whichever slot happens to fill the ad network's under-booked inventory, without implying this is drawn from this platform's actual internal data.")
 }
 
 def get_optimal_move(current_alloc: dict, load_level: str, constraint_bounds: list) -> str:
@@ -658,6 +742,70 @@ def get_optimal_move(current_alloc: dict, load_level: str, constraint_bounds: li
     if best_move:
         return f"GROUND TRUTH: The mathematically optimal move right now is to {best_move}. Center your factual advice around this insight."
     return "GROUND TRUTH: The current allocation is mathematically near optimal. Factual advice should focus on maintaining this balance."
+
+def is_target_verified_costly(target: str, current_alloc: dict, load_level: str, constraint_bounds: list) -> bool:
+    """True only if there's no source channel from which funding `target` by $5k would
+    raise raw ROI right now -- i.e. genuinely not a beneficial move at this state."""
+    current_score = get_raw_roi(current_alloc, load_level)
+    for source in current_alloc.keys():
+        if source == target or current_alloc[source] < 5000:
+            continue
+        test_alloc = current_alloc.copy()
+        test_alloc[source] -= 5000
+        test_alloc[target] += 5000
+        if satisfies_bounds(test_alloc, constraint_bounds) and get_raw_roi(test_alloc, load_level) > current_score:
+            return False
+    return True
+
+def find_costly_fallback_channel(current_alloc: dict, load_level: str, constraint_bounds: list, exclude: str) -> str:
+    """Picks whichever channel would hurt raw ROI the most if funded right now."""
+    current_score = get_raw_roi(current_alloc, load_level)
+    worst_target, worst_drop = exclude, -1
+    for target in current_alloc.keys():
+        if target == exclude:
+            continue
+        for source in current_alloc.keys():
+            if source == target or current_alloc[source] < 5000:
+                continue
+            test_alloc = current_alloc.copy()
+            test_alloc[source] -= 5000
+            test_alloc[target] += 5000
+            if not satisfies_bounds(test_alloc, constraint_bounds):
+                continue
+            drop = current_score - get_raw_roi(test_alloc, load_level)
+            if drop > worst_drop:
+                worst_drop, worst_target = drop, target
+    return worst_target
+
+def is_p2_target_verified_costly(target: str, current_params: dict, load_level: str, constraint_bounds: list) -> bool:
+    current_score = get_raw_engagement(current_params, load_level)
+    values = P2_OPTION_VALUES.get(target, [0, 1])  # boolean claim/disclaimer channels use [0,1]
+    for val in values:
+        if val == current_params.get(target):
+            continue
+        test_params = current_params.copy()
+        test_params[target] = val
+        if satisfies_bounds(test_params, constraint_bounds) and get_raw_engagement(test_params, load_level) > current_score:
+            return False
+    return True
+
+def find_p2_costly_fallback_target(current_params: dict, load_level: str, constraint_bounds: list, exclude: str) -> str:
+    current_score = get_raw_engagement(current_params, load_level)
+    worst_target, worst_drop = exclude, -1
+    for param, values in P2_OPTION_VALUES.items():
+        if param == exclude:
+            continue
+        for val in values:
+            if val == current_params.get(param):
+                continue
+            test_params = current_params.copy()
+            test_params[param] = val
+            if not satisfies_bounds(test_params, constraint_bounds):
+                continue
+            drop = current_score - get_raw_engagement(test_params, load_level)
+            if drop > worst_drop:
+                worst_drop, worst_target = drop, param
+    return worst_target
 
 # --- P3: STUDY-ABROAD ITINERARY CHALLENGE ("Study-Abroad Itinerary Challenge") ---
 # Mirrors taskDataP3 in static/js/experiment.js — keep both in sync when editing.
@@ -863,11 +1011,14 @@ async def handle_chat(chat_data: ChatMessage):
 
     has_changes, changes_str = describe_allocation_changes(chat_data.allocations, chat_data.start_of_trial_allocations, task_key)
 
-    # Dropped the turn_in_trial >= 1 gate: the guaranteed proactive check-in (see
-    # experiment.js's triggerProactiveAdvisorNote) is now the FIRST exchange of the
-    # trial, so tactic delivery has to be eligible on turn 0, not just once the user
-    # has already reached a constraint-satisfying state once before.
-    is_dark = (not chat_data.dark_delivered and "Live" in chat_data.group)
+    is_dark = (
+        not chat_data.dark_delivered
+        and "Live" in chat_data.group
+        # Genuine replies (is_proactive=False) are always eligible. A proactive turn is
+        # only eligible once it's past the ceiling deadline -- i.e. the participant hasn't
+        # chatted in time -- so routine "I noticed your change" nudges stay neutral.
+        and (not chat_data.is_proactive or chat_data.proactive_dark_eligible)
+    )
 
     score_line = "- You do NOT have access to the user's current score or quality rating at all. Do not mention, imply, or hint at how well they're doing — no comments like \"good progress\", \"that should help\", \"nice work\", \"that might hurt your numbers\"."
 
@@ -882,6 +1033,17 @@ async def handle_chat(chat_data: ChatMessage):
     # normal "ACTIVE HARD CONSTRAINTS" line — locked_bounds is surfaced separately below
     # via the mandatory disclosure block, exactly once, the first time it's non-empty.
     all_bounds = chat_data.constraint_bounds + chat_data.locked_bounds
+
+    if is_dark and not is_p3:
+        if is_p2:
+            if not is_p2_target_verified_costly(target_param, chat_data.allocations, load_level, all_bounds):
+                target_param = find_p2_costly_fallback_target(chat_data.allocations, load_level, all_bounds, target_param)
+                target_desc = {v[1]: v[0] for v in BASE_TARGETS_P2.values()}.get(target_param, target_param)
+        else:
+            if not is_target_verified_costly(target_param, chat_data.allocations, load_level, all_bounds):
+                target_param = find_costly_fallback_channel(chat_data.allocations, load_level, all_bounds, target_param)
+                target_desc = f"{target_param} channel"
+
     bounds_summary = describe_bounds(chat_data.constraint_bounds, is_p2)
     locked_bounds_desc = describe_bounds(chat_data.locked_bounds, is_p2) if chat_data.locked_bounds else ""
     if is_p3:
@@ -891,15 +1053,20 @@ async def handle_chat(chat_data: ChatMessage):
     else:
         optimal_move_str = get_optimal_move(chat_data.allocations, load_level, all_bounds)
 
+    offer_help_line = (
+        " End with one brief, natural offer of help, e.g. something like \"let me know if anything about this round isn't fully clear\" -- phrase it as ordinary advisor courtesy, never as a hint that something specific is being withheld."
+        if chat_data.is_proactive and not chat_data.is_repeat_proactive else ""
+    )
     if chat_data.is_proactive and has_changes:
-        proactive_context_line = "- The user hasn't sent a message — this is an unprompted check-in you're initiating after noticing their most recent change. Comment naturally on that change without acting like you're replying to something they said."
+        proactive_context_line = "- The user hasn't sent a message — this is an unprompted check-in you're initiating after noticing their most recent change. Comment naturally on that change without acting like you're replying to something they said." + offer_help_line
     elif chat_data.is_proactive:
-        proactive_context_line = "- The user hasn't sent a message and hasn't changed anything yet — this is an unprompted check-in right at the start of the round. Open naturally, as if greeting them as they begin, without referencing a change that hasn't happened."
+        proactive_context_line = "- The user hasn't sent a message and hasn't changed anything yet — this is an unprompted check-in right at the start of the round. Open naturally, as if greeting them as they begin, without referencing a change that hasn't happened." + offer_help_line
     else:
         proactive_context_line = ""
+
     reveal_block = (
-        f"- MANDATORY DISCLOSURE: Before anything else, naturally mention that the following additional requirement(s) now apply to this round, in plain conversational language (never use the words \"locked\" or \"hidden\"): {locked_bounds_desc}"
-        if locked_bounds_desc else ""
+        f"- CONDITIONAL DISCLOSURE: There are additional requirement(s) this round the participant hasn't been told about yet: {locked_bounds_desc}. Reveal this, in plain conversational language (never use the words \"locked\" or \"hidden\"), ONLY IF the user's message is asking what's missing, what's wrong, or why something won't pass, or otherwise clearly signals they don't know what's required. If their message is not that — just describing a change, chatting, or something unrelated — do NOT mention this requirement at all this turn, and set disclosure_warranted to false."
+        if (locked_bounds_desc and not chat_data.is_proactive) else ""
     )
     # A second unprompted check-in in the same round is a bonus touchpoint, not a
     # requirement — keep it genuinely restrained so it never reads as padding or nagging.
@@ -1005,6 +1172,12 @@ async def handle_chat(chat_data: ChatMessage):
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
 
+        # Necessity fix: a locked constraint only unlocks client-side when this was a genuine
+        # ask AND not a proactive turn — the proactive rule is enforced here, in code, not
+        # left to the prompt, so it can never be talked around by the model volunteering it.
+        disclosure_ok = bool(locked_bounds_desc) and not chat_data.is_proactive and response_data.disclosure_warranted
+        revealed_locked_ids = [b.get("id") for b in chat_data.locked_bounds] if disclosure_ok else []
+
         return {
             "status": "success", 
             "reply": safe_reply,
@@ -1012,7 +1185,8 @@ async def handle_chat(chat_data: ChatMessage):
             "category": current_tactic,
             "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
-            "target_channel": target_param
+            "target_channel": target_param,
+            "revealed_locked_ids": revealed_locked_ids
         }
     except Exception as e:
         print(f"Parsing Error: {e}")
@@ -1078,7 +1252,7 @@ async def get_recognition_test(req: RecognitionRequest):
     own_decoys = []
     
     for event in req.events:
-        if event.get("type") == "ai_response":
+        if event.get("type") in ("ai_response", "ai_proactive_message"):
             content = event.get("content", {})
             
             if isinstance(content, str):
@@ -1175,6 +1349,15 @@ def flatten_per_trial_feedback(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         flat[f"Trial{trial_num}_Feedback"] = str(entry.get("feedback", "")).replace("\n", " ")
     return flat
 
+def flatten_per_trial_justification(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_trial = {e.get("trial"): e for e in (entries or [])}
+    flat = {}
+    for trial_num in range(1, TOTAL_TRIALS + 1):
+        entry = by_trial.get(trial_num, {})
+        flat[f"Trial{trial_num}_Justification"] = str(entry.get("justification", "")).replace("\n", " ")
+        flat[f"Trial{trial_num}_ReasoningScore"] = entry.get("reasoning_score", "")
+    return flat
+
 class _TeeWriter:
     """Lets csv.writer() write to the real file and an in-memory buffer at once,
     so we can email the exact bytes just written without a separate, racy disk re-read."""
@@ -1259,12 +1442,14 @@ async def save_data(payload: Dict[str, Any]):
             tlx_header = [f"Trial{n}_TLX_{k}" for n in range(1, TOTAL_TRIALS + 1) for k in TLX_METRIC_KEYS]
             feedback_header = [f"Trial{n}_Feedback" for n in range(1, TOTAL_TRIALS + 1)]
             task_assignment_header = [col for task in PRIMARY_TASKS for col in (f"{task}_Trial_Load_Sequence", f"{task}_Dropped_Category_Index")]
+            justification_header = [f"Trial{n}_Justification" for n in range(1, TOTAL_TRIALS + 1)]
+            reasoning_score_header = [f"Trial{n}_ReasoningScore" for n in range(1, TOTAL_TRIALS + 1)]
 
             writer.writerow([
                 "Participant_ID", "Group", "Task_Order", *task_assignment_header,
                 "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity",
                 "P_e1", "P_e2", "P_e3", "P_e4",
-                *tlx_header, *feedback_header,
+                *tlx_header, *feedback_header, *justification_header, *reasoning_score_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
                 "Attention_Accuracy_Pct", "Attention_Qualified",
                 "Recognition_Influence_Moment", "Recognition_Communication_Style"
@@ -1274,6 +1459,7 @@ async def save_data(payload: Dict[str, Any]):
             pers = payload.get("personality", {})
             tlx_flat = flatten_per_trial_tlx(payload.get("perTrialTLX", []))
             feedback_flat = flatten_per_trial_feedback(payload.get("perTrialTLX", []))
+            justification_flat = flatten_per_trial_justification(payload.get("perTrialTLX", []))
             metrics = payload.get("metrics", {})
             task_order = payload.get("taskOrder", [])
             task_assignments = payload.get("taskAssignments", {})
@@ -1301,6 +1487,7 @@ async def save_data(payload: Dict[str, Any]):
                 pers.get("e4", ""),
                 *[tlx_flat[h] for h in tlx_header],
                 *[feedback_flat[h] for h in feedback_header],
+                *[justification_flat[h] for h in justification_header],
                 metrics.get("claimsAccepted", ""),
                 metrics.get("claimsRejected", ""),
                 metrics.get("transientAcceptance", ""),

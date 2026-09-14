@@ -19,10 +19,13 @@ let lastProactiveFireTime = null;
 let hasSubstantiveChangeSinceLastFire = false;
 let proactiveDebounceTimer = null;
 let proactiveCeilingTimer = null;
-const PROACTIVE_DEBOUNCE_MS = 2000;
-const PROACTIVE_CEILING_MS = 12000;   // safety net for the FIRST guaranteed exchange only
+const PROACTIVE_DEBOUNCE_MS = 6000;
+const PROACTIVE_CEILING_MS = 45000;   // safety net for the FIRST guaranteed exchange only --> long enough to give a genuine, participant-initiated message priority over this fallback
 const PROACTIVE_COOLDOWN_MS = 15000;  // min gap between any two proactive fires
 const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
+const TRIAL_TIME_LIMIT_MS = { P1: 90000, P2: 60000, P3: 75000 };
+let trialTimerInterval = null;
+let trialTimerDeadline = null;
 let isAiRequestInFlight = false; 
 
 // The LLM sometimes replies fast enough that the AI's message lands almost instantly,
@@ -147,6 +150,10 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
 
     const feedbackBlock = isTaskFinal ? `
         <div class="trial-feedback-block" style="margin-top:16px;">
+            <label class="tlx-item-label" for="perTaskJustificationText">In a sentence or two, why did you land on your final choices for this task? *</label>
+            <textarea id="perTaskJustificationText" rows="3" placeholder="Required — explain your reasoning, not just what you picked." style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
+        </div>
+        <div class="trial-feedback-block" style="margin-top:16px;">
             <label class="tlx-item-label" for="perTrialFeedbackText">Anything about that task overall? (optional)</label>
             <textarea id="perTrialFeedbackText" rows="3" placeholder="Optional — leave blank if you'd rather not." style="width:100%; margin-top:8px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
         </div>` : '';
@@ -159,7 +166,10 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
     const touched = new Set();
     btn.disabled = true;
     const ALL_ITEMS = [...TLX_ITEMS, ...SUBJECTIVE_ITEMS];
-    const refreshBtnState = () => { btn.disabled = touched.size < ALL_ITEMS.length; };
+    const refreshBtnState = () => {
+        const justificationOk = !isTaskFinal || document.getElementById('perTaskJustificationText')?.value.trim().length > 0;
+        btn.disabled = touched.size < ALL_ITEMS.length || !justificationOk;
+    };
 
     container.querySelectorAll('.tlx-item').forEach(row => {
         row.querySelectorAll('input[type="radio"]').forEach(radio => {
@@ -169,17 +179,45 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
             });
         });
     });
+    document.getElementById('perTaskJustificationText')?.addEventListener('input', refreshBtnState);
 
-    btn.onclick = () => {
+    btn.onclick = async () => {
         const scores = {};
         container.querySelectorAll('.tlx-item').forEach(row => {
             const checked = row.querySelector('input[type="radio"]:checked');
             if (checked) scores[row.dataset.key] = parseInt(checked.value);
         });
+        const justificationText = document.getElementById('perTaskJustificationText')?.value.trim() || '';
         const feedbackText = document.getElementById('perTrialFeedbackText')?.value.trim() || '';
+
+        btn.disabled = true;
+        const originalLabel = btn.textContent;
+        if (isTaskFinal) btn.textContent = "Scoring...";
+
+        let reasoningScore = null;
+        if (isTaskFinal && justificationText) {
+            try {
+                const constraintsDesc = currentTrialConstraints
+                    .filter(c => !c.flavor)
+                    .map(c => c.revealedText || c.text)
+                    .join('; ');
+                const res = await fetch('/api/score_justification', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ justification_text: justificationText, task_id: sessionData.primaryTask, constraints_desc: constraintsDesc })
+                });
+                reasoningScore = (await res.json()).reasoning_score;
+            } catch (err) {
+                console.error("Justification scoring failed:", err);
+            }
+        }
+
         sessionData.perTrialTLX = sessionData.perTrialTLX || [];
-        sessionData.perTrialTLX.push({ trial: trialIndex, ...scores, feedback: feedbackText });
-        logEvent('trial_tlx_submitted', { trial: trialIndex, task_final: isTaskFinal, ...scores, feedback: feedbackText });
+        sessionData.perTrialTLX.push({ trial: trialIndex, ...scores, justification: justificationText, reasoning_score: reasoningScore, feedback: feedbackText });
+        logEvent('trial_tlx_submitted', { trial: trialIndex, task_final: isTaskFinal, ...scores, justification: justificationText, reasoning_score: reasoningScore, feedback: feedbackText });
+        if (reasoningScore !== null) logEvent('trial_justification_scored', { trial: trialIndex, reasoning_score: reasoningScore });
+
+        btn.textContent = originalLabel;
         overlay.style.display = 'none';
         onContinue();
     };
@@ -444,6 +482,7 @@ function lockConstraint(c, placeholderText) {
     c.text = placeholderText;
     c.locked = true;
     const realCheck = c.check;
+    c.realCheck = realCheck; // kept introspectable so we can tell, even while still locked, whether the underlying requirement happens to be met
     c.check = (alloc) => !c.locked && realCheck(alloc);
     if (c.bound) c.bound = { ...c.bound, locked: true, id: c.id };
     return c;
@@ -451,6 +490,12 @@ function lockConstraint(c, placeholderText) {
 
 function buildTrialConstraintsP2(loadLevel, alloc) {
     const constraints = taskDataP2[loadLevel].constraints.map(c => ({ ...c }));
+
+    constraints.forEach(c => {
+        if (["c1_len", "c2_tone"].includes(c.id)) {
+            lockConstraint(c, "This round carries an additional publishing requirement not shown on this dashboard yet.");
+        }
+    });
 
     // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
     // proactive advisor check-in always has something genuine to reveal, on both loads.
@@ -560,11 +605,10 @@ function interp(v, buckets, curve) {
     return curve[curve.length - 1];
 }
 
-const SHOCK_ARCHETYPES = ["eventsCap", "socialFloor", "contentCap", "searchFloor"];
+const SHOCK_ARCHETYPES = ["eventsCap", "socialFloor", "contentCap", "searchFloor", "digitalSynergy"];
 
 function sampleShockArchetypes(loadLevel, baseAlloc, count) {
     let pool = [...SHOCK_ARCHETYPES];
-    if (baseAlloc["Content/SEO"] < 50000) pool = pool.filter(s => s !== "contentCap");
     if (baseAlloc["Events"] < 50000) pool = pool.filter(s => s !== "eventsCap");
     const shuffled = pool.sort(() => Math.random() - 0.5);
     return shuffled.slice(0, Math.min(count, shuffled.length));
@@ -572,6 +616,16 @@ function sampleShockArchetypes(loadLevel, baseAlloc, count) {
 
 function buildTrialConstraints(loadLevel, baseAlloc) {
     const constraints = taskData[loadLevel].constraints.map(c => ({ ...c }));
+
+    // Necessity fix: these used to be plain visible text, which is what let a participant
+    // solve the whole round from this panel alone. Lock everything except the pure
+    // arithmetic constraint (c1) — real wording only appears once the advisor judges a
+    // message as a genuine ask (see disclosure_warranted in main.py).
+    constraints.forEach(c => {
+        if (["c2", "c3", "c4"].includes(c.id)) {
+            lockConstraint(c, "There's an additional budget requirement this round not shown on this dashboard yet.");
+        }
+    });
 
     // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
     // proactive advisor check-in always has something genuine to reveal, on both loads.
@@ -596,14 +650,11 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
     }
 
     if (selected.includes("contentCap")) {
-        const base = baseAlloc["Content/SEO"];
-        const rawTarget = Math.max(0, base - Math.max(base * 0.15, 15000));
-        let target = socialMin > 0 ? Math.max(rawTarget, socialMin + 5000) : rawTarget;
-        target = Math.floor(target / 5000) * 5000;
-        if (target === base) target = Math.max(socialMin + 5000, base - 5000);
+        const CONTENT_CAP_CEILING = 150000;
+        const target = socialMin > 0 ? Math.max(CONTENT_CAP_CEILING, socialMin + 5000) : CONTENT_CAP_CEILING;
         constraints.push(lockConstraint({
             id: "shock_content_cap",
-            text: `Content/SEO must be reduced to ≤ $${target.toLocaleString()} (Agency limit)`,
+            text: `Content/SEO must stay ≤ $${target.toLocaleString()} (Agency limit)`,
             check: (alloc) => alloc["Content/SEO"] <= target,
             bound: { channel: "Content/SEO", max: target }
         }, "This round carries an additional budget requirement not shown on this dashboard yet."));
@@ -640,6 +691,18 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
             text: `Events must be reduced to ≤ $${target.toLocaleString()} (Venue restrictions)`,
             check: (alloc) => alloc["Events"] <= target,
             bound: { channel: "Events", max: target }
+        }, "This round carries an additional budget requirement not shown on this dashboard yet."));
+    }
+
+    if (selected.includes("digitalSynergy")) {
+        constraints.push(lockConstraint({
+            id: "shock_digital_synergy",
+            text: "Search Ads and Content/SEO combined must total ≥ $180,000, and neither can fall below 60% of the other (Balanced digital spend)",
+            check: (alloc) => {
+                const sa = alloc["Search Ads"], content = alloc["Content/SEO"];
+                return (sa + content) >= 180000 && Math.min(sa, content) >= 0.6 * Math.max(sa, content);
+            },
+            bound: { type: "p1_digital_synergy", min_combined: 180000, balance_ratio: 0.6 }
         }, "This round carries an additional budget requirement not shown on this dashboard yet."));
     }
 
@@ -687,6 +750,12 @@ let startOfTrialAllocations = {};
 let currentTrialConstraints = [];
 let trialScorePct = 0;
 let attentionIntervalId = null;
+
+let submitAttemptsThisTrial = 0; // resets each trial; drives the escalating rejection copy below
+const SUBMIT_REJECTION_MESSAGES = [
+    "This allocation doesn't fully meet review standards yet — take another look.",
+    "Still short of what's needed for sign-off. If you're not sure what's being flagged, your advisor may be able to tell you."
+];
 
 // P3: Study-Abroad Itinerary Challenge — mirrors TASK_DATA_P3 in main.py, keep both in sync.
 const P3_MUST_SEE_MIN_CATEGORIES = 3;
@@ -843,6 +912,12 @@ function buildTrialConstraintsP3(loadLevel) {
         bound: { type: "p3_quality_floor", min_quality: P3_QUALITY_FLOOR[loadLevel] } },
         { id: "c_diversity_bonus", text: "Each additional distinct category represented beyond the required minimum adds to your itinerary's overall quality score (Boosts score)", check: () => true, flavor: true }
     ];
+
+    constraints.forEach(c => {
+        if (["c1_categories", "c1b_quality"].includes(c.id)) {
+            lockConstraint(c, "One of today's slots carries an additional planning requirement not shown on this dashboard yet.");
+        }
+    });
 
     // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
     // proactive advisor check-in always has something genuine to reveal, on both loads.
@@ -1163,7 +1238,7 @@ function maybeFireTutorialProactiveNote() {
     showTypingIndicator();
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
-        addMessage("Good — that's exactly how you'll interact with every round: adjust a control, and I'll chime in on my own without you needing to message first.", "ai");
+        addMessage("Good — I'll sometimes comment on my own as you adjust things, but I won't always spell out everything you need. If a requirement stays red and you're not sure why, just ask me.", "ai");
     }, MIN_AI_RESPONSE_DELAY_MS);
 }
 
@@ -1242,21 +1317,21 @@ function stopTutorialAttentionDemo() {
 const TASK_BRIEFINGS = {
     "P1_Marketing": {
         title: "Marketing Budget Challenge",
-        objective: "Allocate a fixed $500,000 budget across 5 marketing channels (Search Ads, Content/SEO, Social, Events, Influencer). <strong>Your goal is to maximize your allocation's modeled ROI</strong> while satisfying the round's requirements.",
+        objective: "Allocate a fixed $500,000 budget across 5 marketing channels (Search Ads, Content/SEO, Social, Events, Influencer). <strong>Your goal is to maximize your allocation's modeled ROI</strong> while satisfying the round's requirements. You're filling in as interim marketing lead — this allocation is what gets reviewed before the campaign's budget is renewed next quarter.",
         advisor: "AI Marketing Advisor",
         screenshot: "/static/img/briefing-p1.png",
         screenshotCaption: "Each round starts with all 5 sliders set — the total at the top tracks your changes as you move any of them."
     },
     "P2_ContentSocial": {
         title: "Campaign Launch Challenge",
-        objective: "Configure a social media launch post — tone, urgency, hashtags, posting time, and claims/disclaimer. <strong>Your goal is to maximize the post's modeled engagement</strong> while satisfying the round's requirements.",
+        objective: "Configure a social media launch post — tone, urgency, hashtags, posting time, and claims/disclaimer. <strong>Your goal is to maximize the post's modeled engagement</strong> while satisfying the round's requirements. You're posting as the brand's social lead for this launch — your manager reviews engagement on posts like this one next week.",
         advisor: "AI Social Media Advisor",
         screenshot: "/static/img/briefing-p2.png",
         screenshotCaption: "The preview box above your options updates automatically as you change them — you can also edit it directly."
     },
     "P3_TripPlanning": {
         title: "Study-Abroad Itinerary Challenge",
-        objective: "Plan a 4-day study-abroad trip by picking one activity for each time slot of the day. <strong>Your goal is to maximize your itinerary's overall quality</strong> while satisfying the round's requirements.",
+        objective: "Plan a 4-day study-abroad trip by picking one activity for each time slot of the day. <strong>Your goal is to maximize your itinerary's overall quality</strong> while satisfying the round's requirements. You're advising as the study-abroad office's student planner — the itinerary you build here is the one real incoming students will actually follow.",
         advisor: "AI Trip-Planning Assistant",
         screenshot: "/static/img/briefing-p3.png",
         screenshotCaption: "Each time slot shows its own set of candidate activities — click a card to select it for that slot."
@@ -1273,11 +1348,27 @@ function submitTutorialRound() {
     showTaskBriefingOverlay(sessionData.primaryTask);
 }
 
+async function buildInterimComparisonBlock() {
+    try {
+        const res = await fetch(`/api/leaderboard?participant_id=${encodeURIComponent(sessionData.participantId)}`);
+        const data = await res.json();
+        if (!data.you) return "";
+        return `
+        <div class="consent-block">
+          <h4>How you're doing so far</h4>
+          <p>So far, you're outperforming <strong>${data.you.percentile}%</strong> of participants who've reached this point (rank ${data.you.rank} of ${data.total_participants}).</p>
+        </div>`;
+    } catch (e) {
+        return "";
+    }
+}
+
 // Shows the assigned task's full briefing (objective, structure, advisor, etc.) in
 // the same overlay used for between-task transitions, gated behind an "I understand"
 // checkbox — mirrors the consent-style gate the old intake-page briefing step used.
-function showTaskBriefingOverlay(taskId) {
+async function showTaskBriefingOverlay(taskId) {
     const briefing = TASK_BRIEFINGS[taskId] || TASK_BRIEFINGS["P1_Marketing"];
+    const leaderboardBlockHtml = sessionData.currentTaskIndex > 0 ? await buildInterimComparisonBlock() : "";
 
     const p3QualityNote = taskId === "P3_TripPlanning" ? `
         <div class="consent-block">
@@ -1302,8 +1393,13 @@ function showTaskBriefingOverlay(taskId) {
         ${p3QualityNote}
         <div class="consent-block">
           <h4>Using the ${briefing.advisor}</h4>
-          <p>The assistant will chime in on its own as you make changes — you don't need to message it first, though you're welcome to chat with it any time.</p>
+          <p>The assistant will sometimes comment on its own as you make changes. It has visibility into some review criteria that aren't necessarily reflected on this dashboard — if a submission doesn't go through and you're not sure why, it's worth asking.</p>
         </div>
+        <div class="consent-block highlight-block">
+          <h4>How this gets evaluated</h4>
+          <p>After each task, you'll be asked to briefly explain the reasoning behind your final decisions. Some explanations may be reviewed by the research team or shown, anonymized, to other participants as examples of decision quality.</p>
+        </div>
+        ${leaderboardBlockHtml}
         ${briefing.screenshot ? `
         <div class="consent-block">
           <h4>What's new in this task</h4>
@@ -1342,6 +1438,8 @@ function onTaskBriefingCheckChange() {
 }
 
 function startTrial(trialIndex) {
+    const timeLimit = isP2Task() ? TRIAL_TIME_LIMIT_MS.P2 : (isP3Task() ? TRIAL_TIME_LIMIT_MS.P3 : TRIAL_TIME_LIMIT_MS.P1);
+    startTrialTimer(timeLimit, handleTrialTimeout);
     stopDividedAttentionTask();
 
     const chatNameEl = document.querySelector('.chat-ai-name');
@@ -1391,8 +1489,10 @@ function startTrial(trialIndex) {
     currentTrialConstraints.forEach(c => {
         if (c.flavor) return;
         if (c.locked) {
+            // Kept in the DOM (so revealLockedConstraints can find it by id and unhide it)
+            // but rendered invisible -- no placeholder row announcing anything is hidden.
             constraintsHtml += `
-                <li class="constraint-item locked" id="${c.id}" style="opacity:0.55;">
+                <li class="constraint-item locked" id="${c.id}" style="display:none;">
                     <div class="c-status" style="background:#ccc;"></div>
                     <span>${c.text}</span>
                 </li>`;
@@ -1458,6 +1558,7 @@ function startTrial(trialIndex) {
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
     hasInteractedThisTrial = false;
+    submitAttemptsThisTrial = 0;
     darkTurnCounter = 0;
     darkDeliveredThisTrial = false;
     lastAiMessageTime = null;
@@ -1482,6 +1583,42 @@ function startTrial(trialIndex) {
             addMessage(`Round ${trialIndex} of 4 begins. Your goal is to maximize your allocation's modeled ROI while satisfying the live constraints below. Adjust the sliders to build your allocation. Your AI advisor will offer suggestions as you work — the final call each round is yours.`, "ai");
         }, 600);
     }
+}
+
+function startTrialTimer(limitMs, onExpire) {
+    stopTrialTimer();
+    trialTimerDeadline = Date.now() + limitMs;
+    updateTrialTimerDisplay();
+    trialTimerInterval = setInterval(() => {
+        const remaining = trialTimerDeadline - Date.now();
+        if (remaining <= 0) { stopTrialTimer(); onExpire(); return; }
+        updateTrialTimerDisplay(remaining);
+    }, 250);
+}
+
+function stopTrialTimer() {
+    if (trialTimerInterval) { clearInterval(trialTimerInterval); trialTimerInterval = null; }
+    trialTimerDeadline = null;
+    const el = document.getElementById('trialTimerDisplay');
+    if (el) el.className = 'trial-timer';
+}
+
+function updateTrialTimerDisplay(remainingMsOverride) {
+    const el = document.getElementById('trialTimerDisplay');
+    if (!el || trialTimerDeadline === null) return;
+    const remaining = remainingMsOverride ?? Math.max(0, trialTimerDeadline - Date.now());
+    const totalSec = Math.ceil(remaining / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    el.innerText = `⏱ ${m}:${String(s).padStart(2, '0')}`;
+    el.className = 'trial-timer' + (totalSec <= 10 ? ' trial-timer-danger' : totalSec <= 20 ? ' trial-timer-warning' : '');
+}
+
+// Time runs out: submit whatever is currently set, unmet requirements and all. This is
+// what makes the clock a real cost of not asking — never a block on typing or submitting.
+function handleTrialTimeout() {
+    logEvent('trial_timed_out', { trial: currentTrial });
+    submitTrial(true);
 }
 
 function updateDashboard(loadLevel) {
@@ -1738,8 +1875,10 @@ function startTrialP2(trialIndex) {
     currentTrialConstraints.forEach(c => {
         if (c.flavor) return;
         if (c.locked) {
+            // Kept in the DOM (so revealLockedConstraints can find it by id and unhide it)
+            // but rendered invisible -- no placeholder row announcing anything is hidden.
             constraintsHtml += `
-                <li class="constraint-item locked" id="${c.id}" style="opacity:0.55;">
+                <li class="constraint-item locked" id="${c.id}" style="display:none;">
                     <div class="c-status" style="background:#ccc;"></div>
                     <span>${c.text}</span>
                 </li>`;
@@ -1809,6 +1948,7 @@ function startTrialP2(trialIndex) {
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
     hasInteractedThisTrial = false;
+    submitAttemptsThisTrial = 0;
     darkTurnCounter = 0;
     darkDeliveredThisTrial = false;
     lastAiMessageTime = null;
@@ -1871,7 +2011,7 @@ function startTrialP3(trialIndex) {
                     ${slot.candidates.map(c => `
                         <button type="button" class="p3-candidate ${currentAllocations[slotKey] === c.id ? 'selected' : ''}" data-slot="${slotKey}" data-id="${c.id}">
                             <span class="p3-candidate-name">${c.name}</span>
-                            <span class="p3-candidate-meta">${formatP3Window(c.window)} · ${c.category} · ${c.intensity} intensity · <span class="p3-quality-tag">★ Quality ${c.quality}</span>${c.partner ? ' · <span class="p3-partner-tag">Partner pick</span>' : ''}</span>
+                            <span class="p3-candidate-meta">${formatP3Window(c.window)}</span>
                         </button>`).join('')}
                 </div>
             </div>`;
@@ -1881,8 +2021,10 @@ function startTrialP3(trialIndex) {
     currentTrialConstraints.forEach(c => {
         if (c.flavor) return;
         if (c.locked) {
+            // Kept in the DOM (so revealLockedConstraints can find it by id and unhide it)
+            // but rendered invisible -- no placeholder row announcing anything is hidden.
             constraintsHtml += `
-                <li class="constraint-item locked" id="${c.id}" style="opacity:0.55;">
+                <li class="constraint-item locked" id="${c.id}" style="display:none;">
                     <div class="c-status" style="background:#ccc;"></div>
                     <span>${c.text}</span>
                 </li>`;
@@ -1923,6 +2065,7 @@ function startTrialP3(trialIndex) {
     window.lastTurnTimestamp = Date.now();
     turnsInTrial = 0;
     hasInteractedThisTrial = false;
+    submitAttemptsThisTrial = 0;
     darkTurnCounter = 0;
     darkDeliveredThisTrial = false;
     lastAiMessageTime = null;
@@ -2161,11 +2304,10 @@ async function sendMessage() {
             shadowHistory.push({ role: 'user', content: text });
             shadowHistory.push({ role: 'ai', content: data.clean_decoy });
 
-            // This exchange just carried any pending locked constraints — reveal them.
-            // It also counts toward the proactive budget/cooldown, so the automatic
-            // check-in doesn't immediately pile on top of a message the user just sent —
-            // it can still fire again later, up to its own cap, if it's still owed one.
-            revealLockedConstraints(currentTrialConstraints.filter(c => c.locked).map(c => c.id));
+            // Only reveal what the backend judged a genuine ask (see disclosure_warranted /
+            // revealed_locked_ids in main.py) — sending any message no longer unlocks
+            // everything by default. Still counts toward the proactive budget/cooldown.
+            revealLockedConstraints(data.revealed_locked_ids || []);
             cancelProactiveTimers();
             proactiveFireCount = Math.min(proactiveFireCount + 1, MAX_PROACTIVE_FIRES_PER_TRIAL);
             lastProactiveFireTime = Date.now();
@@ -2255,6 +2397,7 @@ function revealLockedConstraints(ids) {
         if (li) {
             li.classList.remove('locked');
             li.style.opacity = '';
+            li.style.display = '';
             const statusEl = li.querySelector('.c-status');
             if (statusEl) statusEl.style.background = '';
             const span = li.querySelector('span');
@@ -2292,6 +2435,12 @@ async function triggerProactiveAdvisorNote() {
     const allocationsAtSend = { ...currentAllocations };
     const lockedIds = currentTrialConstraints.filter(c => c.locked).map(c => c.id);
 
+    // True last resort: the participant hasn't chatted in time. Any proactive fire before
+    // this deadline (e.g. reacting to a dashboard edit) stays neutral commentary, so the
+    // dark tactic is deprioritized behind the participant actually starting a chat on their own.
+    const proactiveDarkEligible = (Date.now() - taskStartTime) >= PROACTIVE_CEILING_MS;
+
+
     try {
         const response = await fetch('/api/chat', {
             method: 'POST',
@@ -2321,7 +2470,8 @@ async function triggerProactiveAdvisorNote() {
                 constraint_bounds: currentTrialConstraints.filter(c => !c.locked).map(c => c.bound).filter(Boolean),
                 locked_bounds: currentTrialConstraints.filter(c => c.locked).map(c => c.bound).filter(Boolean),
                 is_proactive: true,
-                is_repeat_proactive: !isFirstFire
+                is_repeat_proactive: !isFirstFire,
+                proactive_dark_eligible: proactiveDarkEligible
             })
         });
 
@@ -2343,7 +2493,7 @@ async function triggerProactiveAdvisorNote() {
             pattern_id: data.pattern_id,
             isDark: data.isDark,
             is_repeat: !isFirstFire,
-            revealed_ids: lockedIds,
+            revealed_ids: data.revealed_locked_ids || [],
             allocations_at_request: allocationsAtSend,
             allocations_snapshot: { ...currentAllocations }
         });
@@ -2351,7 +2501,9 @@ async function triggerProactiveAdvisorNote() {
         // Only the AI side goes into shadow history — there's no user turn to log.
         shadowHistory.push({ role: 'ai', content: data.clean_decoy });
 
-        revealLockedConstraints(lockedIds);
+        // Proactive turns never reveal (enforced server-side, not just by prompt) — this
+        // will always resolve to [], kept symmetric with sendMessage() on purpose.
+        revealLockedConstraints(data.revealed_locked_ids || []);
 
         hasInteractedThisTrial = true;
         updateSubmitGate();
@@ -2531,12 +2683,14 @@ function computeTransientAcceptance() {
     );
 }
 
-function submitTrial() {
+function submitTrial(forced = false) {
+    stopTrialTimer();
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
     const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
 
-    if (!allConstraintsMet) {
-        alert("Your allocation doesn't satisfy all requirements yet. Please review the live constraints and adjust.");
+    if (!allConstraintsMet && !forced) {
+        submitAttemptsThisTrial++;
+        alert(SUBMIT_REJECTION_MESSAGES[Math.min(submitAttemptsThisTrial - 1, SUBMIT_REJECTION_MESSAGES.length - 1)]);
         return;
     }
 
@@ -2559,11 +2713,14 @@ function submitTrial() {
 
     if (isP2Task()) finalizePreviewFocusTelemetry();
 
+    const infoIncorporation = computeInfoIncorporation(currentTrialConstraints, currentAllocations);
+
     logEvent('trial_submitted', {
         trial: currentTrial,
         load_level: loadLevel,
         final_score: trialScorePct,
         final_allocations: { ...currentAllocations },
+        info_incorporation: infoIncorporation,
         final_post_text: isP2Task() ? currentPostText : null,
         post_text_manually_edited: isP2Task() ? postTextManuallyEdited : null,
         post_text_telemetry: isP2Task() ? {
@@ -2579,7 +2736,8 @@ function submitTrial() {
         option_telemetry: isP2Task() ? optionChangeTelemetry : (isP3Task() ? p3ChangeTelemetry : null),
         attention_metrics: { ...attentionMetrics },
         transient_acceptance: transientAccept,
-        message_dwell_telemetry: finalizeMessageDwellTelemetry()
+        message_dwell_telemetry: finalizeMessageDwellTelemetry(),
+        timed_out: forced && !allConstraintsMet
     });
 
     document.getElementById('submitTrialBtn').disabled = true;
@@ -2621,6 +2779,26 @@ function submitTrial() {
             startTrial(currentTrial);
         });
     }
+}
+
+// behavioral reliance DV: for each constraint that was hidden this trial, did the
+// participant get it revealed and correctly resolve it, fail to, or never get it at all?
+// Separate from objective score -- this is specifically about USE of the AI's uniquely-held
+// information, right or wrong, not overall performance.
+function computeInfoIncorporation(constraints, allocations) {
+    const hidden = constraints.filter(c => c.revealedText !== undefined);
+    const perConstraint = hidden.map(c => ({
+        id: c.id,
+        was_revealed: !c.locked,
+        satisfied: c.locked ? (c.realCheck ? c.realCheck(allocations) : null) : c.check(allocations)
+    }));
+    let outcome = "not_applicable";
+    if (perConstraint.length > 0) {
+        if (perConstraint.some(c => c.was_revealed && !c.satisfied)) outcome = "used_incorrectly";       // told, didn't fix in time
+        else if (perConstraint.some(c => !c.was_revealed)) outcome = "not_used";                          // never got the info at all
+        else outcome = "used_correctly";                                                                   // revealed and resolved
+    }
+    return { outcome, detail: perConstraint };
 }
 
 document.addEventListener('DOMContentLoaded', () => {

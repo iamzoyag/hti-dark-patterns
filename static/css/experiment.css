@@ -114,6 +114,11 @@
   color: var(--ink);
 }
 
+.doc-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.trial-timer { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink-3); white-space: nowrap; }
+.trial-timer-warning { color: var(--warn); }
+.trial-timer-danger { color: var(--danger); }
+
 .doc-body {
   flex: 1;
   overflow-y: auto;

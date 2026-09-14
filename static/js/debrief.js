@@ -106,10 +106,12 @@ function updateRecognitionSubmitState(totalQuestions) {
     const reflect1 = document.getElementById('recogReflect1')?.value.trim().length > 0;
     const reflect2 = document.getElementById('recogReflect2')?.value.trim().length > 0;
 
-    btn.disabled = !(answeredAgreement >= totalQuestions && answeredFlags >= totalQuestions && reflect1 && reflect2);
+    btn.disabled = !(totalQuestions > 0 && answeredAgreement >= totalQuestions && answeredFlags >= totalQuestions && reflect1 && reflect2);
 }
 
 async function submitRecognitionTest() {
+    const btn = document.getElementById('recogSubmitBtn');
+    if (btn) btn.disabled = true;
     const rawData = localStorage.getItem('hti_session');
     if (!rawData) return;
     const session = JSON.parse(rawData);
@@ -239,6 +241,32 @@ function showPerformanceSummary() {
                 <span class="sc-label">${t.label}</span>
             </div>
         `).join('');
+    }
+
+    renderLeaderboard(session.participantId);
+}
+
+async function renderLeaderboard(participantId) {
+    const el = document.getElementById('perfLeaderboard');
+    if (!el) return;
+    try {
+        const res = await fetch(`/api/leaderboard?participant_id=${encodeURIComponent(participantId)}`);
+        const data = await res.json();
+        const rows = data.top.map(r => `
+            <div class="leaderboard-row${r.participant_id === participantId ? ' leaderboard-you' : ''}">
+                <span>#${r.rank}</span><span>${r.participant_id}</span><span>${r.score}%</span>
+            </div>`).join('');
+        const youRow = data.you && data.you.rank > 5 ? `
+            <div class="leaderboard-row leaderboard-you">
+                <span>#${data.you.rank}</span><span>${participantId} (you)</span><span>${data.you.score}%</span>
+            </div>` : '';
+        el.innerHTML = `
+            <h4>Leaderboard</h4>
+            <div class="leaderboard-list">${rows}${youRow}</div>
+            ${data.you ? `<p class="muted-note">You outperformed ${data.you.percentile}% of ${data.total_participants} participants.</p>` : ''}
+        `;
+    } catch (e) {
+        el.innerHTML = '';
     }
 }
 
