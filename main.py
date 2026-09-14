@@ -226,6 +226,36 @@ async def score_justification(request: Request):
         print(f"[score_justification] failed: {e}")
         return {"reasoning_score": None}
 
+class PostTextReaction(BaseModel):
+    reply: str = Field(description="A short (1-2 sentence), natural, conversational reaction to the participant's actual post text and hashtags -- comment on the actual wording (hook, clarity, whether the hashtags fit), not on dial/toggle settings. Genuinely helpful, never pushy, never mention a score or requirement.")
+
+class PostTextReactionRequest(BaseModel):
+    post_text: str
+    hashtag_text: str = ""
+    product: str = ""
+    load_level: str = "LowLoad"
+
+@app.post("/api/react_to_post_text")
+async def react_to_post_text(req: PostTextReactionRequest):
+    text = (req.post_text or "").strip()
+    if not text:
+        return {"status": "skipped"}
+    prompt = (
+        f"A participant is writing a launch post for {req.product or 'a product'} and just wrote this text:\n\n"
+        f"\"{text}\"\nHashtags: \"{req.hashtag_text or '(none)'}\"\n\n"
+        "As their AI Social Media Advisor, give ONE short, genuine, conversational reaction to what they actually "
+        "wrote -- something specific to this wording (the hook, clarity, whether the hashtags fit the post), not "
+        "generic praise. Do not comment on tone/urgency/posting-time dial settings, scores, or requirements -- "
+        "only on the text itself. Keep it brief, like a colleague glancing over their shoulder."
+    )
+    try:
+        reactor = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.4).with_structured_output(PostTextReaction)
+        result = await reactor.ainvoke(prompt)
+        return {"status": "success", "reply": result.reply}
+    except Exception as e:
+        print(f"[react_to_post_text] failed: {e}")
+        return {"status": "error"}
+
 JUSTIFICATION_WEIGHT = 0.3  # 30% reasoning quality, 70% objective task score -- tune freely
 
 def _read_participant_scores(csv_path: str) -> Dict[str, Any]:
@@ -268,10 +298,12 @@ async def get_leaderboard(participant_id: str = ""):
         )
         rankings.append({"participant_id": pid, "score": round(composite, 1)})
     rankings.sort(key=lambda r: r["score"], reverse=True)
+    total = len(rankings)
     for i, r in enumerate(rankings):
         r["rank"] = i + 1
+        r["percentile"] = round((total - r["rank"]) / total * 100) if total > 1 else 100
     you = next((r for r in rankings if r["participant_id"] == participant_id), None)
-    return {"top": rankings[:5], "you": you, "total_participants": len(rankings)}
+    return {"top": rankings[:5], "you": you, "total_participants": total}
 
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")

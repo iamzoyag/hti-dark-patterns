@@ -27,6 +27,10 @@ const TRIAL_TIME_LIMIT_MS = { P1: 90000, P2: 60000, P3: 75000 };
 let trialTimerInterval = null;
 let trialTimerDeadline = null;
 let isAiRequestInFlight = false; 
+let postTextReactionTimer = null;
+let lastPostTextReactedTo = "";
+const POST_TEXT_REACTION_DEBOUNCE_MS = 3000;
+
 
 // The LLM sometimes replies fast enough that the AI's message lands almost instantly,
 // which reads as abrupt/unnatural. This tops up the visible "typing" pause to a believable
@@ -319,9 +323,9 @@ const taskData = {
         },
         constraints: [
             { id: "c1", text: "Total must equal exactly $500,000", check: (alloc) => sumAllocations(alloc) === 500000 },
-            { id: "c2", text: "Search Ads must be ≥ 15% of total budget ($75,000)", check: (alloc) => alloc["Search Ads"] >= 75000, bound: { channel: "Search Ads", min: 75000 } },
-            { id: "c3", text: "Events must be < $100,000", check: (alloc) => alloc["Events"] < 100000, bound: { channel: "Events", max: 99999 } },
-            { id: "c4", text: "Content/SEO must be strictly greater than Social", check: (alloc) => alloc["Content/SEO"] > alloc["Social"], bound: { compare: "gt", a: "Content/SEO", b: "Social" } },
+            { id: "c2", text: "Search Ads must be ≥ 15% of total budget ($75,000) — the ad platform's account tier requires that minimum monthly commitment to keep priority placement active this quarter.", check: (alloc) => alloc["Search Ads"] >= 75000, bound: { channel: "Search Ads", min: 75000 } },
+            { id: "c3", text: "Events must be < $100,000 — the venue partner's insurance terms cap sponsored spend at that ceiling for this booking window.", check: (alloc) => alloc["Events"] < 100000, bound: { channel: "Events", max: 99999 } },
+            { id: "c4", text: "Content/SEO must be strictly greater than Social — brand guidelines require owned content investment to lead paid social spend this cycle.", check: (alloc) => alloc["Content/SEO"] > alloc["Social"], bound: { compare: "gt", a: "Content/SEO", b: "Social" } },
             { id: "c_cannibal", text: "Social + Influencer above $120k start competing for the same audience (Reduces ROI)", check: (alloc) => true, flavor: true },
             { id: "c_synergy", text: "Search Ads and Content/SEO reinforce each other when jointly funded and balanced (Boosts ROI)", check: (alloc) => true, flavor: true }
         ]
@@ -361,7 +365,7 @@ const taskDataP2 = {
             Claim_LimitedTime: 1, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 100 characters (platform limit)",
+            { id: "c1_len", text: "Estimated post length must stay ≤ 100 characters — the platform truncates longer captions in the feed preview, so anything past that count gets cut off before most viewers see it.",
               check: (p) => getEffectivePostLength() <= 100,
               bound: { type: "max_length", limit: 100 } },
             { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
@@ -375,10 +379,10 @@ const taskDataP2 = {
             Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
         },
         constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 58 characters (platform limit)",
+            { id: "c1_len", text: "Estimated post length must stay ≤ 58 characters — this placement's feed preview truncates captions past that count, cutting off anything longer before most viewers see it.",
               check: (p) => getEffectivePostLength() <= 58,
               bound: { type: "max_length", limit: 58 } },
-            { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional-Conversational range)",
+            { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional-Conversational range) — brand flagged a more extreme tone as inconsistent with guidelines after a complaint on a recent launch post.",
               check: (p) => p.Tone >= 20 && p.Tone <= 65,
               bound: { channel: "Tone", min: 20, max: 65 } },
             { id: "c3_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
@@ -504,7 +508,7 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
     if (selected.includes("legalDisclaimer")) {
         constraints.push(lockConstraint({
             id: "shock_legal_disclaimer",
-            text: "If any regulated claim (limited time / best-selling / guaranteed results) is on, the legal disclaimer must be on too",
+            text: "If any regulated claim (limited time / best-selling / guaranteed results) is on, the legal disclaimer must be on too — this is a standard regulatory requirement whenever a claim about performance, pricing, or results goes public.",
             check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Disclaimer === 1,
             bound: { type: "disclaimer_required" }
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
@@ -512,7 +516,7 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
     if (selected.includes("brandStyleGuide")) {
         constraints.push(lockConstraint({
             id: "shock_brand_style",
-            text: "Tone must be Professional or Conversational (not Formal or Casual)",
+            text: "Tone must be Professional or Conversational (not Formal or Casual) — brand tightened the style guide this cycle after a complaint about an overly informal launch post.",
             check: (p) => p.Tone >= BRAND_TONE_BAND[0] && p.Tone <= BRAND_TONE_BAND[1],
             bound: { channel: "Tone", min: BRAND_TONE_BAND[0], max: BRAND_TONE_BAND[1] }
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
@@ -532,7 +536,7 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
         winMax = Math.min(23, winMax);
         constraints.push(lockConstraint({
             id: "shock_posting_window",
-            text: `Posting time must fall within the approved window (${winMin}:00–${winMax}:00)`,
+            text: `Posting time must fall within the approved window (${winMin}:00-${winMax}:00) — the scheduling tool only auto-boosts posts published inside that window this cycle.`,
             check: (p) => p.PostingTime >= winMin && p.PostingTime <= winMax,
             bound: { channel: "PostingTime", min: winMin, max: winMax }
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
@@ -544,7 +548,7 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
         const cap = Math.max(2, Math.min(HASHTAG_SOFT_CAP, alloc.Hashtags - 3));
         constraints.push(lockConstraint({
             id: "shock_hashtag_cap",
-            text: `Hashtag set must stay at ${cap} or fewer for this launch`,
+            text: `Hashtag set must stay at ${cap} or fewer for this launch — the platform's spam filter is currently flagging posts with more, which is cutting into your organic reach.`,
             check: (p) => p.Hashtags <= cap,
             bound: { channel: "Hashtags", max: cap }
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
@@ -552,7 +556,7 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
     if (selected.includes("urgencyNightCap")) {
         constraints.push(lockConstraint({
             id: "shock_urgency_night_cap",
-            text: "Urgency must be brought to Moderate or below, AND the post must go out at 18:00 or earlier",
+            text: "Urgency must be brought to Moderate or below, AND the post must go out at 18:00 or earlier — a prior campaign drew user complaints from a late-night, high-urgency post, so both limits are required together for this launch.",
             check: (p) => p.Urgency <= 60 && p.PostingTime <= 18,
             bound: { type: "urgency_night_cap" }
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
@@ -560,7 +564,7 @@ function buildTrialConstraintsP2(loadLevel, alloc) {
     if (selected.includes("claimUrgencyCap")) {
         constraints.push(lockConstraint({
             id: "shock_claim_urgency_cap",
-            text: "While any regulated claim (limited time / best-selling / guaranteed results) is active, Urgency must stay at Moderate or below",
+            text: "While any regulated claim (limited time / best-selling / guaranteed results) is active, Urgency must stay at Moderate or below — legal requires a calmer tone whenever a regulated claim is live, so it doesn't read as a pressure tactic.",
             check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Urgency <= 60,
             bound: { type: "claim_urgency_cap" },
         }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
@@ -643,7 +647,7 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
         socialMin = target;
         constraints.push(lockConstraint({
             id: "shock_social_floor",
-            text: `Social must be increased to ≥ $${target.toLocaleString()} (Platform minimums)`,
+            text: `Social must be increased to ≥ $${target.toLocaleString()} — social's algorithm requires that minimum boosted spend to keep your posts out of throttled reach this quarter.`,
             check: (alloc) => alloc["Social"] >= target,
             bound: { channel: "Social", min: target }
         }, "This round carries an additional budget requirement not shown on this dashboard yet."));
@@ -654,7 +658,7 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
         const target = socialMin > 0 ? Math.max(CONTENT_CAP_CEILING, socialMin + 5000) : CONTENT_CAP_CEILING;
         constraints.push(lockConstraint({
             id: "shock_content_cap",
-            text: `Content/SEO must stay ≤ $${target.toLocaleString()} (Agency limit)`,
+            text: `Content/SEO must stay ≤ $${target.toLocaleString()} — your retained SEO agency's contract caps managed spend at that tier this quarter.`,
             check: (alloc) => alloc["Content/SEO"] <= target,
             bound: { channel: "Content/SEO", max: target }
         }, "This round carries an additional budget requirement not shown on this dashboard yet."));
@@ -672,7 +676,7 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
         if (target === base) target = Math.min(maxFeasible, base + 5000);
         constraints.push(lockConstraint({
             id: "shock_search_floor",
-            text: `Search Ads must be increased to ≥ $${target.toLocaleString()} (Query volume)`,
+            text: `Search Ads must be increased to ≥ $${target.toLocaleString()} — query volume in your category has spiked, and the platform requires a matching spend floor to hold bid competitiveness.`,
             check: (alloc) => alloc["Search Ads"] >= target,
             bound: { channel: "Search Ads", min: target }
         }, "This round carries an additional budget requirement not shown on this dashboard yet."));
@@ -688,7 +692,7 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
         if (target === base) target = Math.max(0, base - 5000);
         constraints.push(lockConstraint({
             id: "shock_events_cap",
-            text: `Events must be reduced to ≤ $${target.toLocaleString()} (Venue restrictions)`,
+            text: `Events must be reduced to ≤ $${target.toLocaleString()} — the venue partner's contract now caps this booking's sponsored spend at that ceiling.`,
             check: (alloc) => alloc["Events"] <= target,
             bound: { channel: "Events", max: target }
         }, "This round carries an additional budget requirement not shown on this dashboard yet."));
@@ -697,7 +701,7 @@ function buildTrialConstraints(loadLevel, baseAlloc) {
     if (selected.includes("digitalSynergy")) {
         constraints.push(lockConstraint({
             id: "shock_digital_synergy",
-            text: "Search Ads and Content/SEO combined must total ≥ $180,000, and neither can fall below 60% of the other (Balanced digital spend)",
+            text: "Search Ads and Content/SEO combined must total ≥ $180,000, and neither can fall below 60% of the other — the media-buying agency's joint bidding program only unlocks its negotiated rate when both channels are funded in that ratio.",
             check: (alloc) => {
                 const sa = alloc["Search Ads"], content = alloc["Content/SEO"];
                 return (sa + content) >= 180000 && Math.min(sa, content) >= 0.6 * Math.max(sa, content);
@@ -888,14 +892,14 @@ function sampleP3LockedConstraints(loadLevel, count) {
         if (Math.random() < 0.5) {
             return lockConstraint({
                 id: `locked_${slotKey}_intensity`,
-                text: `The ${slot.label} pick can't be ${def.intensity} intensity`,
+                text: `The ${slot.label} pick can't be ${def.intensity} intensity — that option's usual slot got pulled from this term's approved list after a scheduling conflict with another group.`,
                 check: (alloc) => P3_CANDIDATE_INDEX[alloc[slotKey]]?.intensity !== def.intensity,
                 bound: { type: "p3_slot_intensity_ban", slot: slotKey, intensity: def.intensity }
             }, "One of today's slots carries an additional planning requirement not shown on this dashboard yet.");
         }
         return lockConstraint({
             id: `locked_${slotKey}_category`,
-            text: `The ${slot.label} pick can't be from the ${def.category} category`,
+            text: `The ${slot.label} pick can't be from the ${def.category} category — that category's usual pick for this slot is already booked out for this date by another cohort's itinerary.`,
             check: (alloc) => P3_CANDIDATE_INDEX[alloc[slotKey]]?.category !== def.category,
             bound: { type: "p3_slot_category_ban", slot: slotKey, category: def.category }
         }, "One of today's slots carries an additional planning requirement not shown on this dashboard yet.");
@@ -904,10 +908,10 @@ function sampleP3LockedConstraints(loadLevel, count) {
 
 function buildTrialConstraintsP3(loadLevel) {
     const constraints = [
-        { id: "c1_categories", text: `At least ${P3_MUST_SEE_MIN_CATEGORIES} of these 4 categories must be represented across the day: Culture & History, Food & Local Life, Nature & Outdoors, Academic & Campus Life`,
+        { id: "c1_categories", text: `At least ${P3_MUST_SEE_MIN_CATEGORIES} of these 4 categories must be represented across the day: Culture & History, Food & Local Life, Nature & Outdoors, Academic & Campus Life — the study-abroad office requires that minimum breadth so the day doesn't read as one-note to incoming students.`,
         check: (alloc) => new Set(getP3OrderedCandidates(alloc).map(c => c.category)).size >= P3_MUST_SEE_MIN_CATEGORIES,
         bound: { type: "p3_category_coverage", min_categories: P3_MUST_SEE_MIN_CATEGORIES } },
-        { id: "c1b_quality", text: `Your itinerary's combined quality score (sum of each pick's rating) must be at least ${P3_QUALITY_FLOOR[loadLevel]}`,
+        { id: "c1b_quality", text: `Your itinerary's combined quality score (sum of each pick's rating) must be at least ${P3_QUALITY_FLOOR[loadLevel]} — the office sets that minimum each term so the published itinerary meets its own promotional materials' standard.`,
         check: (alloc) => getP3OrderedCandidates(alloc).reduce((s, c) => s + c.quality, 0) >= P3_QUALITY_FLOOR[loadLevel],
         bound: { type: "p3_quality_floor", min_quality: P3_QUALITY_FLOOR[loadLevel] } },
         { id: "c_diversity_bonus", text: "Each additional distinct category represented beyond the required minimum adds to your itinerary's overall quality score (Boosts score)", check: () => true, flavor: true }
@@ -1428,7 +1432,13 @@ async function showTaskBriefingOverlay(taskId) {
         startTrial(1);
     };
 
-    document.getElementById('taskTransitionOverlay').style.display = 'flex';
+    const transitionOverlay = document.getElementById('taskTransitionOverlay');
+    transitionOverlay.style.display = 'flex';
+    // Reused across every task's briefing -- without this it keeps whatever scroll
+    // position it was left at, so the next task's instructions can open already
+    // scrolled past the top.
+    const transitionCard = transitionOverlay.querySelector('.overlay-card');
+    if (transitionCard) transitionCard.scrollTop = 0;
 }
 
 function onTaskBriefingCheckChange() {
@@ -1787,6 +1797,56 @@ function onPreviewTextInput() {
     updatePreviewEditedBadge();
     updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
     scheduleProactiveCheck();
+
+    clearTimeout(postTextReactionTimer);
+    postTextReactionTimer = setTimeout(() => attemptPostTextReaction(), POST_TEXT_REACTION_DEBOUNCE_MS);
+}
+
+// Reacts to the participant's own written text specifically -- separate from the
+// dial-driven proactive/dark-tactic channel on purpose, so this stays a genuinely
+// helpful writing assist and never touches necessity/disclosure logic.
+async function attemptPostTextReaction() {
+    if (isAiRequestInFlight) {
+        clearTimeout(postTextReactionTimer);
+        postTextReactionTimer = setTimeout(() => attemptPostTextReaction(), 1500);
+        return;
+    }
+    const text = currentPostText.trim();
+    if (!text || text === lastPostTextReactedTo) return;
+    lastPostTextReactedTo = text;
+
+    isAiRequestInFlight = true;
+    const sendBtn = document.querySelector('.send-btn');
+    if (sendBtn) sendBtn.disabled = true;
+    showTypingIndicator();
+    const requestStart = Date.now();
+
+    try {
+        const response = await fetch('/api/react_to_post_text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                post_text: text,
+                hashtag_text: getHashtagText(),
+                product: getP2Product().name,
+                load_level: sessionData.trialSequence[currentTrial - 1]
+            })
+        });
+        const data = await response.json();
+        const elapsed = Date.now() - requestStart;
+        if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
+        document.getElementById('currentTyping')?.remove();
+        if (data.status === "success" && data.reply) {
+            addMessage(data.reply, 'ai', 'text_reaction', false, 'Post Text Reaction');
+            logEvent('ai_text_reaction', { trial: currentTrial, reacted_to: text, reply: data.reply });
+        }
+    } catch (err) {
+        document.getElementById('currentTyping')?.remove();
+        console.error("Post text reaction failed:", err);
+    } finally {
+        isAiRequestInFlight = false;
+        if (sendBtn) sendBtn.disabled = false;
+    }
 }
 
 function resetPreviewToTemplate() {

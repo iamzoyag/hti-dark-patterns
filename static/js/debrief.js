@@ -231,6 +231,11 @@ function showPerformanceSummary() {
         headline.textContent = overall !== null
             ? `On average, your choices captured ${overall}% of the best possible outcome across the ${roundsCompleted} round${roundsCompleted === 1 ? '' : 's'} you completed.`
             : "We weren't able to compute a performance summary for this session.";
+        document.getElementById('perfHeadlineNote')?.remove();
+        if (overall !== null) {
+            headline.insertAdjacentHTML('afterend',
+                `<p class="muted-note" id="perfHeadlineNote">Meeting every round's requirements always gives you a valid submission — it doesn't always mean the best possible outcome. Some rounds had extra context your advisor could see but wouldn't necessarily hand you outright, so the closer you got to 100%, the more of that you likely worked into your final call.</p>`);
+        }
     }
 
     const breakdown = document.getElementById('perfBreakdown');
