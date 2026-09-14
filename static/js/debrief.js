@@ -17,6 +17,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let currentTestId = null;
+let currentTotalQuestions = 0;
+let recognitionSubmitted = false;
 
 async function buildRecognitionTest() {
     const rawData = localStorage.getItem('hti_session');
@@ -73,6 +75,9 @@ async function buildRecognitionTest() {
 
         const totalQuestions = data.questions.length;
         touchedAgreementSliders = new Set();
+        const totalQuestions = data.questions.length;
+        currentTotalQuestions = totalQuestions;
+        touchedAgreementSliders = new Set();
 
         container.querySelectorAll('input[type="radio"]').forEach(radio => {
             radio.addEventListener('change', () => updateRecognitionSubmitState(totalQuestions));
@@ -110,6 +115,7 @@ function updateRecognitionSubmitState(totalQuestions) {
 }
 
 async function submitRecognitionTest() {
+    if (recognitionSubmitted) return; // structural guard -- a second invocation, from any cause, is a no-op
     const btn = document.getElementById('recogSubmitBtn');
     if (btn) btn.disabled = true;
     const rawData = localStorage.getItem('hti_session');
@@ -133,6 +139,17 @@ async function submitRecognitionTest() {
             });
         }
     });
+
+    // Never let a desynced/incomplete answer set silently overwrite a real result --
+    // this is exactly what happened to P50804: reflection text saved fine, but the
+    // radio answers evaporated before this ran, and it submitted anyway as if complete.
+    if (answers.length < currentTotalQuestions) {
+        console.error(`Recognition test: captured ${answers.length}/${currentTotalQuestions} answers -- refusing to submit a corrupted result.`);
+        if (btn) btn.disabled = false;
+        alert("Something reset your answers before submitting — please review the excerpts once more, then complete the study.");
+        return;
+    }
+    recognitionSubmitted = true;
     
     try {
         const response = await fetch('/api/submit_recognition_test', {
