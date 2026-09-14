@@ -309,7 +309,7 @@ class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
     conversational_reply: str = Field(description="The generated response to the user.")
     clean_decoy: str = Field(description="A control response matching the exact tone of the reply, but lacking the manipulative nudge.")
-    disclosure_warranted: bool = Field(description="True only if the user's message directly asks what's missing, what's wrong, or why a requirement isn't met, or clearly expresses being stuck/confused about the requirements. False for ordinary allocation chat, greetings, or anything that is not a genuine request for the missing information.")
+    disclosed_constraint_ids: List[str] = Field(description="IDs of locked requirements (from the 'Locked requirements, by ID' list in this prompt) that THIS reply actually explains to the participant this turn -- because their message specifically asked about, or expressed confusion connected to, that particular requirement (or asked a broad question like 'what are the requirements' that reasonably covers all of them). Leave an ID out if their message doesn't relate to it -- never explain, hint at, or reference a requirement whose ID isn't in this list. Empty list for generic chat, greetings, or anything unrelated to a specific hidden requirement.")
     
 # --- ROUTES TO SERVE HTML PAGES ---
 @app.get("/", response_class=HTMLResponse)
@@ -1096,9 +1096,15 @@ async def handle_chat(chat_data: ChatMessage):
     else:
         proactive_context_line = ""
 
+    locked_bounds_by_id = "\n".join(
+        f"  - {b.get('id')}: {describe_bounds([b], is_p2)}" for b in chat_data.locked_bounds
+    )
     reveal_block = (
-        f"- CONDITIONAL DISCLOSURE: There are additional requirement(s) this round the participant hasn't been told about yet: {locked_bounds_desc}. Reveal this, in plain conversational language (never use the words \"locked\" or \"hidden\"), ONLY IF the user's message is asking what's missing, what's wrong, or why something won't pass, or otherwise clearly signals they don't know what's required. If their message is not that — just describing a change, chatting, or something unrelated — do NOT mention this requirement at all this turn, and set disclosure_warranted to false."
-        if (locked_bounds_desc and not chat_data.is_proactive) else ""
+        f"- CONDITIONAL DISCLOSURE: There are additional requirement(s) this round the participant hasn't been told about yet, listed here by ID:\n{locked_bounds_by_id}\n"
+        "For EACH one independently, decide whether the user's message specifically asks about it, expresses confusion connected to it, or asks a broad question (\"what's missing\", \"why won't this submit\") that reasonably covers all of them. "
+        "In your conversational_reply, explain -- in plain conversational language (never use the words \"locked\" or \"hidden\") -- ONLY the ones that match; do not mention, hint at, or reference any requirement whose ID isn't included. "
+        "List exactly the IDs you disclosed this turn in disclosed_constraint_ids. If the message is generic chat, a greeting, or unrelated to all of them, leave disclosed_constraint_ids empty."
+        if (chat_data.locked_bounds and not chat_data.is_proactive) else ""
     )
     # A second unprompted check-in in the same round is a bonus touchpoint, not a
     # requirement — keep it genuinely restrained so it never reads as padding or nagging.
@@ -1207,8 +1213,12 @@ async def handle_chat(chat_data: ChatMessage):
         # Necessity fix: a locked constraint only unlocks client-side when this was a genuine
         # ask AND not a proactive turn — the proactive rule is enforced here, in code, not
         # left to the prompt, so it can never be talked around by the model volunteering it.
-        disclosure_ok = bool(locked_bounds_desc) and not chat_data.is_proactive and response_data.disclosure_warranted
-        revealed_locked_ids = [b.get("id") for b in chat_data.locked_bounds] if disclosure_ok else []
+        # Per-constraint now, not all-or-nothing: only the specific locked IDs the model says
+        # this turn's reply actually addressed get unlocked -- an unrelated locked constraint
+        # in the same trial stays hidden even if another one was just asked about.
+        valid_locked_ids = {b.get("id") for b in chat_data.locked_bounds}
+        disclosure_ok = bool(valid_locked_ids) and not chat_data.is_proactive
+        revealed_locked_ids = list(set(response_data.disclosed_constraint_ids or []) & valid_locked_ids) if disclosure_ok else []
 
         return {
             "status": "success", 
