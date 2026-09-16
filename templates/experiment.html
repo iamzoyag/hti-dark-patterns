@@ -76,6 +76,21 @@
   </div>
 </div>
 
+<!-- Task 9: end-of-segment recall check for the in-chat notification bubbles. Shown
+     (via showRecallCheck() in experiment.js) right when a segment is submitted, before
+     the TLX overlay -- skipped entirely if no notification fired that segment. -->
+<div class="overlay" id="recallCheckOverlay" style="display:none;">
+  <div class="overlay-card overlay-wide">
+    <span class="step-eyebrow">One Quick Thing</span>
+    <h3>Did this notification appear during that segment?</h3>
+    <p id="recallCheckText" style="font-family: var(--mono); font-size: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin: 12px 0;"></p>
+    <div style="display:flex; gap:12px;">
+      <button class="btn-primary" id="recallCheckYesBtn" style="flex:1;">Yes, I saw it</button>
+      <button class="btn-primary" id="recallCheckNoBtn" style="flex:1;">No, I didn't</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="taskTransitionOverlay" style="display:none;">
   <div class="overlay-card overlay-wide">
     <span class="step-eyebrow">Task Complete</span>

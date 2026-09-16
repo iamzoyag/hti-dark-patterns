@@ -906,3 +906,86 @@ input[type="range"].budget-slider::-webkit-slider-thumb:hover { transform: scale
     font-weight: 600;
     color: var(--ink-2);
 }
+
+
+/* ── PLAN MIRROR (Task 8) -- arithmetic on visible facts only, deliberately no
+   pass/fail color anywhere (no c-status dot, no red/green) ── */
+.plan-mirror-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--ink-2);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-mirror-row.plan-mirror-empty {
+  color: var(--ink-4);
+  font-style: italic;
+  border-bottom: none;
+}
+
+.plan-mirror-total, .plan-mirror-subtotal {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 8px 0 4px;
+}
+
+.plan-mirror-subtotal {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+  border-top: 1px dotted var(--border);
+  margin-top: 2px;
+}
+
+.plan-mirror-bucket {
+  margin-bottom: 14px;
+}
+
+.plan-mirror-bucket-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+  margin-bottom: 2px;
+}
+
+.plan-mirror-min {
+  font-weight: 400;
+  text-transform: none;
+  color: var(--ink-4);
+}
+
+/* ── IN-CHAT NOTIFICATION BUBBLE (Task 9) -- task-irrelevant, transient, never a
+   pass/fail signal, visually distinct from real AI/user chat bubbles ── */
+.msg.notification {
+  align-self: center;
+  max-width: 75%;
+}
+
+.msg.notification .msg-bubble {
+  background: var(--surface-3);
+  border: 1px dashed var(--border-md);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+}
+
+.notification-tag {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 3px;
+  font-style: normal;
+}
