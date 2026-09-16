@@ -70,6 +70,141 @@ let lastAiMessageTime = null; // when the most recent AI message landed — used
 let messageDwellTelemetry = {}; // patternId -> { totalVisibleMs, visibleSince, firstVisibleAt } — actual time each AI bubble spent visible, not just "was sent"
 let dwellObserver = null;
 
+// ============================================================
+// COGNITIVE LOAD -- IN-CHAT NOTIFICATIONS (Task 9)
+// Replaces the old divided-attention mini-game: task-irrelevant "notification" bubbles
+// land in the chat log itself on a timer (more often on HighLoad, rarer on LowLoad),
+// each auto-removing after NOTIFICATION_VISIBLE_MS -- catching them takes attention away
+// from the actual plan, same purpose the old mini-game served, but it no longer competes
+// for a separate widget. Recall is checked once at the end of each segment
+// (showRecallCheck) and the session-wide accuracy across all checks decides
+// sessionData.attentionAccuracy / sessionData.attentionQualified, the exact field names
+// main.py's CSV export already reads (see submit_data around line 1981-1982).
+// ============================================================
+let currentLoadLevel = null; // set in startSegment(); read by renderPlanMirror + scheduleNotifications
+let notificationTimers = [];
+let notificationsShownThisSegment = []; // this segment only -- feeds this segment's recall-check probe
+let sessionNotificationTotals = { recallChecks: 0, recalledCorrect: 0 }; // session-wide, across every segment/task -- feeds the final bonus calc
+const NOTIFICATION_ACCURACY_THRESHOLD = 0.6; // TEMP -- fraction of recall checks that must be correct to qualify for the completion bonus; revisit once real sessions are timed
+const NOTIFICATION_VISIBLE_MS = 6000; // how long a notification bubble stays before it auto-removes
+const NOTIFICATION_INTERVAL_MS = { HighLoad: 35000, LowLoad: 85000 }; // TEMP values, same spirit as TRIAL_TIME_LIMIT_MS -- revisit once real segments have been timed
+
+// All task-irrelevant on purpose -- ordinary campus/phone notices with zero bearing on
+// workload/degree/club content, so they can't be confused with real advisor content or
+// hint at any locked fact.
+const NOTIFICATION_BANK = [
+    { id: "n1", text: "📶 Campus WiFi: scheduled maintenance tonight 11pm–1am" },
+    { id: "n2", text: "🔋 Battery at 20% — consider plugging in" },
+    { id: "n3", text: "🌧️ Weather: rain expected after 4pm today" },
+    { id: "n4", text: "🍽️ Dining Hall: grilled cheese special until 2pm" },
+    { id: "n5", text: "📦 Package delivered to your mailroom locker" },
+    { id: "n6", text: "🚌 Campus Shuttle: Route 2 running 10 min behind schedule" },
+    { id: "n7", text: "🎟️ Student Center: movie night tickets go on sale at 6pm" },
+    { id: "n8", text: "🧺 Laundry Room (Hall B): 2 machines now available" },
+    { id: "n9", text: "📚 Library: extended hours this week for finals prep" },
+    { id: "n10", text: "🔑 Lost & Found: a set of keys was turned in at the front desk" },
+    { id: "n11", text: "🅿️ Parking Services: Lot C closed for repaving tomorrow" },
+    { id: "n12", text: "☕ Coffee cart outside the quad — 2-for-1 until 11am" },
+    { id: "n13", text: "📱 App Update: a new version of the campus app is available" },
+    { id: "n14", text: "🏋️ Rec Center: pool closed for cleaning this afternoon" },
+    { id: "n15", text: "📬 Mail Services: outgoing mail pickup moved to 3pm today" },
+    { id: "n16", text: "🔔 Fire alarm test scheduled in North Hall at 1pm — no action needed" },
+];
+
+function clearNotificationTimers() {
+    notificationTimers.forEach(t => clearTimeout(t));
+    notificationTimers = [];
+}
+
+// Schedules a run of notification bubbles across the segment's time limit, spaced by
+// load level. Recurses via its own setTimeout rather than setInterval so each firing can
+// stop cleanly once it's within NOTIFICATION_VISIBLE_MS + 5s of the deadline (a bubble
+// that lands with no time left to notice it isn't a fair probe).
+function scheduleNotifications(loadLevel, timeLimitMs) {
+    clearNotificationTimers();
+    notificationsShownThisSegment = [];
+    const interval = NOTIFICATION_INTERVAL_MS[loadLevel] || NOTIFICATION_INTERVAL_MS.LowLoad;
+    const fireOnce = (delay) => {
+        if (delay >= timeLimitMs - (NOTIFICATION_VISIBLE_MS + 5000)) return;
+        const t = setTimeout(() => {
+            const unseen = NOTIFICATION_BANK.filter(n => !notificationsShownThisSegment.some(s => s.id === n.id));
+            const pool = unseen.length ? unseen : NOTIFICATION_BANK;
+            const item = pool[Math.floor(Math.random() * pool.length)];
+            notificationsShownThisSegment.push(item);
+            showNotificationBubble(item);
+            fireOnce(delay + interval);
+        }, delay);
+        notificationTimers.push(t);
+    };
+    fireOnce(Math.round(interval * 0.4)); // first one lands partway in, not the instant the segment opens
+}
+
+// Renders directly into the chat log (not a separate widget) so it's a genuine
+// competitor for attention with the real conversation, then removes itself --
+// unlike AI/user messages, it does NOT persist in the transcript.
+function showNotificationBubble(item) {
+    const chatContainer = document.getElementById('chatMessages');
+    if (!chatContainer) return;
+    const div = document.createElement('div');
+    div.className = 'msg notification';
+    div.innerHTML = `<div class="msg-bubble"><span class="notification-tag">Notification</span>${item.text}</div>`;
+    chatContainer.appendChild(div);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+    logEvent('notification_shown', { id: item.id, text: item.text });
+    setTimeout(() => div.remove(), NOTIFICATION_VISIBLE_MS);
+}
+
+// One recognition-memory probe at the end of each segment: names a notification and asks
+// whether it actually appeared. 50/50 real vs. decoy so guessing "yes" every time isn't
+// free accuracy. Skipped (no penalty, doesn't count toward the denominator) if this
+// segment never fired one -- e.g. a very fast submission.
+function showRecallCheck(onDone) {
+    if (!notificationsShownThisSegment.length) {
+        logEvent('recall_check_skipped', { trial: currentTrial });
+        onDone();
+        return;
+    }
+    const overlay = document.getElementById('recallCheckOverlay');
+    const textEl = document.getElementById('recallCheckText');
+    const yesBtn = document.getElementById('recallCheckYesBtn');
+    const noBtn = document.getElementById('recallCheckNoBtn');
+    if (!overlay || !textEl || !yesBtn || !noBtn) { onDone(); return; }
+
+    const wasShown = Math.random() < 0.5;
+    let probeItem;
+    if (wasShown) {
+        probeItem = notificationsShownThisSegment[Math.floor(Math.random() * notificationsShownThisSegment.length)];
+    } else {
+        const unseen = NOTIFICATION_BANK.filter(n => !notificationsShownThisSegment.some(s => s.id === n.id));
+        probeItem = (unseen.length ? unseen : notificationsShownThisSegment)[Math.floor(Math.random() * (unseen.length || notificationsShownThisSegment.length))];
+    }
+    textEl.innerText = `"${probeItem.text}"`;
+
+    const resolve = (answeredYes) => {
+        const correct = answeredYes === wasShown;
+        sessionNotificationTotals.recallChecks++;
+        if (correct) sessionNotificationTotals.recalledCorrect++;
+        logEvent('recall_check_answered', { trial: currentTrial, probe_id: probeItem.id, was_shown: wasShown, answered_yes: answeredYes, correct });
+        overlay.style.display = 'none';
+        onDone();
+    };
+    yesBtn.onclick = () => resolve(true);
+    noBtn.onclick = () => resolve(false);
+
+    overlay.style.display = 'flex';
+}
+
+// Called only on the very last segment's submission -- turns the session-wide recall
+// tally into the exact fields main.py's CSV export reads. "" (not 0) when no checks ever
+// ran, so it reads as "not applicable" rather than a real 0% score.
+function finalizeAttentionBonus() {
+    const { recallChecks, recalledCorrect } = sessionNotificationTotals;
+    const accuracy = recallChecks > 0 ? recalledCorrect / recallChecks : null;
+    sessionData.attentionAccuracy = accuracy === null ? "" : Math.round(accuracy * 100) / 100;
+    sessionData.attentionQualified = accuracy !== null && accuracy >= NOTIFICATION_ACCURACY_THRESHOLD;
+    logEvent('attention_bonus_computed', { recall_checks: recallChecks, recalled_correct: recalledCorrect, accuracy, qualified: sessionData.attentionQualified });
+}
+
 let previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
 
 function onPreviewFocus() {

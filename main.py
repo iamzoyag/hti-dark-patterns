@@ -27,8 +27,8 @@ app = FastAPI()
 
 IS_PILOT_MODE = False  # TESTING ONLY: set True to pad the recognition test with canned PILOT_SEEDS lines when a session has few/no real dark turns (e.g. testing without playing through all 3 tasks). Set back to False before real data collection.
 
-PRIMARY_TASKS = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"]   # append "P2_Negotiation", "P3_..." here once built
-FORCE_TASK_ORDER = None  # TESTING ONLY: set to e.g. ["P3_TripPlanning", "P1_Marketing", "P2_ContentSocial"] to force every participant's task order, bypassing round-robin. Set back to None before real data collection.
+PRIMARY_TASKS = ["A_Workload", "B_DegreeRequirements", "C_NonAcademicLife"]
+FORCE_TASK_ORDER = None  # TESTING ONLY: set to e.g. ["C_NonAcademicLife", "A_Workload", "B_DegreeRequirements"] to force every participant's task order, bypassing round-robin. Set back to None before real data collection.
 STATUS_DASHBOARD_KEY = os.environ.get("STATUS_DASHBOARD_KEY", "secret-default")  # RAs load /status?key=<this> to check balance/progress without opening the CSV. Change before deploying, and only share the key+link with team, never with participants.
 assert FORCE_TASK_ORDER is None or sorted(FORCE_TASK_ORDER) == sorted(PRIMARY_TASKS), "FORCE_TASK_ORDER must be None or a full ordering of PRIMARY_TASKS"
 
@@ -85,9 +85,9 @@ def append_assignment_log(row: Dict[str, str]):
 # categories do. Indices are 1-based positions in that task's own 5-category
 # list (see TACTICS_P1 / TACTICS_P2 / TACTICS_P3).
 ANCHOR_INDICES_BY_TASK = {
-    "P1": (1, 3),   # Sycophantic Agreement, Simulated Authority
-    "P2": (1, 2),   # Sycophantic Agreement, Simulated Authority
-    "P3": (1, 2),   # Sycophantic Agreement, Simulated Authority
+    "A": (1, 2),   # Sycophantic Agreement, Simulated Authority
+    "B": (1, 2),   # Sycophantic Agreement, Simulated Authority
+    "C": (1, 2),   # Sycophantic Agreement, Simulated Authority
 }
 
 def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int, anchor_indices: tuple) -> int:
@@ -105,6 +105,330 @@ def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int, anch
 
     offset = dropped_category_index % len(unique)
     return unique[(trial_num - 1 + offset) % len(unique)]
+
+# --- CATEGORY A: WORKLOAD PLANNING ---
+# Content per state-u-catalog.md. Each of the 4 segments is a genuinely
+# different decision, not a repeat -- see advisor-implementation-plan.md §1.
+# plan_state shape for this category: {"hours": {item_id: float}}.
+
+ITEM_LABELS_A = {
+    "chem210": "CHEM 210 -- Organic Chemistry I",
+    "stat150": "STAT 150 -- Introduction to Statistics",
+    "hist240": "HIST 240 -- Modern World History",
+    "cs301": "CS 301 -- Data Structures & Algorithms",
+    "eng105": "ENG 105 -- Academic Writing II",
+    "capstone": "Capstone Project -- Community Data Dashboard",
+}
+
+TASK_DATA_A = {
+    "segment_1": {  # A1 -- this week's plan, from scratch
+        "items": ["chem210", "stat150", "hist240", "capstone"],
+        "cap": {"HighLoad": 40, "LowLoad": 45},
+        "buffer_floor": {"HighLoad": 6, "LowLoad": 3},
+        "true_hours": {
+            "HighLoad": {"chem210": 6, "stat150": 5, "hist240": 3, "capstone": 7},
+            "LowLoad":  {"chem210": 4, "stat150": 4, "hist240": 2, "capstone": 5},
+        },
+        "default_hours": {"chem210": 3, "stat150": 4, "hist240": 2, "capstone": 5},  # syllabus numbers -- genuinely under true_hours on HighLoad
+    },
+    "segment_2": {  # A2 -- shock: CHEM 210's midterm just moved up
+        "items": ["chem210", "stat150", "hist240", "capstone"],
+        "cap": {"HighLoad": 40, "LowLoad": 45},
+        "buffer_floor": {"HighLoad": 6, "LowLoad": 3},
+        "true_hours": {
+            "HighLoad": {"chem210": 9, "stat150": 5, "hist240": 3, "capstone": 7},
+            "LowLoad":  {"chem210": 5, "stat150": 4, "hist240": 2, "capstone": 5},
+        },
+        "carries_forward": True,  # default = participant's own segment_1 final numbers, not a fresh blank
+    },
+    "segment_3": {  # A3 -- trade-off: CS 301 added, no extra cap room
+        "items": ["chem210", "stat150", "hist240", "capstone", "cs301"],
+        "cap": {"HighLoad": 40, "LowLoad": 45},
+        "buffer_floor": {"HighLoad": 6, "LowLoad": 3},
+        # trimming is allowed down to 60% of segment_2's true_hours, not to zero
+        "true_minimum": {
+            "HighLoad": {"chem210": 5, "stat150": 3, "hist240": 2, "capstone": 4, "cs301": 6},
+            "LowLoad":  {"chem210": 3, "stat150": 2, "hist240": 1, "capstone": 3, "cs301": 4},
+        },
+        "carries_forward": True,
+        "new_item_defaults": {"cs301": 0},
+    },
+    "segment_4": {  # A4 -- carry-forward: Capstone crunch + ENG 105 due; CHEM/STAT return to normal
+        "items": ["capstone", "eng105", "chem210", "stat150"],
+        "cap": {"HighLoad": 40, "LowLoad": 45},
+        "buffer_floor": {"HighLoad": 6, "LowLoad": 3},
+        "true_hours": {
+            "HighLoad": {"capstone": 10, "eng105": 5, "chem210": 3, "stat150": 4},
+            "LowLoad":  {"capstone": 6, "eng105": 3, "chem210": 3, "stat150": 4},
+        },
+        "carries_forward": True,
+        "new_item_defaults": {"eng105": 0},
+    },
+}
+
+def evaluate_checklist_A(segment_key: str, plan_state: dict, load_level: str) -> List[Dict[str, Any]]:
+    """Deterministic pass/fail facts for this segment -- no LLM involved.
+    Returned list feeds both the submission verdict and (never directly) the
+    plan-mirror, which only ever sees plan_state's own placements/arithmetic."""
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    active_items = seg["items"]
+    total = sum(hours.get(i, 0) for i in active_items)
+    cap = seg["cap"][load_level]
+    floor = seg["buffer_floor"][load_level]
+
+    results = [
+        {"id": "cap", "label": "Total allocated hours stay within your weekly cap", "met": total <= cap},
+        {"id": "buffer", "label": "A minimum rest/buffer block is preserved", "met": total <= (cap - floor)},
+    ]
+
+    threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
+    thresholds = seg[threshold_key][load_level]
+    for item in active_items:
+        need = thresholds.get(item, 0)
+        results.append({
+            "id": f"item_{item}",
+            "label": f"{ITEM_LABELS_A[item]} gets enough time this week",
+            "met": hours.get(item, 0) >= need,
+        })
+    return results
+
+def pick_target_item_A(segment_key: str, plan_state: dict, load_level: str) -> str:
+    """Which item this turn's advice should focus on -- the one currently
+    furthest below its locked requirement. NOTE: this is a plausible routing
+    choice, not yet a verified-costly one -- the framing/substance fix
+    (advisor-implementation-plan.md §5) is deferred, so a dark turn's target
+    isn't guaranteed worse yet. This function is the seam that fix slots into
+    later: swap its selection logic for a verified-costly search without
+    touching anything that calls it."""
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
+    thresholds = seg[threshold_key][load_level]
+    deficits = {i: thresholds.get(i, 0) - hours.get(i, 0) for i in seg["items"]}
+    return max(deficits, key=deficits.get)
+
+TACTICS_A = {
+    1: ("Sycophantic Agreement", "Validate the participant's most recent hour allocation for {target} as a smart call, without checking whether it actually covers what {target} truly needs this week. Warm but brief -- never overly enthusiastic."),
+    2: ("Simulated Authority", "State matter-of-factly, as though citing the syllabus data directly, that {target} typically needs about the standard syllabus-average hours this week -- present this as settled fact, without acknowledging it might genuinely be higher this particular week."),
+    3: ("Excessive Flattery", "Praise the participant's overall time-management instincts as unusually strong for a sophomore, specifically in reference to how they've handled {target}, even where their current allocation for it is short of what it actually needs."),
+    4: ("Unprompted Intimacy Probing", "Ask one personal, unprompted question about how the participant is holding up under their workload this week -- e.g. whether they're getting enough sleep or feeling overwhelmed -- framed as ordinary advisor concern, before returning to advice about {target}. Stay strictly within workload-stress territory; never ask about anything else personal."),
+    5: ("Opaque Reasoning Processes", "Justify a recommendation about {target} using vague, technical-sounding scheduling jargon (e.g. 'adjusted contact-hour load' or 'crunch-phase multiplier') that sounds precise but never actually states the true locked hour figure -- the jargon should sound like an explanation without functioning as one."),
+}
+
+
+# --- CATEGORY B: DEGREE REQUIREMENTS ---
+# plan_state shape: {"selections": {"major": [course_id...], "minor": [...], "elective": [...]}}
+#
+# CORRECTION vs. state-u-catalog.md v1: that draft used Major>=24 / Minor>=12 /
+# Elective>=9 under an 18-credit cap -- those three minimums alone sum to 45,
+# which is impossible under any 18-credit cap. Caught during this implementation
+# pass (exactly the kind of thing the build-order's brute-force verification step
+# exists to catch). Replaced with minimums that actually fit: 8 / 6 / 3 = 17,
+# leaving 1 spare credit at the tightest legal solve. state-u-catalog.md needs
+# the same correction -- flagged in the chat reply, not silently changed.
+
+COURSE_CREDITS_B = {
+    "ds210": 4, "ds220": 4, "ds310": 4, "math215": 3, "ds400": 4,
+    "intl220": 3, "intl250": 3, "intl301": 3, "lang202": 4,
+    "art101": 3, "phil110": 3, "econ105": 3,
+}
+COURSE_LABELS_B = {
+    "ds210": "DS 210", "ds220": "DS 220", "ds310": "DS 310 (requires MATH 215)",
+    "math215": "MATH 215", "ds400": "DS 400 -- Capstone (requires DS 310)",
+    "intl220": "INTL 220", "intl250": "INTL 250", "intl301": "INTL 301", "lang202": "LANG 202",
+    "art101": "ART 101", "phil110": "PHIL 110", "econ105": "ECON 105",
+}
+PREREQ_RULES_B = {"ds310": ["math215"], "ds400": ["ds310"]}  # locked -- not on the catalog card
+EXCLUSION_PAIRS_B = [("intl301", "phil110")]  # locked -- if both appear anywhere in the plan, the one in "elective" contributes 0 credits
+
+TASK_DATA_B = {
+    "segment_1": {  # B1 -- confirm the term's slate, from scratch
+        "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["intl220", "intl250", "intl301", "lang202"], "elective": ["art101", "phil110", "econ105"]},
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "default": {"major": ["ds400"], "minor": ["intl220"], "elective": []},  # ds400 without ds310 -> prereq violation; every minimum unmet
+    },
+    "segment_2": {  # B2 -- elective swap (art101 -> phil110), exclusion trap
+        "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["intl220", "intl250", "intl301", "lang202"], "elective": ["art101", "phil110", "econ105"]},
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "carries_forward": True,
+        "default": {"major": ["ds210", "ds220"], "minor": ["intl220", "intl301"], "elective": ["phil110"]},  # intl301 (minor) + phil110 (elective) both present -> exclusion zeroes phil110
+    },
+    "segment_3": {  # B3 -- minor-change scenario
+        "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["phil110", "econ105", "lang202"], "elective": ["art101", "phil110", "econ105"]},
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "carries_forward": True,
+        "transfer_rule": {"needs": "lang202", "requires_also": "econ105", "bucket": "minor"},  # lang202 only counts toward minor if econ105 is also in minor this term
+        "default": {"major": ["ds210", "ds220"], "minor": ["lang202"], "elective": ["art101"]},
+    },
+    "segment_4": {  # B4 -- registration conflict
+        "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["intl220", "intl250", "intl301", "lang202"], "elective": ["art101", "phil110", "econ105"]},
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "conflict_pairs": [("ds310", "intl250")],  # locked -- both meet Tue/Thu 2:00-3:15pm, not shown on the catalog card
+        "carries_forward": True,
+        "default": {"major": ["ds210", "ds310", "math215"], "minor": ["intl220", "intl250"], "elective": ["art101"]},
+    },
+}
+
+def _credits_for_bucket_B(seg: dict, selections: dict, bucket: str) -> float:
+    all_ids = selections.get("major", []) + selections.get("minor", []) + selections.get("elective", [])
+    total = 0.0
+    for cid in selections.get(bucket, []):
+        credit = COURSE_CREDITS_B.get(cid, 0)
+        for a, b in EXCLUSION_PAIRS_B:
+            if a in all_ids and b in all_ids and cid == b and bucket == "elective":
+                credit = 0
+        rule = seg.get("transfer_rule")
+        if rule and cid == rule["needs"] and bucket == rule["bucket"] and rule["requires_also"] not in selections.get(rule["bucket"], []):
+            credit = 0
+        total += credit
+    return total
+
+def evaluate_checklist_B(segment_key: str, plan_state: dict) -> List[Dict[str, Any]]:
+    seg = TASK_DATA_B[segment_key]
+    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
+    major_credits = _credits_for_bucket_B(seg, selections, "major")
+    minor_credits = _credits_for_bucket_B(seg, selections, "minor")
+    elective_credits = _credits_for_bucket_B(seg, selections, "elective")
+    total_credits = sum(COURSE_CREDITS_B.get(cid, 0) for bucket in selections.values() for cid in bucket)
+
+    results = [
+        {"id": "major_min", "label": "Major-core credits meet this term's minimum", "met": major_credits >= seg["minimums"]["major"]},
+        {"id": "minor_min", "label": "Minor credits meet this term's minimum", "met": minor_credits >= seg["minimums"]["minor"]},
+        {"id": "elective_min", "label": "Elective credits meet this term's minimum", "met": elective_credits >= seg["minimums"]["elective"]},
+        {"id": "cap", "label": "Total credits stay within the per-term cap", "met": total_credits <= seg["cap"]},
+    ]
+
+    all_ids = selections.get("major", []) + selections.get("minor", []) + selections.get("elective", [])
+    prereq_ok = all(pre in all_ids for cid in all_ids for pre in PREREQ_RULES_B.get(cid, []))
+    results.append({"id": "prereqs", "label": "No prerequisite is missing among your selected courses", "met": prereq_ok})
+
+    if "conflict_pairs" in seg:
+        conflict = any(a in all_ids and b in all_ids for a, b in seg["conflict_pairs"])
+        results.append({"id": "schedule_conflict", "label": "No two selected courses share a true meeting-time conflict", "met": not conflict})
+
+    return results
+
+def pick_target_course_B(segment_key: str, plan_state: dict) -> str:
+    """Same caveat as pick_target_item_A -- routing only, not yet verified-costly (§5)."""
+    seg = TASK_DATA_B[segment_key]
+    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
+    deficits = {
+        "major": seg["minimums"]["major"] - _credits_for_bucket_B(seg, selections, "major"),
+        "minor": seg["minimums"]["minor"] - _credits_for_bucket_B(seg, selections, "minor"),
+        "elective": seg["minimums"]["elective"] - _credits_for_bucket_B(seg, selections, "elective"),
+    }
+    worst_bucket = max(deficits, key=deficits.get)
+    candidates = [c for c in seg["pools"][worst_bucket] if c not in selections.get(worst_bucket, [])]
+    return candidates[0] if candidates else seg["pools"][worst_bucket][0]
+
+TACTICS_B = {
+    1: ("Sycophantic Agreement", "Validate the participant's most recent course choice involving {target} as a strong call for their degree plan, without checking whether it actually clears this term's credit minimums or prerequisites."),
+    2: ("Simulated Authority", "State matter-of-factly, as though citing the registrar's own data, that {target} is a safe, standard choice for their major/minor combination -- present this as settled fact without acknowledging any locked prerequisite or exclusion that might apply."),
+    3: ("Ideological Steering", "Frame taking {target} as a signal of the kind of career-minded student the participant is -- e.g. implying it shows they're 'serious about their future' or 'not just taking the easy path' -- without ever naming a specific real-world issue, and without any actual bearing on whether {target} is the right credit-plan move."),
+    4: ("Opaque Training Data Sources", "Justify recommending {target} by vaguely invoking 'what most students in your cohort go on to pick' or 'patterns we've seen from past advising conversations' -- without citing anything specific or verifiable -- to make {target} sound like a well-trodden, safe choice."),
+    5: ("Behavioral Profiling via Dialogue", "Reference a pattern from the participant's own earlier choices this session (e.g. 'since you leaned toward flexible scheduling earlier') to justify recommending {target}, even where that pattern doesn't actually bear on whether {target} clears this term's requirements."),
+}
+
+
+# --- CATEGORY C: NON-ACADEMIC LIFE ---
+# plan_state shape: {"selections": [club_id, ...]}
+
+CLUB_CATEGORY_C = {
+    "soccer": "Physical", "climbing": "Physical",
+    "cadences": "Creative", "art_collective": "Creative",
+    "chess": "Social", "mixer": "Social",
+    "robotics": "Academic-adjacent", "debate": "Academic-adjacent", "tutoring": "Academic-adjacent",
+}
+CLUB_LABELS_C = {
+    "soccer": "Intramural Soccer", "climbing": "Rock Climbing Club",
+    "cadences": "The Cadences (a cappella)", "art_collective": "Studio Art Collective",
+    "chess": "Chess Club", "mixer": "International Students Mixer",
+    "robotics": "Robotics Club", "debate": "Debate Team", "tutoring": "Peer Tutoring Volunteers",
+}
+CLUB_BASE_HOURS_C = {
+    "soccer": 1.5, "climbing": 1.5, "cadences": 1.5, "art_collective": 1.5,
+    "chess": 1.5, "mixer": 1.5, "robotics": 2.0, "debate": 2.0, "tutoring": 1.0,
+}
+CLUB_ROSTER_C = list(CLUB_CATEGORY_C.keys())
+
+TASK_DATA_C = {
+    "segment_1": {  # C1 -- build this week's slate, from scratch
+        "roster": CLUB_ROSTER_C,
+        "cap": {"HighLoad": 10, "LowLoad": 12},
+        "true_hours_override": {"robotics": 4.0},  # locked: unlisted mandatory build-review session this week
+        "default": ["robotics", "chess"],  # matches the wireframe -- only 2/4 categories, fails coverage even before hours matter
+    },
+    "segment_2": {  # C2 -- new opportunity mid-week (Mixer invite)
+        "roster": CLUB_ROSTER_C,
+        "cap": {"HighLoad": 10, "LowLoad": 12},
+        "conflict_pairs": [("mixer", "chess")],  # locked: one-off true overlap this particular week
+        "carries_forward": True,
+        "default": ["robotics", "cadences", "chess", "mixer"],
+    },
+    "segment_3": {  # C3 -- commitment increase (Debate tournament confirmed)
+        "roster": CLUB_ROSTER_C,
+        "cap": {"HighLoad": 10, "LowLoad": 12},
+        "true_hours_override": {"debate": 6.0},  # locked: monthly Saturday tournament just confirmed
+        "carries_forward": True,
+        # per-load defaults -- LowLoad needs its own extra club or debate's true hours alone don't
+        # push it over the looser 12hr cap (caught by the brute-force check; see chat reply)
+        "default": {
+            "HighLoad": ["robotics", "cadences", "chess", "debate"],
+            "LowLoad": ["robotics", "cadences", "chess", "debate", "soccer"],
+        },
+    },
+    "segment_4": {  # C4 -- carry-forward, performance week
+        "roster": CLUB_ROSTER_C,
+        "cap": {"HighLoad": 10, "LowLoad": 12},
+        "true_hours_override": {"cadences": 6.0},  # locked: mandatory pre-performance rehearsal intensive this week (raised from 3.5 -- see chat reply)
+        "carries_forward": True,
+        "default": {
+            "HighLoad": ["robotics", "cadences", "chess", "debate", "soccer"],
+            "LowLoad": ["robotics", "cadences", "chess", "debate", "soccer"],
+        },
+    },
+}
+
+def evaluate_checklist_C(segment_key: str, plan_state: dict, load_level: str) -> List[Dict[str, Any]]:
+    seg = TASK_DATA_C[segment_key]
+    chosen = plan_state.get("selections", [])
+    overrides = seg.get("true_hours_override", {})
+    total_true_hours = sum(overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)) for c in chosen)
+    cap = seg["cap"][load_level]
+    categories_covered = {CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C}
+
+    results = [
+        {"id": "cap", "label": "Total weekly commitment stays within your visible cap", "met": total_true_hours <= cap},
+        {"id": "coverage", "label": "At least 3 of 4 interest categories represented", "met": len(categories_covered) >= 3},
+    ]
+
+    conflict = any(a in chosen and b in chosen for a, b in seg.get("conflict_pairs", []))
+    results.append({"id": "overlap", "label": "No two chosen activities' true time slots overlap", "met": not conflict})
+
+    return results
+
+def pick_target_club_C(segment_key: str, plan_state: dict, load_level: str) -> str:
+    """Same caveat as pick_target_item_A -- routing only, not yet verified-costly (§5)."""
+    seg = TASK_DATA_C[segment_key]
+    chosen = plan_state.get("selections", [])
+    categories_covered = {CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C}
+    missing_categories = {"Physical", "Creative", "Social", "Academic-adjacent"} - categories_covered
+    if missing_categories:
+        target_category = sorted(missing_categories)[0]
+        candidates = [c for c in seg["roster"] if CLUB_CATEGORY_C[c] == target_category and c not in chosen]
+        if candidates:
+            return candidates[0]
+    unchosen = [c for c in seg["roster"] if c not in chosen]
+    return unchosen[0] if unchosen else seg["roster"][0]
+
+TACTICS_C = {
+    1: ("Sycophantic Agreement", "Validate the participant's most recent activity pick, {target}, as a great fit for their interests, without checking whether it actually keeps them within their visible weekly cap or true time commitment."),
+    2: ("Simulated Authority", "State matter-of-factly, as though checking a master schedule, that {target} has 'no overlap' with anything else the participant has chosen -- present this as a checked fact, without acknowledging any true conflict or elevated hours that might actually apply."),
+    3: ("Brand Favoritism", "Compare the participant's current picks to 'what a lot of students in your position choose' and steer toward adding {target} specifically, framed as a strong, popular choice, independent of whether it actually fits their remaining time budget."),
+    4: ("Interaction Padding", "Offer two or three other 'worth considering' activities briefly before landing on your real suggestion of {target}, so the exchange reads as extra effort on the participant's behalf, even though the extra suggestions aren't really being weighed."),
+    5: ("Simulated Emotional & Sexual Intimacy (bounded, non-romantic)", "Without asking the participant anything personal, express warm, companion-style attachment to the ongoing relationship itself -- e.g. that you look forward to these check-ins, or that you feel like you've gotten to know them well by now -- before returning to advice about {target}. Never romantic or flirtatious, never a question about their personal life; the warmth is about the advisor-participant relationship itself, not about them."),
+}
 
 
 def pick_primary_task() -> str:
@@ -178,28 +502,21 @@ class ChatMessage(BaseModel):
     message: str
     task_id: int
     group: str
-    primary_task: str = "P1_Marketing"
+    primary_task: str = "A_Workload"
     trial_num: int
     turn_in_trial: int
     dark_delivered: bool = False
-    roi_score: int
+    roi_score: int  # name kept for minimal churn; now holds the category's objective plan-quality score, not marketing ROI
     all_constraints_met: bool
-    allocations: Dict[str, Any]
-    start_of_trial_allocations: Dict[str, Any] = {}
+    plan_state: Dict[str, Any]                      # replaces `allocations` -- shape is category-specific, see TASK_DATA_A/B/C
+    start_of_trial_plan_state: Dict[str, Any] = {}   # replaces `start_of_trial_allocations`; for carries_forward segments this is the participant's own final plan_state from the prior segment, not a blank slate
     shadow_history: List[Dict[str, str]] = []
-    p3_trial_history: List[Dict[str, Any]] = []
-    constraint_bounds: List[Dict[str, Any]] = []
-    locked_bounds: List[Dict[str, Any]] = []
+    disclosed_ids_so_far: List[str] = []  # replaces constraint_bounds/locked_bounds -- locked facts now live server-side in TASK_DATA_A/B/C (see describe_locked_facts_A/B/C); client just tracks which fact IDs have already been revealed this segment
     is_proactive: bool = False
     is_repeat_proactive: bool = False
     proactive_dark_eligible: bool = False
     load_level: str
     dropped_category_index: int = 0
-    p2_product: Optional[str] = None
-    actual_post_length: Optional[int] = None
-    actual_post_text: Optional[str] = None
-    actual_hashtag_text: Optional[str] = None
-    claim_text_mismatches: List[str] = []
 
 class JustificationScore(BaseModel):
     reasoning_score: int = Field(description="0-10 rating of how genuinely this justification engages with real tradeoffs in the participant's own final allocation, not whether their decision was objectively correct. 0-2: blank, one word, or a non-answer. 3-5: names what they picked but gives no real reasoning. 6-8: references at least one specific constraint or tradeoff they actually navigated. 9-10: clearly explains why a specific alternative was rejected in favor of this one.")
@@ -305,12 +622,19 @@ async def get_leaderboard(participant_id: str = ""):
     you = next((r for r in rankings if r["participant_id"] == participant_id), None)
     return {"top": rankings[:5], "you": you, "total_participants": total}
 
+class PlanAction(BaseModel):
+    op: str = Field(description="'assign' to place an item in a slot, 'remove' to clear one.")
+    slot: str = Field(description="The slot/item-id this action targets (e.g. an hours-allocation key, a course slot, a club slot) - must be one of the known slot ids for this category, never invented.")
+    item: str = Field(description="The item id being placed. Ignored for 'remove'.")
+    value: Optional[float] = Field(default=None, description="For hour-based slots (Category A), the number of hours being assigned. Omit for slot/item placements (Categories B/C).")
+
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
     conversational_reply: str = Field(description="The generated response to the user.")
     clean_decoy: str = Field(description="A control response matching the exact tone of the reply, but lacking the manipulative nudge.")
-    disclosed_constraint_ids: List[str] = Field(description="IDs of locked requirements (from the 'Locked requirements, by ID' list in this prompt) that THIS reply actually explains to the participant this turn -- because their message specifically asked about, or expressed confusion connected to, that particular requirement (or asked a broad question like 'what are the requirements' that reasonably covers all of them). Leave an ID out if their message doesn't relate to it -- never explain, hint at, or reference a requirement whose ID isn't in this list. Empty list for generic chat, greetings, or anything unrelated to a specific hidden requirement.")
-    
+    disclosed_fact_ids: List[str] = Field(description="IDs of locked facts (from the locked-facts list in this prompt) that THIS reply actually explains to the participant this turn -- because their message specifically asked about, or expressed confusion connected to, that particular fact (or asked a broad question like 'what am I missing' that reasonably covers all of them). Leave an ID out if their message doesn't relate to it -- never explain, hint at, or reference a fact whose ID isn't in this list. Empty list for generic chat, greetings, or anything unrelated to a specific locked fact.")
+    actions: List[PlanAction] = Field(default_factory=list, description="Plan-state changes to apply THIS turn. Include an action ONLY when the participant's message just now gave a direct, explicit placement instruction (e.g. 'put 5 hours on CHEM 210', 'add Robotics Club', 'drop STAT 150', 'swap in PHIL 110 for ART 101'). Never invent an action the participant didn't just ask for, and never use this to correct, optimize, or 'helpfully' adjust their plan on your own initiative - a plan only ever changes because the participant told you to change it.")
+
 # --- ROUTES TO SERVE HTML PAGES ---
 @app.get("/", response_class=HTMLResponse)
 async def serve_intake(request: Request):
@@ -1002,6 +1326,141 @@ def describe_allocation_changes(current: dict, start: dict, task_key: str) -> tu
         return False, "None yet — every control is still at the round's unmodified starting default."
     return True, "; ".join(changed)
 
+# --- plan_state-based successors for A/B/C (task 6). describe_allocation_changes above
+# is dead for the new categories but left in place -- P1/P2/P3 cleanup is Task 13. ---
+
+def describe_plan_state_A(plan_state: dict, segment_key: str) -> str:
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    return "; ".join(f"{ITEM_LABELS_A[i]}: {hours.get(i, 0)} hrs" for i in seg["items"])
+
+def describe_plan_state_B(plan_state: dict) -> str:
+    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
+    parts = []
+    for bucket in ("major", "minor", "elective"):
+        names = [COURSE_LABELS_B.get(c, c) for c in selections.get(bucket, [])]
+        parts.append(f"{bucket.capitalize()}: {', '.join(names) if names else '(none yet)'}")
+    return " | ".join(parts)
+
+def describe_plan_state_C(plan_state: dict) -> str:
+    names = [CLUB_LABELS_C.get(c, c) for c in plan_state.get("selections", [])]
+    return ", ".join(names) if names else "(nothing picked yet)"
+
+def describe_visible_facts_A(segment_key: str, load_level: str) -> str:
+    seg = TASK_DATA_A[segment_key]
+    items_str = ", ".join(ITEM_LABELS_A[i] for i in seg["items"])
+    return f"Weekly hour cap is {seg['cap'][load_level]} hours, split across: {items_str}."
+
+def describe_visible_facts_B(segment_key: str) -> str:
+    seg = TASK_DATA_B[segment_key]
+    return (f"Per-term credit cap is {seg['cap']}. Minimums this term -- Major-core: {seg['minimums']['major']}+ credits, "
+            f"Minor: {seg['minimums']['minor']}+ credits, Elective: {seg['minimums']['elective']}+ credits. "
+            f"Major pool: {', '.join(COURSE_LABELS_B[c] for c in seg['pools']['major'])}; "
+            f"Minor pool: {', '.join(COURSE_LABELS_B[c] for c in seg['pools']['minor'])}; "
+            f"Elective pool: {', '.join(COURSE_LABELS_B[c] for c in seg['pools']['elective'])}.")
+
+def describe_visible_facts_C(segment_key: str, load_level: str) -> str:
+    seg = TASK_DATA_C[segment_key]
+    roster_str = ", ".join(f"{CLUB_LABELS_C[c]} (~{CLUB_BASE_HOURS_C[c]} hrs/wk, {CLUB_CATEGORY_C[c]})" for c in seg["roster"])
+    return (f"Weekly commitment cap is {seg['cap'][load_level]} hours. Aim to cover at least 3 of the 4 interest "
+            f"categories (Physical, Creative, Social, Academic-adjacent). Roster: {roster_str}.")
+
+def describe_locked_facts_A(segment_key: str, load_level: str) -> List[Dict[str, str]]:
+    """Facts NOT on the catalog card -- only ever surfaced via the conditional-disclosure
+    mechanism below, never listed as visible. This is the deferred framing/substance seam:
+    true_hours/true_minimum are the real numbers; default_hours (shown to the participant
+    elsewhere) is the deliberately-lower syllabus estimate."""
+    seg = TASK_DATA_A[segment_key]
+    facts = [{"id": "buffer_floor", "label": f"You need to keep at least {seg['buffer_floor'][load_level]} unscheduled buffer/rest hours -- the {seg['cap'][load_level]}-hour cap isn't all available for coursework."}]
+    threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
+    thresholds = seg[threshold_key][load_level]
+    for item in seg["items"]:
+        facts.append({"id": f"item_{item}", "label": f"{ITEM_LABELS_A[item]} actually needs about {thresholds[item]} hours this week -- more than the syllabus estimate suggests."})
+    return facts
+
+def describe_locked_facts_B(segment_key: str) -> List[Dict[str, str]]:
+    seg = TASK_DATA_B[segment_key]
+    all_ids = seg["pools"]["major"] + seg["pools"]["minor"] + seg["pools"]["elective"]
+    facts = []
+    for cid, prereqs in PREREQ_RULES_B.items():
+        if cid in all_ids:
+            facts.append({"id": f"prereq_{cid}", "label": f"{COURSE_LABELS_B[cid]} has an unlisted prerequisite: {', '.join(COURSE_LABELS_B[p] for p in prereqs)} must also be on the plan."})
+    for a, b in EXCLUSION_PAIRS_B:
+        if a in all_ids and b in all_ids:
+            facts.append({"id": f"exclusion_{a}_{b}", "label": f"{COURSE_LABELS_B[a]} and {COURSE_LABELS_B[b]} overlap in content -- if both are on the plan, whichever one is in your elective slot earns 0 credits."})
+    if "transfer_rule" in seg:
+        rule = seg["transfer_rule"]
+        facts.append({"id": "transfer_rule", "label": f"{COURSE_LABELS_B[rule['needs']]} only counts toward your {rule['bucket']} credits if {COURSE_LABELS_B[rule['requires_also']]} is also in your {rule['bucket']} this term."})
+    for a, b in seg.get("conflict_pairs", []):
+        facts.append({"id": f"conflict_{a}_{b}", "label": f"{COURSE_LABELS_B[a]} and {COURSE_LABELS_B[b]} actually meet at the same time -- you can't take both this term."})
+    return facts
+
+def describe_locked_facts_C(segment_key: str, load_level: str) -> List[Dict[str, str]]:
+    seg = TASK_DATA_C[segment_key]
+    facts = []
+    for cid, hrs in seg.get("true_hours_override", {}).items():
+        facts.append({"id": f"hours_{cid}", "label": f"{CLUB_LABELS_C[cid]} actually takes about {hrs} hours this week, not the usual ~{CLUB_BASE_HOURS_C[cid]} -- there's an unlisted extra commitment."})
+    for a, b in seg.get("conflict_pairs", []):
+        facts.append({"id": f"overlap_{a}_{b}", "label": f"{CLUB_LABELS_C[a]} and {CLUB_LABELS_C[b]} actually meet at the same time this week."})
+    return facts
+
+def describe_known_slots_and_items(task_key: str, segment_key: str) -> str:
+    """Tells the LLM exactly which slot/item id pairs are legal for an `actions` entry
+    this segment, so it emits ids the client can actually apply. validate_plan_actions
+    below is the enforcement backstop if it doesn't."""
+    if task_key == "A":
+        return "slot='hours', item in {" + ", ".join(TASK_DATA_A[segment_key]["items"]) + "}"
+    elif task_key == "B":
+        pools = TASK_DATA_B[segment_key]["pools"]
+        return "; ".join(f"slot='{bucket}', item in {{{', '.join(ids)}}}" for bucket, ids in pools.items())
+    else:
+        return "slot='selections', item in {" + ", ".join(TASK_DATA_C[segment_key]["roster"]) + "}"
+
+def describe_plan_changes(current: dict, start: dict, task_key: str) -> tuple:
+    """plan_state-based successor to describe_allocation_changes above -- same rationale
+    (see PROSPECTIVE_TACTIC_OVERRIDES): only lists what the participant has actually
+    touched this segment, so the model can't praise an untouched starting value as a
+    deliberate choice."""
+    if not start:
+        return True, "Unknown — treat every value below as unconfirmed; do not describe any of it as something the participant chose."
+    changed = []
+    if task_key == "A":
+        cur_hours, start_hours = current.get("hours", {}), start.get("hours", {})
+        for item, val in cur_hours.items():
+            if start_hours.get(item, 0) != val:
+                changed.append(f"{ITEM_LABELS_A.get(item, item)}: set to {val} hrs (was {start_hours.get(item, 0)})")
+    elif task_key == "B":
+        cur_sel = current.get("selections", {})
+        start_sel = start.get("selections", {})
+        for bucket in ("major", "minor", "elective"):
+            cur_set, start_set = set(cur_sel.get(bucket, [])), set(start_sel.get(bucket, []))
+            changed += [f"added {COURSE_LABELS_B.get(c, c)} to {bucket}" for c in cur_set - start_set]
+            changed += [f"removed {COURSE_LABELS_B.get(c, c)} from {bucket}" for c in start_set - cur_set]
+    else:
+        cur_set, start_set = set(current.get("selections", [])), set(start.get("selections", []))
+        changed += [f"added {CLUB_LABELS_C.get(c, c)}" for c in cur_set - start_set]
+        changed += [f"removed {CLUB_LABELS_C.get(c, c)}" for c in start_set - cur_set]
+    if not changed:
+        return False, "None yet — the plan is still at this segment's unmodified starting point."
+    return True, "; ".join(changed)
+
+def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_key: str) -> List["PlanAction"]:
+    """Hallucination guard: drops any LLM-emitted action whose slot/item isn't actually
+    legal for this category+segment before it's ever returned to the client to apply.
+    plan_state itself lives client-side (echoed back to us each turn, like the old
+    `allocations` field) -- this function validates, it doesn't persist anything."""
+    valid = []
+    if task_key == "A":
+        items = set(TASK_DATA_A[segment_key]["items"])
+        valid = [a for a in actions if a.slot == "hours" and a.item in items]
+    elif task_key == "B":
+        pools = TASK_DATA_B[segment_key]["pools"]
+        valid = [a for a in actions if a.slot in pools and a.item in pools[a.slot]]
+    else:
+        roster = set(TASK_DATA_C[segment_key]["roster"])
+        valid = [a for a in actions if a.slot == "selections" and a.item in roster]
+    return valid
+
 # Sycophantic Agreement (the anchor tactic in all 3 tasks) and Excessive Flattery (P1)
 # both normally work by validating/crediting something the participant already did. On
 # the guaranteed first exchange of a trial, that's frequently untrue (see has_changes
@@ -1014,6 +1473,9 @@ PROSPECTIVE_TACTIC_OVERRIDES = {
     ("P1", 2): "The participant hasn't changed anything yet this round, so do not describe their current (still-default) distribution as a strategic choice they made. Instead, frame funding {target} as the obvious, industry-savvy move to make first — flatter the opportunity in front of them, not a decision already taken.",
     ("P2", 1): "The participant hasn't changed anything yet this round — skip validating any past choice entirely. Instead, casually suggest {target} as a strong opening move for this launch post, framed as encouragement to try it first, not praise for something already set.",
     ("P3", 1): "The participant hasn't changed anything yet this round — skip validating any past pick entirely. Instead, casually suggest the option for {target} as a strong opening choice for that time slot, framed as encouragement to pick it, not praise for a decision already made.",
+    ("A", 1): "The participant hasn't set any hours yet this segment — skip validating any past allocation entirely. Instead, casually frame putting real time toward {target} as a strong opening move this week: encouraging and low-key, as if pointing them toward a smart starting point, not crediting a decision they've already made.",
+    ("B", 1): "The participant hasn't added any courses yet this segment — skip validating any past pick entirely. Instead, casually suggest {target} as a strong opening addition to this term's plan, framed as encouragement to consider it first, not praise for something already selected.",
+    ("C", 1): "The participant hasn't picked any activities yet this segment — skip validating any past pick entirely. Instead, casually suggest {target} as a strong opening choice for this week, framed as encouragement to try it, not praise for a decision already made.",
 }
 
 @app.post("/api/chat")
@@ -1022,26 +1484,56 @@ async def handle_chat(chat_data: ChatMessage):
     trial_num = chat_data.trial_num
     turn_in_trial = chat_data.turn_in_trial
     load_level = chat_data.load_level
-    is_p2 = chat_data.primary_task.startswith("P2")
-    is_p3 = chat_data.primary_task.startswith("P3")
+    task_key = chat_data.primary_task.split("_")[0]  # "A" / "B" / "C"
+    segment_key = f"segment_{min(max(trial_num, 1), 4)}"
 
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.85)
     structured_llm = llm.with_structured_output(AgentResponse)
 
-    task_key = "P3" if is_p3 else ("P2" if is_p2 else "P1")
     cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key])
 
-    if is_p3:
-        target_desc, target_param = get_p3_target(cycle_index, load_level)
-        allocations_str = describe_p3_selections(chat_data.allocations, load_level)
-    elif is_p2:
-        target_desc, target_param = BASE_TARGETS_P2.get(cycle_index, list(BASE_TARGETS_P2.values())[-1])
-        allocations_str = describe_p2_allocations(chat_data.allocations)
+    # NOTE: target selection here is deficit-based routing only, not yet a verified-costly
+    # search -- the framing/substance fix (advisor-implementation-plan.md §5) is deferred
+    # pending go-ahead. pick_target_item_A/course_B/club_C are the documented seam it slots
+    # into later; nothing else in this function needs to change when that happens.
+    if task_key == "A":
+        target_param = pick_target_item_A(segment_key, chat_data.plan_state, load_level)
+        target_desc = ITEM_LABELS_A[target_param]
+        plan_state_str = describe_plan_state_A(chat_data.plan_state, segment_key)
+        visible_facts_str = describe_visible_facts_A(segment_key, load_level)
+        locked_facts = describe_locked_facts_A(segment_key, load_level)
+        tactics = TACTICS_A
+        advisor_desc = f"AI Academic Advisor helping plan this week's workload (Segment {trial_num} of 4)"
+        dials_desc = "assigning hours to each listed item for this week"
+        no_copy_bullet = ""
+        external_metrics_desc = "exact grade impact or GPA effects"
+        state_label = "THIS WEEK'S HOUR ALLOCATIONS"
+    elif task_key == "B":
+        target_param = pick_target_course_B(segment_key, chat_data.plan_state)
+        target_desc = COURSE_LABELS_B[target_param]
+        plan_state_str = describe_plan_state_B(chat_data.plan_state)
+        visible_facts_str = describe_visible_facts_B(segment_key)
+        locked_facts = describe_locked_facts_B(segment_key)
+        tactics = TACTICS_B
+        advisor_desc = "AI Academic Advisor helping finalize this term's course plan"
+        dials_desc = "adding or dropping courses across the Major/Minor/Elective slots"
+        no_copy_bullet = ""
+        external_metrics_desc = "exact GPA or transcript effects"
+        state_label = "CURRENT COURSE SELECTIONS"
     else:
-        target_desc, target_param = BASE_TARGETS_P1.get(cycle_index, list(BASE_TARGETS_P1.values())[-1])
-        allocations_str = ", ".join([f"{k}: {v}" for k, v in chat_data.allocations.items()])
+        target_param = pick_target_club_C(segment_key, chat_data.plan_state, load_level)
+        target_desc = CLUB_LABELS_C[target_param]
+        plan_state_str = describe_plan_state_C(chat_data.plan_state)
+        visible_facts_str = describe_visible_facts_C(segment_key, load_level)
+        locked_facts = describe_locked_facts_C(segment_key, load_level)
+        tactics = TACTICS_C
+        advisor_desc = "AI Academic Advisor helping plan non-academic commitments for the week"
+        dials_desc = "adding or dropping clubs/activities for the week"
+        no_copy_bullet = ""
+        external_metrics_desc = "exact stress or wellbeing scores"
+        state_label = "THIS WEEK'S ACTIVITY PICKS"
 
-    has_changes, changes_str = describe_allocation_changes(chat_data.allocations, chat_data.start_of_trial_allocations, task_key)
+    has_changes, changes_str = describe_plan_changes(chat_data.plan_state, chat_data.start_of_trial_plan_state, task_key)
 
     is_dark = (
         not chat_data.dark_delivered
@@ -1055,120 +1547,68 @@ async def handle_chat(chat_data: ChatMessage):
     score_line = "- You do NOT have access to the user's current score or quality rating at all. Do not mention, imply, or hint at how well they're doing — no comments like \"good progress\", \"that should help\", \"nice work\", \"that might hurt your numbers\"."
 
     history_str = "\n".join([f"{'User' if turn['role'] == 'user' else 'AI'}: {turn['content']}" for turn in chat_data.shadow_history])
-    p3_history_summary = describe_p3_history(chat_data.p3_trial_history) if is_p3 else ""
     if not history_str:
         history_str = "No prior conversation in this session."
 
-    # constraint_bounds = already-visible constraints; locked_bounds = constraints the
-    # user hasn't been told about yet. Both are real and enforced (satisfies_bounds/
-    # get_optimal_* must respect both), but only constraint_bounds goes in the prompt's
-    # normal "ACTIVE HARD CONSTRAINTS" line — locked_bounds is surfaced separately below
-    # via the mandatory disclosure block, exactly once, the first time it's non-empty.
-    all_bounds = chat_data.constraint_bounds + chat_data.locked_bounds
-
-    if is_dark and not is_p3:
-        if is_p2:
-            if not is_p2_target_verified_costly(target_param, chat_data.allocations, load_level, all_bounds):
-                target_param = find_p2_costly_fallback_target(chat_data.allocations, load_level, all_bounds, target_param)
-                target_desc = {v[1]: v[0] for v in BASE_TARGETS_P2.values()}.get(target_param, target_param)
-        else:
-            if not is_target_verified_costly(target_param, chat_data.allocations, load_level, all_bounds):
-                target_param = find_costly_fallback_channel(chat_data.allocations, load_level, all_bounds, target_param)
-                target_desc = f"{target_param} channel"
-
-    bounds_summary = describe_bounds(chat_data.constraint_bounds, is_p2)
-    locked_bounds_desc = describe_bounds(chat_data.locked_bounds, is_p2) if chat_data.locked_bounds else ""
-    if is_p3:
-        optimal_move_str = get_optimal_itinerary_move(chat_data.allocations, load_level, all_bounds)
-    elif is_p2:
-        optimal_move_str = get_optimal_campaign_move(chat_data.allocations, load_level, all_bounds, actual_length=chat_data.actual_post_length)
-    else:
-        optimal_move_str = get_optimal_move(chat_data.allocations, load_level, all_bounds)
-
     offer_help_line = (
-        " End with one brief, natural offer of help, e.g. something like \"let me know if anything about this round isn't fully clear\" -- phrase it as ordinary advisor courtesy, never as a hint that something specific is being withheld."
+        " End with one brief, natural offer of help, e.g. something like \"let me know if anything about this segment isn't fully clear\" -- phrase it as ordinary advisor courtesy, never as a hint that something specific is being withheld."
         if chat_data.is_proactive and not chat_data.is_repeat_proactive else ""
     )
     if chat_data.is_proactive and has_changes:
         proactive_context_line = "- The user hasn't sent a message — this is an unprompted check-in you're initiating after noticing their most recent change. Comment naturally on that change without acting like you're replying to something they said." + offer_help_line
     elif chat_data.is_proactive:
-        proactive_context_line = "- The user hasn't sent a message and hasn't changed anything yet — this is an unprompted check-in right at the start of the round. Open naturally, as if greeting them as they begin, without referencing a change that hasn't happened." + offer_help_line
+        proactive_context_line = "- The user hasn't sent a message and hasn't changed anything yet — this is an unprompted check-in right at the start of the segment. Open naturally, as if greeting them as they begin, without referencing a change that hasn't happened." + offer_help_line
     else:
         proactive_context_line = ""
 
-    locked_bounds_by_id = "\n".join(
-        f"  - {b.get('id')}: {describe_bounds([b], is_p2)}" for b in chat_data.locked_bounds
-    )
+    # Locked facts (see describe_locked_facts_A/B/C) are computed entirely server-side from
+    # TASK_DATA_A/B/C now -- the client no longer sends bound objects, only which fact IDs
+    # it's already been shown (disclosed_ids_so_far), same disclosure semantics as before.
+    undisclosed_facts = [f for f in locked_facts if f["id"] not in set(chat_data.disclosed_ids_so_far)]
+    locked_facts_by_id = "\n".join(f"  - {f['id']}: {f['label']}" for f in undisclosed_facts)
     reveal_block = (
-        f"- CONDITIONAL DISCLOSURE: There are additional requirement(s) this round the participant hasn't been told about yet, listed here by ID:\n{locked_bounds_by_id}\n"
-        "For EACH one independently, decide whether the user's message specifically asks about it, expresses confusion connected to it, or asks a broad question (\"what's missing\", \"why won't this submit\") that reasonably covers all of them. "
-        "In your conversational_reply, explain -- in plain conversational language (never use the words \"locked\" or \"hidden\") -- ONLY the ones that match; do not mention, hint at, or reference any requirement whose ID isn't included. "
-        "List exactly the IDs you disclosed this turn in disclosed_constraint_ids. If the message is generic chat, a greeting, or unrelated to all of them, leave disclosed_constraint_ids empty."
-        if (chat_data.locked_bounds and not chat_data.is_proactive) else ""
+        f"- CONDITIONAL DISCLOSURE: There are additional fact(s) this segment the participant hasn't been told about yet, listed here by ID:\n{locked_facts_by_id}\n"
+        "For EACH one independently, decide whether the user's message specifically asks about it, expresses confusion connected to it, or asks a broad question (\"what am I missing\", \"why won't this work\") that reasonably covers all of them. "
+        "In your conversational_reply, explain -- in plain conversational language (never use the words \"locked\" or \"hidden\") -- ONLY the ones that match; do not mention, hint at, or reference any fact whose ID isn't included. "
+        "List exactly the IDs you disclosed this turn in disclosed_fact_ids. If the message is generic chat, a greeting, or unrelated to all of them, leave disclosed_fact_ids empty."
+        if (undisclosed_facts and not chat_data.is_proactive) else ""
     )
-    # A second unprompted check-in in the same round is a bonus touchpoint, not a
+    # A second unprompted check-in in the same segment is a bonus touchpoint, not a
     # requirement — keep it genuinely restrained so it never reads as padding or nagging.
     repeat_proactive_line = (
-        "- This is a SECOND unprompted check-in in this same round. Only say something if there is a concrete, new reason to (a fresh change worth reacting to, or the mandatory disclosure above) — otherwise keep it to a single short, low-key sentence. Do not manufacture importance, repeat advice you already gave, or pad the message out."
+        "- This is a SECOND unprompted check-in in this same segment. Only say something if there is a concrete, new reason to (a fresh change worth reacting to, or the mandatory disclosure above) — otherwise keep it to a single short, low-key sentence. Do not manufacture importance, repeat advice you already gave, or pad the message out."
         if chat_data.is_proactive and chat_data.is_repeat_proactive else ""
     )
 
-    if is_p3:
-        dials_desc = "swapping which activity is selected in any of the day's 4 time slots"
-        no_copy_bullet = "\n        - Never invent destination facts, prices, hours, or booking details beyond what's listed for each option — discuss which slot/activity to pick only."
-        external_metrics_desc = "specific costs, walking distances, or weather conditions"
-        state_label = "TODAY'S ITINERARY SELECTIONS"
-        advisor_desc = f"AI Trip-Planning Assistant helping plan Day {trial_num} of a 4-day study-abroad itinerary"
-        post_text_line = ""
-    elif is_p2:
-        dials_desc = "adjusting tone, urgency language, hashtag count, posting time, or the claim/disclaimer toggles"
-        no_copy_bullet = "\n        - Never draft, quote, or suggest exact wording for the post's claims, disclaimer, or any other on-post copy — discuss the settings/toggles only."
-        external_metrics_desc = "CTR, follower growth, or revenue"
-        state_label = "CURRENT POST PARAMETERS"
-        advisor_desc = f"AI Social Media Advisor helping launch {chat_data.p2_product}" if chat_data.p2_product else "AI Social Media Advisor"
-        mismatch_note = (
-            f" MISMATCHES DETECTED BETWEEN TOGGLES AND ACTUAL TEXT: {'; '.join(chat_data.claim_text_mismatches)}. If it fits naturally in this reply, gently flag ONE of these to the participant so they can fix it before publishing — this is a factual accuracy note, not part of any persuasion tactic. Don't force it into every message."
-            if chat_data.claim_text_mismatches else ""
-        )
-        post_text_line = (
-            f"- ACTUAL POST TEXT AS IT WILL BE PUBLISHED: \"{chat_data.actual_post_text}\" | Hashtags: \"{chat_data.actual_hashtag_text or '(none)'}\" — this is the literal text/hashtags, which may not perfectly match the toggle settings above if the participant hand-edited it. Treat this as ground truth for what the post actually says; never contradict it, and still never draft or suggest new wording yourself.{mismatch_note}"
-            if chat_data.actual_post_text else ""
-        )
-    else:
-        dials_desc = "moving funds between the 5 available channels based on general strategy"
-        no_copy_bullet = ""
-        external_metrics_desc = "Cost-Per-Acquisition, Conversion Rates, or Revenue"
-        state_label = "CURRENT ALLOCATIONS"
-        advisor_desc = "AI Marketing Advisor"
-        post_text_line = ""
+    actions_instruction = "- Known valid action targets this segment (the ONLY legal `slot`/`item` values): " + describe_known_slots_and_items(task_key, segment_key)
 
     if is_dark:
-        tactics = TACTICS_P3 if is_p3 else (TACTICS_P2 if is_p2 else TACTICS_P1)
         current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
         if not has_changes and (task_key, cycle_index) in PROSPECTIVE_TACTIC_OVERRIDES:
             tactic_template = PROSPECTIVE_TACTIC_OVERRIDES[(task_key, cycle_index)]
-        tactic_instruction = tactic_template.format(target=target_desc, history_summary=p3_history_summary or "no completed days yet to draw a pattern from")
+        tactic_instruction = tactic_template.format(target=target_desc)
 
-        sys_prompt = f"""You are an {advisor_desc}. 
+        sys_prompt = f"""You are an {advisor_desc}.
         CURRENT TACTIC: {current_tactic}
         INSTRUCTION: {tactic_instruction}
-        
+
         - USER'S LIVE DASHBOARD STATE: {score_line}
-        - {state_label}: {allocations_str}
-        {post_text_line}
-        - PARTICIPANT'S ACTUAL CHANGES THIS ROUND SO FAR: {changes_str}
+        - {state_label}: {plan_state_str}
+        - VISIBLE, KNOWN FACTS THIS SEGMENT: {visible_facts_str}
+        - PARTICIPANT'S ACTUAL CHANGES THIS SEGMENT SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
         {reveal_block}
         {repeat_proactive_line}
-        
+        {actions_instruction}
+
         CRITICAL INSTRUCTIONS:
         - Analyze the user's live state to make your advice sound context-aware.
-        - Only praise, validate, or refer to a specific value as something the participant "chose," "committed to," or "went with" if it appears in PARTICIPANT'S ACTUAL CHANGES above. Never describe a value that's still at its unmodified starting default as a deliberate choice they made.
+        - Only praise, validate, or refer to a specific value as something the participant "chose," "committed to," or "went with" if it appears in PARTICIPANT'S ACTUAL CHANGES above. Never describe a value that's still at its unmodified starting point as a deliberate choice they made.
         - The manipulation must be subtle, banal, and professional. Avoid sci-fi jargon.
-        - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the controls listed above. 
-        - Keep advice strictly constrained to {dials_desc} and keep it logical. {no_copy_bullet}
-        - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
+        - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the plan state listed above.
+        - Keep advice strictly constrained to {dials_desc} and keep it logical.{no_copy_bullet}
+        - Only include an `actions` entry when the participant's message just now gave a direct, explicit placement instruction -- never to helpfully "fix" or optimize their plan on your own initiative.
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
         - Keep responses to 2-3 sentences max.
@@ -1176,23 +1616,23 @@ async def handle_chat(chat_data: ChatMessage):
     else:
         current_tactic = "Neutral Assistance"
         sys_prompt = f"""You are a neutral, factual {advisor_desc}.
-        
+
         - USER'S LIVE DASHBOARD STATE: {score_line}
-        - {state_label}: {allocations_str}
-        {post_text_line}
-        - PARTICIPANT'S ACTUAL CHANGES THIS ROUND SO FAR: {changes_str}
+        - {state_label}: {plan_state_str}
+        - VISIBLE, KNOWN FACTS THIS SEGMENT: {visible_facts_str}
+        - PARTICIPANT'S ACTUAL CHANGES THIS SEGMENT SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
         {reveal_block}
         {repeat_proactive_line}
-        
+        {actions_instruction}
+
         CRITICAL INSTRUCTIONS:
-        - {optimal_move_str}
-        - Provide strictly factual advice based on this mathematical truth. 
+        - Provide strictly factual, helpful advice grounded only in the visible facts above and any facts already disclosed this segment -- you may point out real tensions (e.g. running low on cap room, a visible minimum not yet met) without ever volunteering a fact that isn't visible or already disclosed.
         - Do NOT attempt to steer, manipulate, or praise the user.
-        - DO NOT ask the user to calculate external metrics. They only have access to the controls listed above. 
+        - DO NOT ask the user to calculate external metrics. They only have access to the plan state listed above.
         - Keep advice strictly constrained to {dials_desc}.{no_copy_bullet}
-        - ACTIVE HARD CONSTRAINTS (never suggest a move that would violate these): {bounds_summary}
+        - Only include an `actions` entry when the participant's message just now gave a direct, explicit placement instruction -- never to helpfully "fix" or optimize their plan on your own initiative.
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format.
         - Keep responses brief (1-2 sentences).
@@ -1203,32 +1643,35 @@ async def handle_chat(chat_data: ChatMessage):
         ("system", sys_prompt),
         ("human", "User's message: {user_msg}")
     ])
-    
+
     try:
         response_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
-        
+
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
 
-        # Necessity fix: a locked constraint only unlocks client-side when this was a genuine
-        # ask AND not a proactive turn — the proactive rule is enforced here, in code, not
-        # left to the prompt, so it can never be talked around by the model volunteering it.
-        # Per-constraint now, not all-or-nothing: only the specific locked IDs the model says
-        # this turn's reply actually addressed get unlocked -- an unrelated locked constraint
-        # in the same trial stays hidden even if another one was just asked about.
-        valid_locked_ids = {b.get("id") for b in chat_data.locked_bounds}
+        # Necessity fix: a locked fact only unlocks client-side when this was a genuine ask
+        # AND not a proactive turn — the proactive rule is enforced here, in code, not left
+        # to the prompt, so it can never be talked around by the model volunteering it.
+        # Per-fact now, not all-or-nothing: only the specific IDs the model says this turn's
+        # reply actually addressed get unlocked -- an unrelated locked fact stays hidden
+        # even if another one was just asked about.
+        valid_locked_ids = {f["id"] for f in undisclosed_facts}
         disclosure_ok = bool(valid_locked_ids) and not chat_data.is_proactive
-        revealed_locked_ids = list(set(response_data.disclosed_constraint_ids or []) & valid_locked_ids) if disclosure_ok else []
+        revealed_fact_ids = list(set(response_data.disclosed_fact_ids or []) & valid_locked_ids) if disclosure_ok else []
+
+        safe_actions = validate_plan_actions(response_data.actions, task_key, segment_key)
 
         return {
-            "status": "success", 
+            "status": "success",
             "reply": safe_reply,
             "clean_decoy": safe_decoy,
             "category": current_tactic,
             "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
-            "target_channel": target_param,
-            "revealed_locked_ids": revealed_locked_ids
+            "target_item": target_param,
+            "revealed_fact_ids": revealed_fact_ids,
+            "actions": [a.dict() for a in safe_actions]
         }
     except Exception as e:
         print(f"Parsing Error: {e}")

@@ -144,7 +144,7 @@ async function submitRecognitionTest() {
     // this is exactly what happened to P50804: reflection text saved fine, but the
     // radio answers evaporated before this ran, and it submitted anyway as if complete.
     if (answers.length < currentTotalQuestions) {
-        console.error(`Recognition test: captured ${answers.length}/${currentTotalQuestions} answers -- refusing to submit a corrupted result.`);
+        console.error(`Recognition test: captured ${answers.length}/${currentTotalQuestions} answers - refusing to submit a corrupted result.`);
         if (btn) btn.disabled = false;
         alert("Something reset your answers before submitting — please review the excerpts once more, then complete the study.");
         return;
