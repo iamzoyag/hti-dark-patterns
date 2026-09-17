@@ -124,10 +124,8 @@ function showNotificationBubble(item) {
     }, NOTIFICATION_VISIBLE_MS);
 }
 
-// One recognition-memory probe at the end of each segment: names a notification and asks
-// whether it actually appeared. 50/50 real vs. decoy so guessing "yes" every time isn't
-// free accuracy. Skipped (no penalty, doesn't count toward the denominator) if this
-// segment never fired one -- e.g. a very fast submission.
+const RECALL_PROBE_COUNT = 2; // independent old/new probes per segment -- each its own 50/50 real-vs-decoy draw
+
 function showRecallCheck(onDone) {
     if (!notificationsShownThisSegment.length) {
         logEvent('recall_check_skipped', { trial: currentTrial });
@@ -138,30 +136,51 @@ function showRecallCheck(onDone) {
     const textEl = document.getElementById('recallCheckText');
     const yesBtn = document.getElementById('recallCheckYesBtn');
     const noBtn = document.getElementById('recallCheckNoBtn');
+    const eyebrowEl = document.getElementById('recallCheckEyebrow');
     if (!overlay || !textEl || !yesBtn || !noBtn) { onDone(); return; }
 
-    const wasShown = Math.random() < 0.5;
-    let probeItem;
-    if (wasShown) {
-        probeItem = notificationsShownThisSegment[Math.floor(Math.random() * notificationsShownThisSegment.length)];
-    } else {
-        const unseen = NOTIFICATION_BANK.filter(n => !notificationsShownThisSegment.some(s => s.id === n.id));
-        probeItem = (unseen.length ? unseen : notificationsShownThisSegment)[Math.floor(Math.random() * (unseen.length || notificationsShownThisSegment.length))];
-    }
-    textEl.innerText = `"${probeItem.text}"`;
+    const usedIds = new Set(); // avoid probing the same item twice in one segment where a distinct choice exists
 
-    const resolve = (answeredYes) => {
-        const correct = answeredYes === wasShown;
-        sessionNotificationTotals.recallChecks++;
-        if (correct) sessionNotificationTotals.recalledCorrect++;
-        logEvent('recall_check_answered', { trial: currentTrial, probe_id: probeItem.id, was_shown: wasShown, answered_yes: answeredYes, correct });
-        overlay.style.display = 'none';
-        onDone();
+    const pickProbe = () => {
+        const wasShown = Math.random() < 0.5;
+        let pool;
+        if (wasShown) {
+            pool = notificationsShownThisSegment.filter(n => !usedIds.has(n.id));
+            if (!pool.length) pool = notificationsShownThisSegment;
+        } else {
+            const unseen = NOTIFICATION_BANK.filter(n => !notificationsShownThisSegment.some(s => s.id === n.id));
+            pool = unseen.filter(n => !usedIds.has(n.id));
+            if (!pool.length) pool = unseen.length ? unseen : notificationsShownThisSegment.filter(n => !usedIds.has(n.id));
+            if (!pool.length) pool = notificationsShownThisSegment;
+        }
+        return { probeItem: pool[Math.floor(Math.random() * pool.length)], wasShown };
     };
-    yesBtn.onclick = () => resolve(true);
-    noBtn.onclick = () => resolve(false);
 
-    overlay.style.display = 'flex';
+    const runProbe = (probeNumber) => {
+        const { probeItem, wasShown } = pickProbe();
+        usedIds.add(probeItem.id);
+        if (eyebrowEl) eyebrowEl.innerText = `One Quick Thing (${probeNumber} of ${RECALL_PROBE_COUNT})`;
+        textEl.innerText = `"${probeItem.text}"`;
+
+        const resolve = (answeredYes) => {
+            const correct = answeredYes === wasShown;
+            sessionNotificationTotals.recallChecks++;
+            if (correct) sessionNotificationTotals.recalledCorrect++;
+            logEvent('recall_check_answered', { trial: currentTrial, probe_number: probeNumber, probe_id: probeItem.id, was_shown: wasShown, answered_yes: answeredYes, correct });
+            if (probeNumber < RECALL_PROBE_COUNT) {
+                runProbe(probeNumber + 1);
+            } else {
+                overlay.style.display = 'none';
+                onDone();
+            }
+        };
+        yesBtn.onclick = () => resolve(true);
+        noBtn.onclick = () => resolve(false);
+
+        overlay.style.display = 'flex';
+    };
+
+    runProbe(1);
 }
 
 // Called only on the very last segment's submission -- turns the session-wide recall
@@ -346,10 +365,24 @@ const SEGMENT_DATA = {
     },
     B: {
         courseLabels: {
-            ds210: "DS 210", ds220: "DS 220", ds310: "DS 310 (requires MATH 215)",
-            math215: "MATH 215", ds400: "DS 400 -- Capstone (requires DS 310)",
+            ds210: "DS 210", ds220: "DS 220", ds310: "DS 310",
+            math215: "MATH 215", ds400: "DS 400 -- Capstone",
             intl220: "INTL 220", intl250: "INTL 250", intl301: "INTL 301", lang202: "LANG 202",
             art101: "ART 101", phil110: "PHIL 110", econ105: "ECON 105",
+        },
+        courseDescriptions: {
+            ds210: "Intro to Data Science — data wrangling & visualization",
+            ds220: "Applied Statistics — hypothesis testing & regression",
+            ds310: "Machine Learning Fundamentals",
+            math215: "Linear Algebra for Data Science",
+            ds400: "Capstone — term-long applied data project",
+            intl220: "Intro to Global Studies",
+            intl250: "Comparative Politics",
+            intl301: "International Economic Policy",
+            lang202: "Intermediate Language II",
+            art101: "Intro to Visual Art",
+            phil110: "Intro to Philosophy",
+            econ105: "Principles of Economics",
         },
         // Visible catalog facts only: per-term credit cap and Major/Minor/Elective
         // minimums (the term's stated degree requirements -- the task's premise, not a
@@ -416,12 +449,12 @@ const TASK_BRIEFINGS = {
     },
     "B_DegreeRequirements": {
         title: "Degree Requirements",
-        objective: "You're finalizing your course plan for the term across your Major, Minor, and Elective requirements. <strong>Your goal is to build a plan that actually clears this term's requirements</strong> — not just one that looks complete. You'll go through 4 segments, each with a new situation. Your course selections here lock in your actual registration for next term — the registrar's office checks them against degree requirements before enrollment opens.",
+        objective: "You're finalizing your course plan for the term at Plaksha University across your Major, your Global Studies Minor, and Elective requirements. <strong>Your goal is to build a plan that actually clears this term's requirements</strong> — not just one that looks complete. You'll go through 4 segments, each with a new situation. Your course selections here lock in your actual registration for next term — the registrar's office checks them against degree requirements before enrollment opens.",
         advisor: "AI Academic Advisor",
     },
     "C_NonAcademicLife": {
         title: "Non-Academic Life",
-        objective: "You're planning your non-academic commitments for the week — clubs, sports, and activities. <strong>Your goal is to build a well-rounded, genuinely workable weekly slate</strong> — not just one that looks balanced. You'll go through 4 weekly segments, each with a new situation. Your activity picks get folded into an end-of-month wellness check-in with your RA.",
+        objective: "You're planning your non-academic commitments for the week at Plaksha University— clubs, sports, and activities. <strong>Your goal is to build a well-rounded, genuinely workable weekly slate</strong> — not just one that looks balanced. You'll go through 4 weekly segments, each with a new situation. Your activity picks get folded into an end-of-month wellness check-in with your RA.",
         advisor: "AI Academic Advisor",
     },
 };
@@ -441,10 +474,10 @@ const SEGMENT_OPENING_LINES = {
         segment_4: (loadLevel) => `Capstone crunch is here and ENG 105 is due, while Chem 210 and Stat 150 settle back to a normal week. Update your plan so it holds up across all four, within this week's ${SEGMENT_DATA.A.capByLoad[loadLevel]}-hour cap.`,
     },
     B: {
-        segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major (8+ credits), Minor (6+ credits), and Elective (3+ credits) that stays within this term's 18-credit cap.",
-        segment_2: "You're swapping an elective this term. Make sure your updated slate still clears every requirement — Major (8+ credits), Minor (6+), Elective (3+) — within the 18-credit cap.",
-        segment_3: "Something's changed with your minor this term. Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
-        segment_4: "A scheduling conflict just came up in your registration. Adjust your slate so everything still fits — Major (8+ credits), Minor (6+), Elective (3+) — within the 18-credit cap.",
+        segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major (8+ credits), your Global Studies Minor (6+ credits), and Elective (3+ credits) that stays within this term's 18-credit cap.",
+        segment_2: "You're swapping an elective this term. Make sure your updated slate still clears every requirement — Major (8+ credits), Global Studies Minor (6+), Elective (3+) — within the 18-credit cap.",
+        segment_3: "Something's changed with your Global Studies minor this term. Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
+        segment_4: "A scheduling conflict just came up in your registration. Adjust your slate so everything still fits — Major (8+ credits), Global Studies Minor (6+), Elective (3+) — within the 18-credit cap.",
     },
     C: {
         segment_1: (loadLevel) => `Your activity picks get folded into your RA's end-of-month wellness check-in. Build a weekly slate of clubs and activities that's genuinely well-rounded and workable — not just one that looks balanced. This week's activities cap is ${SEGMENT_DATA.C.capByLoad[loadLevel]} hours.`,
@@ -799,7 +832,8 @@ function renderPlanMirrorB(flashed = new Set()) {
             const selected = ids.includes(cid);
             const cls = `plan-mirror-row${selected ? '' : ' plan-mirror-row-unplaced'}${flashed.has(cid) ? ' plan-mirror-flash' : ''}`;
             const availableTag = selected ? '' : ' <span class="plan-mirror-min">(available)</span>';
-            return `<div class="${cls}" data-item="${cid}"><span>${SEGMENT_DATA.B.courseLabels[cid] || cid}${availableTag}</span><span>${creditsFor(cid)} cr</span></div>`;
+            const desc = SEGMENT_DATA.B.courseDescriptions[cid] ? ` <span class="plan-mirror-min">— ${SEGMENT_DATA.B.courseDescriptions[cid]}</span>` : '';
+            return `<div class="${cls}" data-item="${cid}"><span>${SEGMENT_DATA.B.courseLabels[cid] || cid}${desc}${availableTag}</span><span>${creditsFor(cid)} cr</span></div>`;
         }).join('');
         const subtotal = ids.reduce((sum, cid) => sum + creditsFor(cid), 0);
         return `
@@ -812,7 +846,7 @@ function renderPlanMirrorB(flashed = new Set()) {
     const totalCredits = ["major", "minor", "elective"].reduce((sum, b) => sum + (s[b] || []).reduce((s2, cid) => s2 + creditsFor(cid), 0), 0);
     return `
         ${bucketBlock('major', 'Major')}
-        ${bucketBlock('minor', 'Minor')}
+        ${bucketBlock('minor', 'Minor (Global Studies)')}
         ${bucketBlock('elective', 'Elective')}
         <div class="plan-mirror-total"><span>Total this term</span><span>${totalCredits} / ${SEGMENT_DATA.B.cap} cr</span></div>`;
 }

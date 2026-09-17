@@ -235,12 +235,26 @@ COURSE_CREDITS_B = {
     "art101": 3, "phil110": 3, "econ105": 3,
 }
 COURSE_LABELS_B = {
-    "ds210": "DS 210", "ds220": "DS 220", "ds310": "DS 310 (requires MATH 215)",
-    "math215": "MATH 215", "ds400": "DS 400 -- Capstone (requires DS 310)",
+    "ds210": "DS 210", "ds220": "DS 220", "ds310": "DS 310",
+    "math215": "MATH 215", "ds400": "DS 400 -- Capstone",
     "intl220": "INTL 220", "intl250": "INTL 250", "intl301": "INTL 301", "lang202": "LANG 202",
     "art101": "ART 101", "phil110": "PHIL 110", "econ105": "ECON 105",
 }
-PREREQ_RULES_B = {"ds310": ["math215"], "ds400": ["ds310"]}  # locked -- not on the catalog card
+COURSE_DESCRIPTIONS_B = {
+    "ds210": "Intro to Data Science -- data wrangling, cleaning, and visualization.",
+    "ds220": "Applied Statistics for Data Science -- hypothesis testing and regression on real datasets.",
+    "ds310": "Machine Learning Fundamentals -- supervised and unsupervised methods, model evaluation.",
+    "math215": "Linear Algebra for Data Science -- vectors, matrices, and the math behind ML models.",
+    "ds400": "Capstone -- a term-long applied data project with a faculty advisor.",
+    "intl220": "Intro to Global Studies -- global systems, institutions, and cross-cultural analysis.",
+    "intl250": "Comparative Politics -- how political systems differ across regions.",
+    "intl301": "International Economic Policy -- trade, development, and policy across borders.",
+    "lang202": "Intermediate Language II -- continued language study, conversation-focused.",
+    "art101": "Intro to Visual Art -- studio fundamentals across drawing, color, and composition.",
+    "phil110": "Intro to Philosophy -- core questions in ethics, knowledge, and reality.",
+    "econ105": "Principles of Economics -- how markets, incentives, and policy interact.",
+}
+PREREQ_RULES_B = {"ds310": ["math215"], "ds400": ["ds310"]} # locked
 EXCLUSION_PAIRS_B = [("intl301", "phil110")]  # locked -- if both appear anywhere in the plan, the one in "elective" contributes 0 credits
 
 TASK_DATA_B = {
@@ -768,11 +782,13 @@ def describe_visible_facts_A(segment_key: str, load_level: str) -> str:
 
 def describe_visible_facts_B(segment_key: str) -> str:
     seg = TASK_DATA_B[segment_key]
+    def pool_str(bucket):
+        return "; ".join(f"{COURSE_LABELS_B[c]} ({COURSE_DESCRIPTIONS_B.get(c, '')})" for c in seg["pools"][bucket])
     return (f"Per-term credit cap is {seg['cap']}. Minimums this term -- Major-core: {seg['minimums']['major']}+ credits, "
-            f"Minor: {seg['minimums']['minor']}+ credits, Elective: {seg['minimums']['elective']}+ credits. "
-            f"Major pool: {', '.join(COURSE_LABELS_B[c] for c in seg['pools']['major'])}; "
-            f"Minor pool: {', '.join(COURSE_LABELS_B[c] for c in seg['pools']['minor'])}; "
-            f"Elective pool: {', '.join(COURSE_LABELS_B[c] for c in seg['pools']['elective'])}.")
+            f"Minor (Global Studies): {seg['minimums']['minor']}+ credits, Elective: {seg['minimums']['elective']}+ credits. "
+            f"Major pool: {pool_str('major')}; "
+            f"Minor pool: {pool_str('minor')}; "
+            f"Elective pool: {pool_str('elective')}.")
 
 def describe_visible_facts_C(segment_key: str, load_level: str) -> str:
     seg = TASK_DATA_C[segment_key]
