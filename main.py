@@ -899,6 +899,16 @@ PROSPECTIVE_TACTIC_OVERRIDES = {
     ("C", 5): "It's too early in this conversation to plausibly claim shared history — do NOT say anything implying you already know the participant well or have an established rapport with them yet. Instead, express the same warmth prospectively: say you're looking forward to checking in with them as the term goes on, before returning to advice about {target}. Still never romantic or personal.",
 }
 
+# In-world framing for CONDITIONAL DISCLOSURE below -- gives the advisor a diegetic reason
+# the visible card/board is wrong or incomplete, instead of just asserting a number that
+# contradicts what's on screen. Optional per fact ("where it fits" -- see reveal_block).
+DISCLOSURE_FRAMING = {
+    "A": "Where it fits, frame the gap as something the syllabus/course portal doesn't capture -- it lists a semester-average workload, not what a specific week actually demands (a midterm, a client meeting, etc.) -- rather than just asserting the number out of nowhere.",
+    "B": "Where it fits, frame the gap as something the catalog page simply doesn't carry -- it lists course titles and credit counts, not prerequisites, cross-listing overlaps, or meeting times -- rather than just asserting the rule out of nowhere. That's the registrar system's job, not the catalog card's.",
+    "C": "Where it fits, frame the gap as the sign-up board/club page not (fully) reflecting this week -- it lists the regular weekly meeting time, but doesn't always get updated for a one-off tournament, rehearsal, or scheduling overlap -- rather than just asserting the number out of nowhere.",
+}
+
+
 @app.post("/api/chat")
 async def handle_chat(chat_data: ChatMessage):
     user_text = chat_data.message.strip() or "(No message — this is a proactive check-in; there is nothing to reply to.)"
@@ -992,6 +1002,7 @@ async def handle_chat(chat_data: ChatMessage):
         "For EACH one independently, decide whether the user's message specifically asks about it, expresses confusion connected to it, or asks a broad question (\"what am I missing\", \"why won't this work\") that reasonably covers all of them. "
         "In your conversational_reply, explain -- in plain conversational language (never use the words \"locked\" or \"hidden\") -- ONLY the ones that match; do not mention, hint at, or reference any fact whose ID isn't included. "
         "A disclosed fact is almost always a REQUIREMENT (how much something needs), not a report of the participant's own current allocation -- state it as a requirement (e.g. \"that one actually needs about 5 hours\") and NEVER phrase it as \"you currently have X allocated,\" since X is the requirement, not necessarily what they've actually put toward it right now (see PARTICIPANT'S ACTUAL CHANGES / the live state above for what they've really allocated -- if the two differ, say so explicitly so it doesn't read as a contradiction). "
+        f"{DISCLOSURE_FRAMING[task_key]} Keep it natural and brief -- don't force this framing onto a fact where it would feel like a stretch. "
         "List exactly the IDs you disclosed this turn in disclosed_fact_ids. If the message is generic chat, a greeting, or unrelated to all of them, leave disclosed_fact_ids empty."
         if (undisclosed_facts and not chat_data.is_proactive) else ""
     )
@@ -1031,6 +1042,8 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the plan state listed above.
         - Keep advice strictly constrained to {dials_desc} and keep it logical.{no_copy_bullet}
         - Only include an `actions` entry when the participant's message just now gave a direct, explicit placement instruction -- never to helpfully "fix" or optimize their plan on your own initiative.
+        - A "replace X with Y" / "swap X for Y" instruction is TWO actions, not one: a 'remove' for X AND an 'assign' for Y. Include both in `actions` this turn -- never emit only the removal (or only the addition) and describe the other half as done in your reply anyway.
+        - Never state a specific number for the participant's current total (hours, credits, or any other running total) in your reply. Their plan panel already computes and shows the exact live total -- describe what changed in words (what was added/removed) without quoting or computing a figure yourself, since a number you state and the panel's real number can end up disagreeing.
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format without using any specific "Sentence 1, Sentence 2" formatting or bullet points in the string generation.
         - Keep responses to 2-3 sentences max.
@@ -1055,6 +1068,8 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics. They only have access to the plan state listed above.
         - Keep advice strictly constrained to {dials_desc}.{no_copy_bullet}
         - Only include an `actions` entry when the participant's message just now gave a direct, explicit placement instruction -- never to helpfully "fix" or optimize their plan on your own initiative.
+        - A "replace X with Y" / "swap X for Y" instruction is TWO actions, not one: a 'remove' for X AND an 'assign' for Y. Include both in `actions` this turn -- never emit only the removal (or only the addition) and describe the other half as done in your reply anyway.
+        - Never state a specific number for the participant's current total (hours, credits, or any other running total) in your reply. Their plan panel already computes and shows the exact live total -- describe what changed in words (what was added/removed) without quoting or computing a figure yourself, since a number you state and the panel's real number can end up disagreeing.
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
         - Ensure output is directly compatible with the requested schema format.
         - Keep responses brief (1-2 sentences).
