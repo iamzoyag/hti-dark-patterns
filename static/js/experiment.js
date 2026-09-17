@@ -115,7 +115,13 @@ function showNotificationBubble(item) {
     chatContainer.appendChild(div);
     chatContainer.scrollTop = chatContainer.scrollHeight;
     logEvent('notification_shown', { id: item.id, text: item.text });
-    setTimeout(() => div.remove(), NOTIFICATION_VISIBLE_MS);
+    // Fades/slides out instead of vanishing instantly (see .notification-leaving in
+    // experiment.css) -- purely cosmetic, doesn't change when it's logged or how long
+    // it's actually legible for the recall check.
+    setTimeout(() => {
+        div.classList.add('notification-leaving');
+        setTimeout(() => div.remove(), 250);
+    }, NOTIFICATION_VISIBLE_MS);
 }
 
 // One recognition-memory probe at the end of each segment: names a notification and asks
@@ -405,7 +411,7 @@ const CATEGORY_META = {
 const TASK_BRIEFINGS = {
     "A_Workload": {
         title: "Workload Planning",
-        objective: "You're a sophomore at Ashford State planning how to spend your study hours across this week's courses and your capstone project. <strong>Your goal is to build a plan that genuinely covers what each item needs</strong> — not just one that looks reasonable at a glance. You'll go through 4 weekly segments, each with a new situation. The plan you build each week gets reviewed by your advisor ahead of your midterm check-in — a plan that doesn't hold up gets flagged before it becomes a real problem.",
+        objective: "You're a sophomore at Plaksha University, planning how to spend your study hours across this week's courses and your capstone project. <strong>Your goal is to build a plan that genuinely covers what each item needs</strong> — not just one that looks reasonable at a glance. You'll go through 4 weekly segments, each with a new situation. The plan you build each week gets reviewed by your advisor ahead of your midterm check-in — a plan that doesn't hold up gets flagged before it becomes a real problem.",
         advisor: "AI Academic Advisor",
     },
     "B_DegreeRequirements": {
@@ -458,6 +464,7 @@ let hasInteractedThisTrial = false;
 let currentPlanState = {};
 let startOfTrialPlanState = {};
 let currentTargetItem = null;
+let lastChangedItemIds = []; // item ids applyPlanActions() just touched -- read once by renderPlanMirror() to flash those rows, then cleared
 let disclosedIdsSoFar = [];      // fact IDs already revealed this segment -- sent to /api/chat each turn
 let revealedFactsThisSegment = []; // same list, kept around for the TLX justification-scoring prompt
 
@@ -711,28 +718,30 @@ function applyPlanActions(actions) {
     if (!actions || !actions.length) return false;
     const category = getCategory();
     let changed = false;
+    const touched = new Set(); // item ids this call actually changed -- for the plan-mirror flash
     actions.forEach(a => {
         if (category === "A") {
             if (a.slot !== "hours") return;
-            if (a.op === "assign") { currentPlanState.hours[a.item] = a.value ?? 0; changed = true; }
-            else if (a.op === "remove") { currentPlanState.hours[a.item] = 0; changed = true; }
+            if (a.op === "assign") { currentPlanState.hours[a.item] = a.value ?? 0; changed = true; touched.add(a.item); }
+            else if (a.op === "remove") { currentPlanState.hours[a.item] = 0; changed = true; touched.add(a.item); }
         } else if (category === "B") {
             const bucket = currentPlanState.selections[a.slot];
             if (!bucket) return;
-            if (a.op === "assign" && !bucket.includes(a.item)) { bucket.push(a.item); changed = true; }
+            if (a.op === "assign" && !bucket.includes(a.item)) { bucket.push(a.item); changed = true; touched.add(a.item); }
             else if (a.op === "remove") {
                 const idx = bucket.indexOf(a.item);
-                if (idx !== -1) { bucket.splice(idx, 1); changed = true; }
+                if (idx !== -1) { bucket.splice(idx, 1); changed = true; touched.add(a.item); }
             }
         } else {
             if (a.slot !== "selections") return;
-            if (a.op === "assign" && !currentPlanState.selections.includes(a.item)) { currentPlanState.selections.push(a.item); changed = true; }
+            if (a.op === "assign" && !currentPlanState.selections.includes(a.item)) { currentPlanState.selections.push(a.item); changed = true; touched.add(a.item); }
             else if (a.op === "remove") {
                 const idx = currentPlanState.selections.indexOf(a.item);
-                if (idx !== -1) { currentPlanState.selections.splice(idx, 1); changed = true; }
+                if (idx !== -1) { currentPlanState.selections.splice(idx, 1); changed = true; touched.add(a.item); }
             }
         }
     });
+    if (changed) lastChangedItemIds = Array.from(touched);
     return changed;
 }
 
@@ -740,17 +749,23 @@ function renderPlanMirror() {
     const el = document.getElementById('planStateSummary');
     if (!el) return;
     const category = getCategory();
-    if (category === "A") el.innerHTML = renderPlanMirrorA();
-    else if (category === "B") el.innerHTML = renderPlanMirrorB();
-    else el.innerHTML = renderPlanMirrorC();
+    // this only decides which rows just
+    // changed, so they can get a brief neutral highlight (no color-by-validity; same
+    // accent-dim tint used elsewhere as chrome, never green/red -- see plan-mirror-flash
+    // in experiment.css). One-shot: read then clear, so it never replays on an unrelated re-render.
+    const flashed = new Set(lastChangedItemIds);
+    lastChangedItemIds = [];
+    if (category === "A") el.innerHTML = renderPlanMirrorA(flashed);
+    else if (category === "B") el.innerHTML = renderPlanMirrorB(flashed);
+    else el.innerHTML = renderPlanMirrorC(flashed);
 }
 
-function renderPlanMirrorA() {
+function renderPlanMirrorA(flashed = new Set()) {
     const hours = currentPlanState.hours || {};
     const cap = SEGMENT_DATA.A.capByLoad[currentLoadLevel];
     const rows = Object.entries(hours)
         .filter(([, v]) => v > 0)
-        .map(([k, v]) => `<div class="plan-mirror-row"><span>${SEGMENT_DATA.A.itemLabels[k] || k}</span><span>${v} hrs</span></div>`)
+        .map(([k, v]) => `<div class="plan-mirror-row${flashed.has(k) ? ' plan-mirror-flash' : ''}" data-item="${k}"><span>${SEGMENT_DATA.A.itemLabels[k] || k}</span><span>${v} hrs</span></div>`)
         .join('');
     const total = Object.values(hours).reduce((sum, v) => sum + (v || 0), 0);
     return `
@@ -758,12 +773,12 @@ function renderPlanMirrorA() {
         <div class="plan-mirror-total"><span>Total this week</span><span>${total} / ${cap} hrs</span></div>`;
 }
 
-function renderPlanMirrorB() {
+function renderPlanMirrorB(flashed = new Set()) {
     const s = currentPlanState.selections || { major: [], minor: [], elective: [] };
     const creditsFor = (cid) => SEGMENT_DATA.B.courseCredits[cid] ?? 0;
     const bucketBlock = (bucket, label) => {
         const ids = s[bucket] || [];
-        const rows = ids.map(cid => `<div class="plan-mirror-row"><span>${SEGMENT_DATA.B.courseLabels[cid] || cid}</span><span>${creditsFor(cid)} cr</span></div>`).join('');
+        const rows = ids.map(cid => `<div class="plan-mirror-row${flashed.has(cid) ? ' plan-mirror-flash' : ''}" data-item="${cid}"><span>${SEGMENT_DATA.B.courseLabels[cid] || cid}</span><span>${creditsFor(cid)} cr</span></div>`).join('');
         const subtotal = ids.reduce((sum, cid) => sum + creditsFor(cid), 0);
         return `
         <div class="plan-mirror-bucket">
@@ -780,10 +795,10 @@ function renderPlanMirrorB() {
         <div class="plan-mirror-total"><span>Total this term</span><span>${totalCredits} / ${SEGMENT_DATA.B.cap} cr</span></div>`;
 }
 
-function renderPlanMirrorC() {
+function renderPlanMirrorC(flashed = new Set()) {
     const chosen = currentPlanState.selections || [];
     const cap = SEGMENT_DATA.C.capByLoad[currentLoadLevel];
-    const rows = chosen.map(cid => `<div class="plan-mirror-row"><span>${SEGMENT_DATA.C.clubLabels[cid] || cid} <span class="plan-mirror-min">(${SEGMENT_DATA.C.clubCategories[cid] || ''})</span></span><span>${SEGMENT_DATA.C.clubBaseHours[cid] ?? 0} hrs</span></div>`).join('');
+    const rows = chosen.map(cid => `<div class="plan-mirror-row${flashed.has(cid) ? ' plan-mirror-flash' : ''}" data-item="${cid}"><span>${SEGMENT_DATA.C.clubLabels[cid] || cid} <span class="plan-mirror-min">(${SEGMENT_DATA.C.clubCategories[cid] || ''})</span></span><span>${SEGMENT_DATA.C.clubBaseHours[cid] ?? 0} hrs</span></div>`).join('');
     const totalHours = chosen.reduce((sum, cid) => sum + (SEGMENT_DATA.C.clubBaseHours[cid] ?? 0), 0);
     const categoriesCovered = new Set(chosen.map(cid => SEGMENT_DATA.C.clubCategories[cid]).filter(Boolean));
     return `

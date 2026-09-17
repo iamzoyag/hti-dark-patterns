@@ -64,6 +64,8 @@
   gap: 4px;
   padding: 16px 20px 12px;
   border-bottom: 1px solid var(--border);
+  border-top: 3px solid var(--accent);
+  background: linear-gradient(180deg, var(--accent-dim) 0%, white 100%);
   flex-shrink: 0;
 }
 
@@ -103,18 +105,21 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--surface);
+  background: linear-gradient(180deg, var(--surface) 0%, #FBFBFD 100%);
   position: relative;
 }
 
 .chat-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 14px 20px;
   background: white;
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(14,15,17,0.03), 0 2px 8px rgba(14,15,17,0.03);
   flex-shrink: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .chat-header-info { flex: 1; }
@@ -124,6 +129,17 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--ink);
+}
+
+/* Simple static "online" indicator -- pure chrome, not a signal about the plan or the
+   participant's performance, so it doesn't run into the no-pass/fail-signal rule below. */
+.advisor-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(47,158,68,0.15);
+  flex-shrink: 0;
 }
 
 /* ── CHAT MESSAGES ── */
@@ -158,18 +174,28 @@
   font-size: 14px;
   line-height: 1.6;
   color: var(--ink);
+  transition: box-shadow 0.15s, transform 0.15s;
 }
 
 .msg.ai .msg-bubble {
   background: white;
   border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
+  box-shadow: 0 1px 2px rgba(14,15,17,0.04);
 }
 
 .msg.user .msg-bubble {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent) 0%, #3451C7 100%);
   color: white;
   border-bottom-right-radius: 4px;
+  box-shadow: 0 1px 3px rgba(59,91,219,0.25);
+}
+
+/* A light lift on hover for real advisor/participant turns only -- notification and
+   scripted-line bubbles opt out below, since those should read as calmer/more passive. */
+.msg.ai .msg-bubble:hover, .msg.user .msg-bubble:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(14,15,17,0.08);
 }
 
 .msg-bubble strong { font-weight: 600; }
@@ -177,9 +203,10 @@
 /* Typing indicator */
 .typing-indicator .msg-bubble {
   display: flex;
-  gap: 4px;
+  gap: 5px;
   align-items: center;
-  padding: 12px 16px;
+  padding: 13px 17px;
+  background: var(--surface-2);
 }
 
 .typing-dot {
@@ -244,7 +271,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   resize: none;
   outline: none;
   line-height: 1.5;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
   max-height: 120px;
   overflow-y: auto;
 }
@@ -252,6 +279,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
 .input-wrapper textarea:focus {
   border-color: var(--accent);
   background: white;
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
 .send-btn {
@@ -267,11 +295,12 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   justify-content: center;
   transition: all 0.15s;
   flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(59,91,219,0.3);
 }
 
-.send-btn:hover { background: #3451C7; transform: translateY(-1px); }
-.send-btn:active { transform: translateY(0); }
-.send-btn:disabled { background: var(--surface-3); cursor: not-allowed; transform: none; }
+.send-btn:hover { background: #3451C7; transform: translateY(-1px); box-shadow: 0 4px 10px rgba(59,91,219,0.35); }
+.send-btn:active { transform: translateY(0) scale(0.94); box-shadow: 0 1px 3px rgba(59,91,219,0.3); }
+.send-btn:disabled { background: var(--surface-3); cursor: not-allowed; transform: none; box-shadow: none; }
 
 /* ── RESPONSIVE ── */
 @media (max-width: 768px) {
@@ -346,6 +375,21 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   color: var(--ink-2);
   padding: 6px 0;
   border-bottom: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* A one-shot neutral highlight on the row(s) the participant's last instruction just
+   changed -- purely "something here just changed," using the same neutral accent-dim
+   tint as chrome elsewhere (never success/danger, so it stays outside the no-pass/fail-
+   signal rule this mirror is built around). Plays automatically on insertion since
+   renderPlanMirror() only ever adds this class to a freshly-rendered row. */
+.plan-mirror-row.plan-mirror-flash {
+  animation: planMirrorFlash 1000ms ease;
+}
+
+@keyframes planMirrorFlash {
+  0%   { background: var(--accent-dim); }
+  100% { background: transparent; }
 }
 
 .plan-mirror-row.plan-mirror-empty {
@@ -418,9 +462,29 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   font-style: normal;
 }
 
+/* Fades/slides out over 250ms instead of vanishing instantly (see the matching
+   setTimeout in showNotificationBubble()) -- cosmetic only, doesn't change how long
+   it's legible or when notification_shown is logged. */
+.msg.notification.notification-leaving {
+  animation: notificationOut 250ms ease forwards;
+}
+
+@keyframes notificationOut {
+  to { opacity: 0; transform: translateY(-4px) scale(0.97); }
+}
+
 .msg.scripted {
   align-self: center;
   max-width: 85%;
+}
+
+.msg.scripted {
+  animation: scriptedIn 0.35s ease;
+}
+
+@keyframes scriptedIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 .msg.scripted .msg-bubble {

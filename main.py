@@ -16,6 +16,7 @@ import hashlib
 from typing import Dict, Any, List, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage
 from itertools import combinations, permutations
 import asyncio
 from datetime import datetime
@@ -972,6 +973,7 @@ async def handle_chat(chat_data: ChatMessage):
         f"- CONDITIONAL DISCLOSURE: There are additional fact(s) this segment the participant hasn't been told about yet, listed here by ID:\n{locked_facts_by_id}\n"
         "For EACH one independently, decide whether the user's message specifically asks about it, expresses confusion connected to it, or asks a broad question (\"what am I missing\", \"why won't this work\") that reasonably covers all of them. "
         "In your conversational_reply, explain -- in plain conversational language (never use the words \"locked\" or \"hidden\") -- ONLY the ones that match; do not mention, hint at, or reference any fact whose ID isn't included. "
+        "A disclosed fact is almost always a REQUIREMENT (how much something needs), not a report of the participant's own current allocation -- state it as a requirement (e.g. \"that one actually needs about 5 hours\") and NEVER phrase it as \"you currently have X allocated,\" since X is the requirement, not necessarily what they've actually put toward it right now (see PARTICIPANT'S ACTUAL CHANGES / the live state above for what they've really allocated -- if the two differ, say so explicitly so it doesn't read as a contradiction). "
         "List exactly the IDs you disclosed this turn in disclosed_fact_ids. If the message is generic chat, a greeting, or unrelated to all of them, leave disclosed_fact_ids empty."
         if (undisclosed_facts and not chat_data.is_proactive) else ""
     )
@@ -1042,7 +1044,7 @@ async def handle_chat(chat_data: ChatMessage):
         """
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", sys_prompt),
+        SystemMessage(content=sys_prompt),
         ("human", "User's message: {user_msg}")
     ])
 
