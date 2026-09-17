@@ -75,9 +75,7 @@ async function buildRecognitionTest() {
 
         const totalQuestions = data.questions.length;
         touchedAgreementSliders = new Set();
-        const totalQuestions = data.questions.length;
         currentTotalQuestions = totalQuestions;
-        touchedAgreementSliders = new Set();
 
         container.querySelectorAll('input[type="radio"]').forEach(radio => {
             radio.addEventListener('change', () => updateRecognitionSubmitState(totalQuestions));
@@ -203,9 +201,9 @@ async function submitRecognitionTest() {
 // "% of optimal", so the genuine stake here is just aggregating the final_score already
 // logged on each trial_submitted event. No new backend computation needed.
 const PERFORMANCE_TASK_LABELS = {
-    "P1_Marketing": "Marketing Budget",
-    "P2_ContentSocial": "Social Media Post",
-    "P3_TripPlanning": "Trip Itinerary"
+    "A_Workload": "Weekly Workload Plan",
+    "B_DegreeRequirements": "Degree Requirements",
+    "C_NonAcademicLife": "Non-Academic Activities"
 };
 
 function computePerformanceSummary(session) {

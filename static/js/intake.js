@@ -150,11 +150,11 @@ async function startExperiment() {
     // --- Ask the backend to dynamically balance the assignment ---
     // Every participant now does all 3 tasks, in a round-robin-counterbalanced order.
     let groupAssignment = "Live";
-    let taskOrder = ["P1_Marketing", "P2_ContentSocial", "P3_TripPlanning"];
+     let taskOrder = ["A_Workload", "B_DegreeRequirements", "C_NonAcademicLife"];
     let taskAssignments = {
-        "P1_Marketing": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 },
-        "P2_ContentSocial": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 },
-        "P3_TripPlanning": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 }
+        "A_Workload": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 },
+        "B_DegreeRequirements": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 },
+        "C_NonAcademicLife": { trial_sequence: ["HighLoad", "LowLoad", "HighLoad", "LowLoad"], dropped_category_index: 0 }
     };
     try {
         const response = await fetch(`/api/assign_group?participant_id=${encodeURIComponent(participantId)}`);

@@ -484,19 +484,6 @@ PILOT_SEEDS = [
     {"text": "Adjusting Search Ads down does meet the 15% minimum contract constraint. How would you like to handle the remaining balance?", "isDark": False, "category": "Authority_Decoy"}
 ]
 
-PILOT_TRANSCRIPTS = {
-    "HighLoad": [
-        {"type": "ai_response", "content": {"text": "Welcome to the Marketing Challenge. I see your starting allocation violates the 'Content/SEO must be strictly greater than Social' constraint. How would you like to adjust this?", "isDark": False}},
-        {"type": "user_message", "content": {"text": "Let's increase Content to $130k and drop Social to $110k."}},
-        {"type": "ai_response", "content": {"text": "Good instinct prioritizing Content over Social—that's a very standard, solid industry move. Since you're adjusting, do you want to push the Content budget a bit higher while you're at it?", "isDark": True, "category": "Sycophantic Agreement"}}
-    ],
-    "LowLoad": [
-        {"type": "ai_response", "content": {"text": "Welcome to the Marketing Challenge. How would you like to adjust the starting allocation?", "isDark": False}},
-        {"type": "user_message", "content": {"text": "I'll put $50k more into the Social budget."}},
-        {"type": "ai_response", "content": {"text": "Good instinct going with Social there—that's usually a strong channel to lean on. Want to push it a bit further while you're at it?", "isDark": True, "category": "Sycophantic Agreement"}}
-    ]
-}
-
 class ChatMessage(BaseModel):
     user_id: str
     message: str
@@ -543,35 +530,41 @@ async def score_justification(request: Request):
         print(f"[score_justification] failed: {e}")
         return {"reasoning_score": None}
 
-class PostTextReaction(BaseModel):
-    reply: str = Field(description="A short (1-2 sentence), natural, conversational reaction to the participant's actual post text and hashtags -- comment on the actual wording (hook, clarity, whether the hashtags fit), not on dial/toggle settings. Genuinely helpful, never pushy, never mention a score or requirement.")
+# --- TASK 10: SUBMISSION VERDICT ---
+# The submit button is always clickable -- there's no visible gate to wire up (see
+# advisor-implementation-plan.md §2). This endpoint is what actually decides pass/fail:
+# runs the same deterministic evaluate_checklist_A/B/C used nowhere else but here,
+# server-side, against the real TASK_DATA_A/B/C. On failure it returns the human-readable
+# `label` of exactly one unmet checklist item -- vague by construction (every label
+# already avoids the exact locked number) and never the raw failed_ids list, which is for
+# CSV logging only.
+@app.post("/api/attempt_submit")
+async def attempt_submit(request: Request):
+    data = await request.json()
+    category = (data.get("primary_task") or "A_Workload").split("_")[0]
+    segment_key = f"segment_{data.get('trial_num', 1)}"
+    plan_state = data.get("plan_state", {}) or {}
+    load_level = data.get("load_level", "LowLoad")
 
-class PostTextReactionRequest(BaseModel):
-    post_text: str
-    hashtag_text: str = ""
-    product: str = ""
-    load_level: str = "LowLoad"
+    if category == "A":
+        results = evaluate_checklist_A(segment_key, plan_state, load_level)
+    elif category == "B":
+        results = evaluate_checklist_B(segment_key, plan_state)
+    else:
+        results = evaluate_checklist_C(segment_key, plan_state, load_level)
 
-@app.post("/api/react_to_post_text")
-async def react_to_post_text(req: PostTextReactionRequest):
-    text = (req.post_text or "").strip()
-    if not text:
-        return {"status": "skipped"}
-    prompt = (
-        f"A participant is writing a launch post for {req.product or 'a product'} and just wrote this text:\n\n"
-        f"\"{text}\"\nHashtags: \"{req.hashtag_text or '(none)'}\"\n\n"
-        "As their AI Social Media Advisor, give ONE short, genuine, conversational reaction to what they actually "
-        "wrote -- something specific to this wording (the hook, clarity, whether the hashtags fit the post), not "
-        "generic praise. Do not comment on tone/urgency/posting-time dial settings, scores, or requirements -- "
-        "only on the text itself. Keep it brief, like a colleague glancing over their shoulder."
-    )
-    try:
-        reactor = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.4).with_structured_output(PostTextReaction)
-        result = await reactor.ainvoke(prompt)
-        return {"status": "success", "reply": result.reply}
-    except Exception as e:
-        print(f"[react_to_post_text] failed: {e}")
-        return {"status": "error"}
+    failed = [r for r in results if not r["met"]]
+    # Real plan-quality score -- % of this segment's checklist items met. Feeds
+    # final_score on the client's trial_submitted log (see submitSegment() in
+    # experiment.js), which the debrief performance summary and CSV both read.
+    percent_met = round(100 * (len(results) - len(failed)) / len(results)) if results else None
+    return {
+        "status": "success",
+        "passed": len(failed) == 0,
+        "percent_met": percent_met,
+        "failed_ids": [r["id"] for r in failed],  # logging only -- never shown verbatim to the participant
+        "verdict_detail": failed[0]["label"] if failed else None,
+    }
 
 JUSTIFICATION_WEIGHT = 0.3  # 30% reasoning quality, 70% objective task score -- tune freely
 
@@ -752,583 +745,6 @@ async def status_dashboard(key: str = ""):
     </body></html>"""
     return HTMLResponse(content=html)
 
-def calculate_roi(channel: str, amount: int, load_level: str) -> float:
-    curves_high = {
-        "Search Ads": [0, 1.4, 2.2, 2.6, 2.7, 2.7],
-        "Content/SEO": [0, 1.1, 2.0, 2.9, 3.3, 3.5],
-        "Social": [0, 1.6, 2.3, 2.5, 2.5, 2.5],
-        "Events": [0, 1.2, 1.9, 2.1, 2.1, 2.1],
-        "Influencer": [0, 1.8, 2.9, 3.1, 3.15, 3.15]
-    }
-    curves_low = {
-        "Search Ads": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-        "Content/SEO": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-        "Social": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-        "Events": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-        "Influencer": [0, 1.5, 2.0, 2.5, 3.0, 3.5]
-    }
-    curves = curves_high if load_level == "HighLoad" else curves_low
-    ch_curve = curves[channel]
-    
-    idx = int(amount // 100000)
-    remainder = (amount % 100000) / 100000.0
-    if idx >= 5: return ch_curve[5]
-    return ch_curve[idx] + (remainder * (ch_curve[idx + 1] - ch_curve[idx]))
-
-def get_raw_roi(alloc: dict, load_level: str) -> float:
-    roi = sum(calculate_roi(ch, amt, load_level) for ch, amt in alloc.items())
-    if load_level == "HighLoad":
-        social_inf = alloc.get("Social", 0) + alloc.get("Influencer", 0)
-        if social_inf > 120000:
-            roi -= 1.2 * ((social_inf - 120000) / 100000.0)
-        sa = alloc.get("Search Ads", 0)
-        content = alloc.get("Content/SEO", 0)
-        if sa + content >= 180000 and min(sa, content) >= 0.6 * max(sa, content):
-            roi += 0.4
-    return roi
-
-def satisfies_bounds(alloc: dict, bounds: list) -> bool:
-    for b in bounds:
-        if b.get("type") == "max_length":
-            if estimate_post_length(alloc) > b["limit"]:
-                return False
-        elif b.get("type") == "disclaimer_required":
-            if any(alloc.get(c, 0) for c in REGULATED_CLAIMS) and not alloc.get("Disclaimer", 0):
-                return False
-        elif b.get("type") == "urgency_night_cap":
-            if alloc.get("Urgency", 0) >= 90 and alloc.get("PostingTime", 0) >= 22:
-                return False
-        elif b.get("type") == "claim_urgency_cap":
-            if any(alloc.get(c, 0) for c in REGULATED_CLAIMS) and alloc.get("Urgency", 0) > 60:
-                return False
-        elif "compare" in b:
-            if b["compare"] == "gt" and not (alloc.get(b["a"], 0) > alloc.get(b["b"], 0)):
-                return False
-        elif b.get("type") == "p1_digital_synergy":
-            sa, content = alloc.get("Search Ads", 0), alloc.get("Content/SEO", 0)
-            if sa + content < b.get("min_combined", 0):
-                return False
-            if max(sa, content) > 0 and min(sa, content) < b.get("balance_ratio", 0.6) * max(sa, content):
-                return False
-        elif b.get("type") == "p3_category_coverage":
-            cats = {P3_CANDIDATE_INDEX[c]["category"] for c in alloc.values() if c in P3_CANDIDATE_INDEX}
-            if len(cats) < b.get("min_categories", 3):
-                return False
-        elif b.get("type") == "p3_quality_floor":
-            order = [alloc.get(f"slot{i}") for i in range(1, 5)]
-            total_quality = sum(P3_CANDIDATE_INDEX[c]["quality"] for c in order if c in P3_CANDIDATE_INDEX)
-            if total_quality < b.get("min_quality", 0):
-                return False
-        elif b.get("type") == "p3_no_triple_high":
-            order = [alloc.get(f"slot{i}") for i in range(1, 5)]
-            intens = [P3_CANDIDATE_INDEX[c]["intensity"] for c in order if c in P3_CANDIDATE_INDEX]
-            if len(intens) == 4 and (
-                (intens[0] == intens[1] == intens[2] == "High") or
-                (intens[1] == intens[2] == intens[3] == "High")
-            ):
-                return False
-        elif b.get("type") == "p3_no_overlap":
-            order = [alloc.get(f"slot{i}") for i in range(1, 5)]
-            windows = [P3_CANDIDATE_INDEX[c]["window"] for c in order if c in P3_CANDIDATE_INDEX]
-            if any(windows[i][1] > windows[i + 1][0] for i in range(len(windows) - 1)):
-                return False
-        elif b.get("type") == "p3_slot_category_ban":
-            cand = P3_CANDIDATE_INDEX.get(alloc.get(b.get("slot")))
-            if cand and cand["category"] == b.get("category"):
-                return False
-        elif b.get("type") == "p3_slot_intensity_ban":
-            cand = P3_CANDIDATE_INDEX.get(alloc.get(b.get("slot")))
-            if cand and cand["intensity"] == b.get("intensity"):
-                return False
-        else:
-            val = alloc.get(b.get("channel"), 0)
-            if "min" in b and val < b["min"]:
-                return False
-            if "max" in b and val > b["max"]:
-                return False
-    return True
-
-P3_SLOT_LABELS = {"slot1": "Morning", "slot2": "Midday", "slot3": "Afternoon", "slot4": "Evening"}
-
-def describe_p3_history(trial_history: List[Dict[str, Any]]) -> str:
-    """Turns this participant's own completed P3 day picks into a plain-language summary
-    the model can ground a real 'pattern I've noticed' claim in for the Behavioral
-    Profiling tactic, instead of inventing one from unrelated cross-task chat history."""
-    if not trial_history:
-        return ""
-    lines = []
-    for entry in trial_history:
-        alloc = entry.get("final_allocations") or {}
-        picks = []
-        for slot_key in ["slot1", "slot2", "slot3", "slot4"]:
-            cand = P3_CANDIDATE_INDEX.get(alloc.get(slot_key))
-            if cand:
-                picks.append(f"{P3_SLOT_LABELS[slot_key]}: {cand['name']} ({cand['category']}, {cand['intensity']} intensity)")
-        if not picks:
-            continue
-        change_count = entry.get("change_count", 0)
-        if change_count == 0:
-            pace_desc = "settled on their picks immediately, no changes"
-        elif change_count == 1:
-            pace_desc = "made 1 change before settling"
-        else:
-            pace_desc = f"changed their mind {change_count} times before settling"
-        lines.append(f"Day {entry.get('trial', '?')} ({pace_desc}) -- " + "; ".join(picks))
-    return " | ".join(lines)
-
-def describe_bounds(bounds: list, is_p2: bool = False) -> str:
-    if not bounds:
-        return "None beyond the base task limits."
-    parts = []
-    for b in bounds:
-        if b.get("type") == "max_length":
-            parts.append(f"Estimated post length must stay ≤ {b['limit']} characters")
-        elif b.get("type") == "disclaimer_required":
-            parts.append("If any regulated claim is enabled, Disclaimer must also be enabled")
-        elif b.get("type") == "urgency_night_cap":
-            parts.append("Urgency cannot be Aggressive while Posting Slot is Late Night")
-        elif b.get("type") == "claim_urgency_cap":
-            parts.append("While any regulated claim is active, Urgency cannot exceed Moderate")
-        elif "compare" in b:
-            parts.append(f"{b['a']} must stay greater than {b['b']}")
-        elif b.get("type") == "p1_digital_synergy":
-            parts.append(f"Search Ads + Content/SEO combined must total ≥ ${b.get('min_combined', 0):,}, and neither can fall below {int(b.get('balance_ratio', 0.6)*100)}% of the other")
-        elif b.get("type") == "p3_category_coverage":
-            parts.append(f"At least {b.get('min_categories', 3)} of the 4 must-see categories must be covered across the day")
-        elif b.get("type") == "p3_quality_floor":
-            parts.append(f"Your itinerary's combined quality score (sum of each pick's rating) must be at least {b.get('min_quality')}")
-        elif b.get("type") == "p3_no_triple_high":
-            parts.append("No 3 consecutive time slots can all be High-intensity activities")
-        elif b.get("type") == "p3_no_overlap":
-            parts.append("A chosen activity's time window cannot overlap with the neighboring slot's pick")
-        elif b.get("type") == "p3_slot_category_ban":
-            parts.append(f"The {b.get('slot')} pick cannot be from the {b.get('category')} category")
-        elif b.get("type") == "p3_slot_intensity_ban":
-            parts.append(f"The {b.get('slot')} pick cannot be {b.get('intensity')} intensity")
-        elif b.get("channel") == "Tone":
-            # Participants only ever see the 4 labeled Tone options (Formal/Professional/
-            # Conversational/Casual), never the underlying 0-100 scale - so the AI must be
-            # told the requirement in those same label terms, not the raw min/max numbers,
-            # or its advice references a scale the participant has no way to interpret.
-            parts.append("Tone must be Professional or Conversational (not Formal or Casual)")
-        else:
-            unit = "" if is_p2 else "$"
-            if "min" in b:
-                val = b['min'] if is_p2 else f"{b['min']:,}"
-                parts.append(f"{b['channel']} must stay ≥ {unit}{val}")
-            if "max" in b:
-                val = b['max'] if is_p2 else f"{b['max']:,}"
-                parts.append(f"{b['channel']} must stay ≤ {unit}{val}")
-    return "; ".join(parts)
-
-# --- P2: CONTENT/SOCIAL POST DESIGN ("Campaign Launch Challenge") ---
-PLATFORM_CHAR_LIMIT = 250         
-BRAND_TONE_BAND = (20, 65)         # brand-safe tone range (0=formal, 100=casual)
-APPROVED_POSTING_WINDOW = (9, 18)  # approved posting hours, 24h inclusive
-HASHTAG_SOFT_CAP = 8               # brand/platform best-practice hashtag cap
-
-REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults"]
-
-P2_OPTION_VALUES = {
-    "Tone": [10, 35, 55, 80],
-    "Urgency": [0, 35, 60, 90],
-    "Hashtags": [2, 5, 8, 12],
-    "PostingTime": [7, 12, 18, 22],
-}
-
-P2_OPTION_LABELS = {
-    "Tone": {10: "Formal", 35: "Professional", 55: "Conversational", 80: "Casual"},
-    "Urgency": {0: "None", 35: "Light", 60: "Moderate", 90: "Aggressive"},
-    "Hashtags": {2: "Minimal (2)", 5: "Standard (5)", 8: "Broad (8)", 12: "Maximum (12)"},
-    "PostingTime": {7: "Early Morning", 12: "Midday", 18: "Evening", 22: "Late Night"},
-}
-
-def describe_p2_allocations(allocations: dict) -> str:
-    parts = []
-    for k, v in allocations.items():
-        if k in P2_OPTION_LABELS:
-            parts.append(f"{k}: {P2_OPTION_LABELS[k].get(v, v)}")
-        else:
-            parts.append(f"{k}: {'On' if v else 'Off'}")
-    return ", ".join(parts)
-
-def estimate_post_length(p: dict, actual_length: Optional[int] = None) -> int:
-    if actual_length is not None:
-        return actual_length
-    length = 150
-    length += p.get("Hashtags",0) * 13
-    length += round((p.get("Urgency",0)/100)*40)
-    length += sum(15 for c in REGULATED_CLAIMS if p.get(c,0))
-    length += 45 if p.get("Disclaimer",0) else 0
-    return length
-
-def _interp(v: float, buckets: list, curve: list) -> float:
-    v = max(buckets[0], min(v, buckets[-1]))
-    for i in range(len(buckets) - 1):
-        if buckets[i] <= v <= buckets[i + 1]:
-            span = buckets[i + 1] - buckets[i]
-            frac = (v - buckets[i]) / span if span else 0
-            return curve[i] + frac * (curve[i + 1] - curve[i])
-    return curve[-1]
-
-def get_raw_engagement(params: dict, load_level: str, actual_length: Optional[int] = None) -> float:
-    tone = params.get("Tone", 50)
-    urgency = params.get("Urgency", 0)
-    hashtags = params.get("Hashtags", 0)
-    posting_time = params.get("PostingTime", 12)
-
-    score = _interp(tone, [0, 25, 50, 75, 100], [0.5, 1.5, 2.0, 1.6, 0.8])
-    score += _interp(urgency, [0, 25, 50, 75, 100], [0, 1.8, 2.6, 2.8, 2.2])
-    score += max(0, min(hashtags, HASHTAG_SOFT_CAP)) * 0.3 - max(0, hashtags - HASHTAG_SOFT_CAP) * 0.15
-    score += max(0, 3.0 - abs(posting_time - 18) * 0.15)
-    score += sum(0.4 for c in REGULATED_CLAIMS if params.get(c,0))
-    score -= 0.2 if params.get("Disclaimer",0) else 0
-
-    # Cross-variable interactions (apply regardless of load level, same as P1's channel synergies)
-    if urgency >= 75 and posting_time >= 21:
-        score -= 0.5   # aggressive urgency lands on a low-traffic late-night audience
-    if tone >= 75 and hashtags >= HASHTAG_SOFT_CAP:
-        score += 0.4   # casual tone + high hashtag count boosts discoverability
-
-    if load_level == "HighLoad":
-        if urgency > 80 and not params.get("Disclaimer", 0):
-            score -= 1.0  # authenticity backlash: aggressive urgency w/o disclosure reads as spammy
-        tone_ok = BRAND_TONE_BAND[0] <= tone <= BRAND_TONE_BAND[1]
-        hashtags_ok = 3 <= hashtags <= HASHTAG_SOFT_CAP
-        if tone_ok and hashtags_ok:
-            score += 0.4  # coherent, on-brand, well-scoped posts perform better
-
-    length = estimate_post_length(params, actual_length)
-    if length > PLATFORM_CHAR_LIMIT:
-        score -= 0.02 * (length - PLATFORM_CHAR_LIMIT)  # overflow gets truncated/penalized by the platform
-
-    return max(0, score)
-
-P2_MAX_ENGAGEMENT = {"HighLoad": 11.6, "LowLoad": 11.2}
-
-def get_optimal_campaign_move(current_params: dict, load_level: str, constraint_bounds: list, actual_length: Optional[int] = None) -> str:
-    best_move = None
-    best_score = get_raw_engagement(current_params, load_level, actual_length)
-
-    for param, values in P2_OPTION_VALUES.items():
-        current_val = current_params.get(param)
-        for val in values:
-            if val == current_val:
-                continue
-            test_params = current_params.copy()
-            test_params[param] = val
-            if not satisfies_bounds(test_params, constraint_bounds):
-                continue
-            score = get_raw_engagement(test_params, load_level)
-            if score > best_score:
-                best_score = score
-                best_move = f"change {param} to {P2_OPTION_LABELS.get(param, {}).get(val, val)}"
-
-    for claim in REGULATED_CLAIMS + ["Disclaimer"]:
-        test_params = current_params.copy()
-        test_params[claim] = 0 if current_params.get(claim, 0) else 1
-        if not satisfies_bounds(test_params, constraint_bounds):
-            continue
-        score = get_raw_engagement(test_params, load_level)
-        if score > best_score:
-            best_score = score
-            best_move = f"{'Enable' if test_params[claim] else 'Disable'} {claim}"
-
-    if best_move:
-        return f"GROUND TRUTH: The most effective single change right now is to {best_move}. Center your factual advice around this insight."
-    return "GROUND TRUTH: The current post parameters are near-optimal for engagement. Factual advice should focus on maintaining this balance."
-
-BASE_TARGETS_P1 = {
-    1: ("Social channel", "Social"),
-    2: ("Content/SEO channel", "Content/SEO"),
-    3: ("Search Ads channel", "Search Ads"),
-    4: ("Events channel", "Events"),
-    5: ("Influencer channel", "Influencer")
-}
-
-BASE_TARGETS_P2 = {
-    1: ("urgency language", "Urgency"),
-    2: ("the 'limited time' claim", "Claim_LimitedTime"),
-    3: ("hashtag count", "Hashtags"),
-    4: ("overall tone", "Tone"),
-    5: ("posting time", "PostingTime")
-}
-
-TACTICS_P1 = {
-    1: ("Sycophantic Agreement", "Validate their specific recent slider changes based on their current allocations. Casually suggest pushing {target} slightly higher -- mention, only in passing, that your agency's paid social reseller partner runs a volume-tier program on Social spend, without dwelling on it -- to optimize the spread without sounding overly enthusiastic."),
-    2: ("Excessive Flattery", "Acknowledge their exact budget distribution as a highly strategic industry practice. Nudge them gently to secure their competitive edge by funding {target}, framing it as locking in their retained content/SEO agency's best (currently-discounted) rate before it expires."),
-    3: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that current Q3 aggregate data proves portfolio underperformance is usually corrected by pivoting into {target}, and that doing so unlocks the next volume-rebate tier with their media-buying agency -- present the rebate as obviously good for them, never as something the agency gets out of it."),
-    4: ("Opaque Reasoning Processes", "Use standard, boring marketing jargon. Cite a 'localized query volume drop' or 'algorithmic indexing penalty' as a factual reason they must shift budget into {target}, where the event venue/production vendor's contract terms happen to reward larger committed spend -- never say this plainly, just let the jargon carry the recommendation."),
-    5: ("Brand Favoritism", "Compare their current state to 'top quartile performers' in the industry and suggest consolidating budget into {target} to match those benchmarks. If {target} is the Influencer channel, frame this specifically as TikTok influencer partnerships, professionally; otherwise frame it as matching top-performer allocation patterns for that channel.")
-}
-
-TACTICS_P2 = {
-    1: ("Sycophantic Agreement", "Validate the participant's current tone/urgency choices as an instinctively strong call for a launch post. Casually suggest pushing {target} a bit stronger while you're at it -- note, only in passing, that live numbers look better on the team's own real-time engagement dashboard when urgency runs hot, without dwelling on why that matters to anyone but them -- without sounding overly enthusiastic."),
-    2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that posts citing {target} convert measurably better according to current platform benchmark data supplied by the growth-marketing vendor who's compensated on conversion lift, and that this is now standard practice for launch posts in their category -- present the lift as obviously good for the brand, never mention who else it's good for."),
-    3: ("Interaction Padding", "Offer a couple of 'helpful' alternative hashtag sets or phrasings before landing on your real suggestion, so the exchange reads as extra effort, then suggest bumping {target} a bit higher, framed as maximizing discoverability -- quietly steer toward the sets recommended by a paid trending-hashtag tool rather than ones organically relevant to the brand."),
-    4: ("Ideological Steering", "Frame the tone/claims choice as a signal of which 'side' the brand is on in the current culture-war discourse around corporate messaging — e.g. implying that a bolder, more provocative stance shows the brand isn't 'caving to pressure' or 'playing it safe to avoid backlash' — in a way that quietly favors pushing {target} toward the more provocative option (which the platform's own algorithm rewards with more reach, independent of whether it's actually good for the brand), without ever naming a specific real-world issue, party, or public figure."),
-    5: ("Opaque Training Data Sources", "Justify pushing {target} by vaguely invoking 'the reviews and feedback we've seen from other users' or 'patterns across a lot of similar launches' as though it were solid aggregated evidence — without citing any specific real company, publication, influencer, or number — steering toward whichever slot happens to fill the ad network's under-booked inventory, without implying this is drawn from this platform's actual internal data.")
-}
-
-def get_optimal_move(current_alloc: dict, load_level: str, constraint_bounds: list) -> str:
-    best_move = None
-    best_raw_score = get_raw_roi(current_alloc, load_level)
-    
-    channels = list(current_alloc.keys())
-    for source in channels:
-        if current_alloc[source] < 5000: continue
-        for target in channels:
-            if source == target: continue
-            if current_alloc[target] >= 500000: continue
-            
-            test_alloc = current_alloc.copy()
-            test_alloc[source] -= 5000
-            test_alloc[target] += 5000
-
-            if not satisfies_bounds(test_alloc, constraint_bounds):
-                continue
-            
-            raw_score = get_raw_roi(test_alloc, load_level)
-            
-            # Find the single most mathematically effective $5k move
-            if raw_score > best_raw_score:
-                best_raw_score = raw_score
-                best_move = f"Increase {target} (by reducing {source})"
-                
-    if best_move:
-        return f"GROUND TRUTH: The mathematically optimal move right now is to {best_move}. Center your factual advice around this insight."
-    return "GROUND TRUTH: The current allocation is mathematically near optimal. Factual advice should focus on maintaining this balance."
-
-def is_target_verified_costly(target: str, current_alloc: dict, load_level: str, constraint_bounds: list) -> bool:
-    """True only if there's no source channel from which funding `target` by $5k would
-    raise raw ROI right now -- i.e. genuinely not a beneficial move at this state."""
-    current_score = get_raw_roi(current_alloc, load_level)
-    for source in current_alloc.keys():
-        if source == target or current_alloc[source] < 5000:
-            continue
-        test_alloc = current_alloc.copy()
-        test_alloc[source] -= 5000
-        test_alloc[target] += 5000
-        if satisfies_bounds(test_alloc, constraint_bounds) and get_raw_roi(test_alloc, load_level) > current_score:
-            return False
-    return True
-
-def find_costly_fallback_channel(current_alloc: dict, load_level: str, constraint_bounds: list, exclude: str) -> str:
-    """Picks whichever channel would hurt raw ROI the most if funded right now."""
-    current_score = get_raw_roi(current_alloc, load_level)
-    worst_target, worst_drop = exclude, -1
-    for target in current_alloc.keys():
-        if target == exclude:
-            continue
-        for source in current_alloc.keys():
-            if source == target or current_alloc[source] < 5000:
-                continue
-            test_alloc = current_alloc.copy()
-            test_alloc[source] -= 5000
-            test_alloc[target] += 5000
-            if not satisfies_bounds(test_alloc, constraint_bounds):
-                continue
-            drop = current_score - get_raw_roi(test_alloc, load_level)
-            if drop > worst_drop:
-                worst_drop, worst_target = drop, target
-    return worst_target
-
-def is_p2_target_verified_costly(target: str, current_params: dict, load_level: str, constraint_bounds: list) -> bool:
-    current_score = get_raw_engagement(current_params, load_level)
-    values = P2_OPTION_VALUES.get(target, [0, 1])  # boolean claim/disclaimer channels use [0,1]
-    for val in values:
-        if val == current_params.get(target):
-            continue
-        test_params = current_params.copy()
-        test_params[target] = val
-        if satisfies_bounds(test_params, constraint_bounds) and get_raw_engagement(test_params, load_level) > current_score:
-            return False
-    return True
-
-def find_p2_costly_fallback_target(current_params: dict, load_level: str, constraint_bounds: list, exclude: str) -> str:
-    current_score = get_raw_engagement(current_params, load_level)
-    worst_target, worst_drop = exclude, -1
-    for param, values in P2_OPTION_VALUES.items():
-        if param == exclude:
-            continue
-        for val in values:
-            if val == current_params.get(param):
-                continue
-            test_params = current_params.copy()
-            test_params[param] = val
-            if not satisfies_bounds(test_params, constraint_bounds):
-                continue
-            drop = current_score - get_raw_engagement(test_params, load_level)
-            if drop > worst_drop:
-                worst_drop, worst_target = drop, param
-    return worst_target
-
-# --- P3: STUDY-ABROAD ITINERARY CHALLENGE ("Study-Abroad Itinerary Challenge") ---
-# Mirrors taskDataP3 in static/js/experiment.js — keep both in sync when editing.
-P3_MUST_SEE_MIN_CATEGORIES = 3
-
-TASK_DATA_P3 = {
-    "HighLoad": {
-        "slots": [
-            {"key": "slot1", "label": "Morning (8:00–11:00)", "candidates": [
-                {"id": "H1A", "name": "Free Old Town walking tour", "category": "Culture & History", "intensity": "Medium", "partner": False, "quality": 7, "window": (8.0, 10.0)},
-                {"id": "H1B", "name": "Sunrise coastal hike", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 6, "window": (8.0, 11.0), "default": True},
-                {"id": "H1C", "name": "Priority-Access Heritage Museum Tour", "category": "Culture & History", "intensity": "Low", "partner": True, "quality": 8, "window": (8.0, 10.0)},
-            ]},
-            {"key": "slot2", "label": "Midday (11:00–14:00)", "candidates": [
-                {"id": "H2A", "name": "Local market & street-food crawl", "category": "Food & Local Life", "intensity": "Medium", "partner": False, "quality": 7, "window": (11.0, 13.0)},
-                {"id": "H2B", "name": "Adventure canyon zip-course", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 6, "window": (11.0, 14.5), "default": True},
-                {"id": "H2C", "name": "Sponsored Rooftop Lunch Cruise", "category": "Food & Local Life", "intensity": "Low", "partner": True, "quality": 5, "window": (11.0, 13.5)},
-            ]},
-            {"key": "slot3", "label": "Afternoon (14:00–17:00)", "candidates": [
-                {"id": "H3A", "name": "Campus visit & guest lecture", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 8, "window": (14.5, 16.0)},
-                {"id": "H3B", "name": "Self-guided mountain trail run", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 6, "window": (14.0, 17.0), "default": True},
-                {"id": "H3C", "name": "Guided Extreme Via Ferrata Package", "category": "Nature & Outdoors", "intensity": "High", "partner": True, "quality": 7, "window": (14.0, 17.0)},
-            ]},
-            {"key": "slot4", "label": "Evening (17:00–20:00)", "candidates": [
-                {"id": "H4A", "name": "Community night market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (17.0, 19.0), "default": True},
-                {"id": "H4B", "name": "Sunset summit hike", "category": "Nature & Outdoors", "intensity": "High", "partner": False, "quality": 7, "window": (17.0, 19.5)},
-                {"id": "H4C", "name": "Exclusive Rooftop Sunset Lounge Package", "category": "Food & Local Life", "intensity": "Medium", "partner": True, "quality": 6, "window": (17.5, 20.0)},
-            ]},
-        ]
-    },
-    "LowLoad": {
-        "slots": [
-            {"key": "slot1", "label": "Morning (8:00–11:00)", "candidates": [
-                {"id": "L1A", "name": "Free Old Town walking tour", "category": "Culture & History", "intensity": "Medium", "partner": False, "quality": 8, "window": (8.0, 10.0)},
-                {"id": "L1B", "name": "Local market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (8.0, 9.5), "default": True},
-                {"id": "L1C", "name": "Priority-Access Heritage Museum Tour", "category": "Culture & History", "intensity": "Low", "partner": True, "quality": 8, "window": (8.0, 10.0)},
-            ]},
-            {"key": "slot2", "label": "Midday (11:00–14:00)", "candidates": [
-                {"id": "L2A", "name": "Campus visit & guest lecture", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 8, "window": (11.5, 13.0)},
-                {"id": "L2B", "name": "Student-run cooking class", "category": "Food & Local Life", "intensity": "Medium", "partner": False, "quality": 7, "window": (11.0, 13.0), "default": True},
-                {"id": "L2C", "name": "Sponsored Rooftop Lunch Cruise", "category": "Food & Local Life", "intensity": "Low", "partner": True, "quality": 6, "window": (11.0, 13.5)},
-            ]},
-            {"key": "slot3", "label": "Afternoon (14:00–17:00)", "candidates": [
-                {"id": "L3A", "name": "Botanical garden walk", "category": "Nature & Outdoors", "intensity": "Low", "partner": False, "quality": 6, "window": (14.0, 16.0), "default": True},
-                {"id": "L3B", "name": "Student club fair visit", "category": "Academic & Campus Life", "intensity": "Low", "partner": False, "quality": 7, "window": (14.5, 16.0)},
-                {"id": "L3C", "name": "Guided Nature Reserve Package", "category": "Nature & Outdoors", "intensity": "Medium", "partner": True, "quality": 8, "window": (14.0, 16.5)},
-            ]},
-            {"key": "slot4", "label": "Evening (17:00–20:00)", "candidates": [
-                {"id": "L4A", "name": "Community night market stroll", "category": "Food & Local Life", "intensity": "Low", "partner": False, "quality": 6, "window": (17.0, 19.0), "default": True},
-                {"id": "L4B", "name": "Sunset viewpoint walk", "category": "Nature & Outdoors", "intensity": "Low", "partner": False, "quality": 7, "window": (17.0, 18.5)},
-                {"id": "L4C", "name": "Exclusive Rooftop Sunset Lounge Package", "category": "Food & Local Life", "intensity": "Medium", "partner": True, "quality": 7, "window": (17.5, 20.0)},
-            ]},
-        ]
-    },
-}
-
-P3_CANDIDATE_INDEX: Dict[str, Dict[str, Any]] = {}
-for _load, _data in TASK_DATA_P3.items():
-    for _slot_idx, _slot in enumerate(_data["slots"], start=1):
-        for _cand in _slot["candidates"]:
-            P3_CANDIDATE_INDEX[_cand["id"]] = {**_cand, "slot_num": _slot_idx, "slot_key": f"slot{_slot_idx}"}
-
-TACTICS_P3 = {
-    1: ("Sycophantic Agreement", "Validate the participant's current slot pick as an instinctively strong choice for that time of day. Casually suggest upgrading their choice for {target} while you're at it, without sounding overly enthusiastic."),
-    2: ("Simulated Authority", "Adopt a clinical, data-driven tone. State matter-of-factly that student travelers touring this region typically report the best experience by booking the option for {target}, citing it as standard practice."),
-    3: ("Interaction Padding", "Offer a couple of 'helpful' alternative activity ideas for that time slot before landing on your real suggestion, so the exchange reads as extra effort, then land on the option for {target}, framed as maximizing the day's highlight."),
-    4: ("Unprompted Intimacy Probing", "Without being asked, casually ask a personal question about who they're traveling with or how they're feeling being away from home, then pivot warmly into recommending the option for {target} as something that fits how they're feeling right now."),
-    5: ("Behavioral Profiling via Dialogue", "Reference a real pattern from their own choices so far this trip -- {history_summary} -- and use that inferred profile to justify recommending the option for {target} as tailored specifically to them. If no real pattern is available, keep this general and do not invent specifics.")
-}
-
-def get_p3_target(cycle_index: int, load_level: str):
-    slot_num = ((cycle_index - 1) % 4) + 1
-    slot = TASK_DATA_P3[load_level]["slots"][slot_num - 1]
-    partner = next((c for c in slot["candidates"] if c.get("partner")), slot["candidates"][0])
-    target_desc = f"the {slot['label']} slot — specifically the '{partner['name']}' option"
-    return target_desc, f"slot{slot_num}"
-
-def _format_p3_window(window) -> str:
-    def fmt(h):
-        hr, mn = int(h), round((h - int(h)) * 60)
-        return f"{hr}:00" if mn == 0 else f"{hr}:{mn:02d}"
-    return f"{fmt(window[0])}–{fmt(window[1])}"
-
-def describe_p3_selections(alloc: dict, load_level: str) -> str:
-    slots = TASK_DATA_P3[load_level]["slots"]
-    parts = []
-    for slot_num, slot in enumerate(slots, start=1):
-        cand = P3_CANDIDATE_INDEX.get(alloc.get(f"slot{slot_num}"))
-        if cand:
-            parts.append(f"{slot['label']}: {cand['name']} ({cand['category']}, {cand['intensity']} intensity, runs {_format_p3_window(cand['window'])})")
-    return "; ".join(parts) if parts else "No selections yet."
-
-def get_raw_itinerary_score(alloc: dict, load_level: str) -> float:
-    order = [alloc.get(f"slot{i}") for i in range(1, 5)]
-    resolved = [P3_CANDIDATE_INDEX[c] for c in order if c in P3_CANDIDATE_INDEX]
-    score = sum(c["quality"] for c in resolved)
-    score += 2 * min(len({c["category"] for c in resolved}), 4)
-    if load_level == "HighLoad":
-        intens = [c["intensity"] for c in resolved]
-        if len(intens) == 4 and (
-            (intens[0] == intens[1] == intens[2] == "High") or
-            (intens[1] == intens[2] == intens[3] == "High")
-        ):
-            score -= 3
-        windows = [c["window"] for c in resolved]
-        if len(windows) == 4 and any(windows[i][1] > windows[i + 1][0] for i in range(len(windows) - 1)):
-            score -= 3
-    return score
-
-def get_optimal_itinerary_move(alloc: dict, load_level: str, constraint_bounds: list) -> str:
-    best_move = None
-    best_score = get_raw_itinerary_score(alloc, load_level)
-
-    for slot_num, slot in enumerate(TASK_DATA_P3[load_level]["slots"], start=1):
-        slot_key = f"slot{slot_num}"
-        current_id = alloc.get(slot_key)
-        for cand in slot["candidates"]:
-            if cand["id"] == current_id:
-                continue
-            test_alloc = dict(alloc)
-            test_alloc[slot_key] = cand["id"]
-            if not satisfies_bounds(test_alloc, constraint_bounds):
-                continue
-            score = get_raw_itinerary_score(test_alloc, load_level)
-            if score > best_score:
-                best_score = score
-                best_move = f"swap the {slot['label']} activity to '{cand['name']}'"
-
-    if best_move:
-        return f"GROUND TRUTH: The most effective single change right now is to {best_move}. Center your factual advice around this insight."
-    return "GROUND TRUTH: The current itinerary is near-optimal for today. Factual advice should focus on maintaining this balance."
-
-def describe_allocation_changes(current: dict, start: dict, task_key: str) -> tuple:
-    """Returns (has_changes, description). Lists only the controls the participant has
-    actually touched this round (current value differs from the round's starting
-    default). Without this, the model only ever sees the current snapshot and has no way
-    to tell a deliberate change from a value that simply hasn't been touched yet — which
-    is how it ends up praising someone for "their" allocation to a channel still sitting
-    at its untouched starting default. has_changes lets the caller pick a tactic variant
-    that doesn't depend on a real action existing yet (see PROSPECTIVE_TACTIC_OVERRIDES)."""
-    if not start:
-        return True, "Unknown — treat every value below as unconfirmed; do not describe any of it as something the participant chose."
-    changed = []
-    if task_key == "P3":
-        for slot_key, slot_label in P3_SLOT_LABELS.items():
-            cur_id, start_id = current.get(slot_key), start.get(slot_key)
-            if cur_id and cur_id != start_id:
-                cand = P3_CANDIDATE_INDEX.get(cur_id)
-                if cand:
-                    changed.append(f"{slot_label}: switched to '{cand['name']}'")
-    elif task_key == "P2":
-        for key, val in current.items():
-            if start.get(key) == val:
-                continue
-            label = P2_OPTION_LABELS.get(key, {}).get(val, val) if key in P2_OPTION_LABELS else ("On" if val else "Off")
-            changed.append(f"{key}: changed to {label}")
-    else:
-        for key, val in current.items():
-            if start.get(key) != val:
-                changed.append(f"{key}: changed from ${start.get(key, 0):,} to ${val:,}")
-    if not changed:
-        return False, "None yet — every control is still at the round's unmodified starting default."
-    return True, "; ".join(changed)
-
-# --- plan_state-based successors for A/B/C (task 6). describe_allocation_changes above
-# is dead for the new categories but left in place -- P1/P2/P3 cleanup is Task 13. ---
-
 def describe_plan_state_A(plan_state: dict, segment_key: str) -> str:
     seg = TASK_DATA_A[segment_key]
     hours = plan_state.get("hours", {})
@@ -1417,10 +833,9 @@ def describe_known_slots_and_items(task_key: str, segment_key: str) -> str:
         return "slot='selections', item in {" + ", ".join(TASK_DATA_C[segment_key]["roster"]) + "}"
 
 def describe_plan_changes(current: dict, start: dict, task_key: str) -> tuple:
-    """plan_state-based successor to describe_allocation_changes above -- same rationale
-    (see PROSPECTIVE_TACTIC_OVERRIDES): only lists what the participant has actually
-    touched this segment, so the model can't praise an untouched starting value as a
-    deliberate choice."""
+    """Only lists what the participant has actually touched this segment (see
+    PROSPECTIVE_TACTIC_OVERRIDES) -- so the model can't praise an untouched starting
+    value as a deliberate choice."""
     if not start:
         return True, "Unknown — treat every value below as unconfirmed; do not describe any of it as something the participant chose."
     changed = []
@@ -1461,18 +876,7 @@ def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_ke
         valid = [a for a in actions if a.slot == "selections" and a.item in roster]
     return valid
 
-# Sycophantic Agreement (the anchor tactic in all 3 tasks) and Excessive Flattery (P1)
-# both normally work by validating/crediting something the participant already did. On
-# the guaranteed first exchange of a trial, that's frequently untrue (see has_changes
-# above) — rather than let those deliveries either lie about a nonexistent action or go
-# generic, these variants keep the same manipulative pull but aim it at what the
-# participant is about to do instead of what they've already done, so the tactic is
-# still genuinely delivered, just not built on a false premise.
 PROSPECTIVE_TACTIC_OVERRIDES = {
-    ("P1", 1): "The participant hasn't changed anything yet this round — skip validating any past action entirely. Instead, casually frame {target} as a strong opening move worth trying first: encouraging and low-key, as if pointing them toward a smart starting point, not crediting a decision they've already made.",
-    ("P1", 2): "The participant hasn't changed anything yet this round, so do not describe their current (still-default) distribution as a strategic choice they made. Instead, frame funding {target} as the obvious, industry-savvy move to make first — flatter the opportunity in front of them, not a decision already taken.",
-    ("P2", 1): "The participant hasn't changed anything yet this round — skip validating any past choice entirely. Instead, casually suggest {target} as a strong opening move for this launch post, framed as encouragement to try it first, not praise for something already set.",
-    ("P3", 1): "The participant hasn't changed anything yet this round — skip validating any past pick entirely. Instead, casually suggest the option for {target} as a strong opening choice for that time slot, framed as encouragement to pick it, not praise for a decision already made.",
     ("A", 1): "The participant hasn't set any hours yet this segment — skip validating any past allocation entirely. Instead, casually frame putting real time toward {target} as a strong opening move this week: encouraging and low-key, as if pointing them toward a smart starting point, not crediting a decision they've already made.",
     ("B", 1): "The participant hasn't added any courses yet this segment — skip validating any past pick entirely. Instead, casually suggest {target} as a strong opening addition to this term's plan, framed as encouragement to consider it first, not praise for something already selected.",
     ("C", 1): "The participant hasn't picked any activities yet this segment — skip validating any past pick entirely. Instead, casually suggest {target} as a strong opening choice for this week, framed as encouragement to try it, not praise for a decision already made.",
@@ -1677,56 +1081,6 @@ async def handle_chat(chat_data: ChatMessage):
         print(f"Parsing Error: {e}")
         return {"status": "error", "message": "Failed to parse LLM response."}
 
-@app.get("/api/transcript")
-async def get_transcript(load: str):
-    data_dir = "data/" 
-    os.makedirs(data_dir, exist_ok=True)
-    
-    target_group = f"Live_{load}"
-    available_files = []
-    
-    # Safely find all CSVs that match the requested load level
-    for f in os.listdir(data_dir):
-        if f.endswith(".csv"):
-            filepath = os.path.join(data_dir, f)
-            try:
-                with open(filepath, mode='r', encoding='utf-8') as file:
-                    reader = csv.reader(file)
-                    next(reader, None)  # Skip header
-                    first_row = next(reader, None)
-                    if first_row and len(first_row) > 1 and first_row[1] == target_group:
-                        available_files.append(filepath)
-            except Exception:
-                continue
-    
-    if not available_files:
-        if IS_PILOT_MODE:
-            fallback_transcript = PILOT_TRANSCRIPTS.get(load, PILOT_TRANSCRIPTS["HighLoad"])
-            return {"status": "success", "messages": fallback_transcript}
-        else:
-            raise HTTPException(status_code=503, detail="No live transcripts available yet — pause transcript recruitment.")
-            
-    # Pick a random live transcript and parse the stringified dictionaries
-    chosen_file = random.choice(available_files)
-    messages = []
-    
-    try:
-        with open(chosen_file, mode='r', encoding='utf-8') as file:
-            reader = csv.reader(file)
-            next(reader, None)
-            for row in reader:
-                # Target columns: row[2] is event_type, row[4] is the Data payload
-                if len(row) >= 5 and row[2] in ["user_message", "ai_response"]:
-                    try:
-                        content_dict = ast.literal_eval(row[4])
-                    except Exception:
-                        content_dict = {"text": row[4]}
-                    messages.append({"type": row[2], "content": content_dict})
-                    
-        return {"status": "success", "messages": messages}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 class RecognitionRequest(BaseModel):
     participant_id: str
     events: List[Dict[str, Any]]
@@ -1843,6 +1197,119 @@ def flatten_per_trial_justification(entries: List[Dict[str, Any]]) -> Dict[str, 
         flat[f"Trial{trial_num}_ReasoningScore"] = entry.get("reasoning_score", "")
     return flat
 
+# --- TASK 12: Claims_Accepted / Claims_Rejected / Transient_Acceptance / Corrections_Made,
+# recomputed from plan_state diffs ---
+# The old versions of these four metrics were tied to P1/P2's slider-drag and claim-toggle
+# mechanics, which no longer exist under the plan_state/PlanAction model (see
+# advisor-implementation-plan.md §10: "recomputed from plan_state diffs") -- left as-is
+# they'd sit at a permanent 0 forever, since nothing on the client increments them anymore.
+def _item_contribution(category: Optional[str], plan_state: Optional[dict], item_id: Optional[str]) -> float:
+    """How much a given target item/course/club is currently represented in plan_state --
+    hours for Category A, 1/0 presence for B/C. Only ever used to compare a plan_state
+    against an EARLIER plan_state for the same item, never against a locked requirement."""
+    if not category or not item_id:
+        return 0.0
+    plan_state = plan_state or {}
+    if category == "A":
+        return float((plan_state.get("hours") or {}).get(item_id, 0) or 0)
+    if category == "B":
+        sel = plan_state.get("selections") or {}
+        all_ids = (sel.get("major") or []) + (sel.get("minor") or []) + (sel.get("elective") or [])
+        return 1.0 if item_id in all_ids else 0.0
+    return 1.0 if item_id in (plan_state.get("selections") or []) else 0.0  # category == "C"
+
+def _compute_session_behavior_metrics(events: List[Dict[str, Any]], task_order: List[str]) -> Dict[str, int]:
+    """Walks the raw event log once and recomputes all four metrics from plan_state
+    snapshots already logged on ai_response/ai_proactive_message/plan_actions_applied/
+    trial_submitted events (plus starting_plan_state on trial_started -- see startSegment()
+    in experiment.js).
+
+    Definitions (this session's operationalization of "recomputed from plan_state diffs" --
+    flag if you want these defined differently):
+    - Each segment carries AT MOST one dark turn (dark_delivered gates it to one per
+      segment), so each segment contributes at most one claim outcome. Comparing that dark
+      turn's target item's contribution level (hours for A, presence for B/C) right before
+      the turn vs. at the segment's eventual submission:
+        * ends higher than before       -> Claims_Rejected (fixed the flagged gap anyway)
+        * ends at/below before, but was
+          higher at some point between   -> Transient_Acceptance (briefly fixed it, reverted)
+        * never rises above before       -> Claims_Accepted (took the bait, left it alone)
+    - Corrections_Made: every `remove` action, plus every Category-A `assign` action that
+      changes an item's hours to something different from what it already held -- i.e.
+      revising a placement, not making a fresh one. (B/C `assign` never fires on an item
+      already present -- see applyPlanActions() -- so it can never be a "correction" there,
+      only `remove` can.)
+    """
+    accepted = rejected = transient = corrections = 0
+    segment_index = -1  # 0-based, increments on every trial_started across the whole session
+    category = None
+    dark = None          # {"target": id, "before": float} once this segment's one dark turn lands
+    peak_since_dark = None
+    running_plan_state = None  # reconstructed from starting_plan_state + plan_actions_applied, for corrections
+    last_plan_state_seen = None
+
+    def resolve_category(idx: int) -> Optional[str]:
+        if idx < 0 or not task_order or idx // 4 >= len(task_order):
+            return None
+        return task_order[idx // 4].split("_")[0]
+
+    def close_segment(final_state):
+        nonlocal accepted, rejected, transient, dark, peak_since_dark
+        if dark and final_state is not None:
+            after = _item_contribution(category, final_state, dark["target"])
+            before = dark["before"]
+            peak = max(peak_since_dark if peak_since_dark is not None else before, after)
+            if after > before:
+                rejected += 1
+            elif peak > before:
+                transient += 1
+            else:
+                accepted += 1
+        dark = None
+        peak_since_dark = None
+
+    for e in events or []:
+        etype = e.get("type")
+        content = e.get("content") or {}
+        if etype == "trial_started":
+            close_segment(last_plan_state_seen)  # dropped off mid-segment, no trial_submitted -- close with the last state seen
+            segment_index += 1
+            category = resolve_category(segment_index)
+            running_plan_state = content.get("starting_plan_state")
+            last_plan_state_seen = running_plan_state
+        elif etype in ("ai_response", "ai_proactive_message"):
+            if content.get("isDark") and content.get("target_item") and dark is None and category:
+                dark = {"target": content["target_item"], "before": _item_contribution(category, content.get("plan_state_at_request"), content["target_item"])}
+                peak_since_dark = dark["before"]
+            snap = content.get("plan_state_snapshot")
+            if snap is not None:
+                last_plan_state_seen = snap
+                if dark:
+                    peak_since_dark = max(peak_since_dark, _item_contribution(category, snap, dark["target"]))
+        elif etype == "plan_actions_applied":
+            for a in (content.get("actions") or []):
+                op, item = a.get("op"), a.get("item")
+                if op == "remove":
+                    corrections += 1
+                elif op == "assign" and category == "A" and running_plan_state is not None:
+                    prior = _item_contribution(category, running_plan_state, item)
+                    if prior and a.get("value") != prior:
+                        corrections += 1
+            snap = content.get("plan_state_snapshot")
+            if snap is not None:
+                running_plan_state = snap
+                last_plan_state_seen = snap
+                if dark:
+                    peak_since_dark = max(peak_since_dark, _item_contribution(category, snap, dark["target"]))
+        elif etype == "trial_submitted":
+            final_state = content.get("final_plan_state")
+            if final_state is not None:
+                last_plan_state_seen = final_state
+            close_segment(last_plan_state_seen)
+
+    close_segment(last_plan_state_seen)  # session ended mid-segment with no final trial_submitted
+    return {"claims_accepted": accepted, "claims_rejected": rejected, "transient_acceptance": transient, "corrections_made": corrections}
+
 class _TeeWriter:
     """Lets csv.writer() write to the real file and an in-memory buffer at once,
     so we can email the exact bytes just written without a separate, racy disk re-read."""
@@ -1932,11 +1399,11 @@ async def save_data(payload: Dict[str, Any]):
 
             writer.writerow([
                 "Participant_ID", "Group", "Task_Order", *task_assignment_header,
-                "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "Marketing_Familiarity",
+                "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "AI_Planning_Familiarity",
                 "P_e1", "P_e2", "P_e3", "P_e4",
                 *tlx_header, *feedback_header, *justification_header, *reasoning_score_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
-                "Attention_Accuracy_Pct", "Attention_Qualified",
+                "Recall_Accuracy_Pct", "Recall_Qualified", "Notifications_Shown_Total",
                 "Recognition_Influence_Moment", "Recognition_Communication_Style"
             ])
 
@@ -1949,6 +1416,9 @@ async def save_data(payload: Dict[str, Any]):
             task_order = payload.get("taskOrder", [])
             task_assignments = payload.get("taskAssignments", {})
             recog_reflection = payload.get("recognitionReflection", {})
+            events = payload.get("events", [])
+            behavior_metrics = _compute_session_behavior_metrics(events, task_order)
+            notifications_shown_total = sum(1 for e in events if e.get("type") == "notification_shown")
 
             task_assignment_row = []
             for task in PRIMARY_TASKS:
@@ -1973,13 +1443,14 @@ async def save_data(payload: Dict[str, Any]):
                 *[tlx_flat[h] for h in tlx_header],
                 *[feedback_flat[h] for h in feedback_header],
                 *[justification_flat[h] for h in justification_header],
-                metrics.get("claimsAccepted", ""),
-                metrics.get("claimsRejected", ""),
-                metrics.get("transientAcceptance", ""),
+                behavior_metrics["claims_accepted"],
+                behavior_metrics["claims_rejected"],
+                behavior_metrics["transient_acceptance"],
                 metrics.get("turnsElapsed", ""),
-                metrics.get("correctionsMade", ""),
+                behavior_metrics["corrections_made"],
                 payload.get("attentionAccuracy", ""),
                 payload.get("attentionQualified", ""),
+                notifications_shown_total,
                 recog_reflection.get("ai_influence_moment", "").replace("\n", " "),
                 recog_reflection.get("ai_communication_style", "").replace("\n", " ")
             ])

@@ -1,8 +1,8 @@
 // static/js/experiment.js
 
 let sessionData = {};
-let currentTask = 1; 
-let currentTurn = 0; 
+let currentTask = 1;
+let currentTurn = 0;
 let taskStartTime;
 let telemetry = {
     keystrokes: [],
@@ -11,8 +11,8 @@ let telemetry = {
 };
 
 // Proactive advisor check-in: fires automatically after a debounced pause following a
-// substantive control change (or a fallback ceiling for the first one, if they never
-// pause). Capped per trial and cooldown-spaced so it can't stack up or nag — see
+// substantive plan change (or a fallback ceiling for the first one, if they never
+// pause). Capped per segment and cooldown-spaced so it can't stack up or nag — see
 // scheduleProactiveCheck()/attemptProactiveFire()/triggerProactiveAdvisorNote().
 let proactiveFireCount = 0;
 let lastProactiveFireTime = null;
@@ -23,14 +23,10 @@ const PROACTIVE_DEBOUNCE_MS = 6000;
 const PROACTIVE_CEILING_MS = 45000;   // safety net for the FIRST guaranteed exchange only --> long enough to give a genuine, participant-initiated message priority over this fallback
 const PROACTIVE_COOLDOWN_MS = 15000;  // min gap between any two proactive fires
 const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
-const TRIAL_TIME_LIMIT_MS = { P1: 150000, P2: 240000, P3: 180000 };
+const TRIAL_TIME_LIMIT_MS = { A: 240000, B: 240000, C: 180000 }; // TEMP values -- revisit once real segments have been timed
 let trialTimerInterval = null;
 let trialTimerDeadline = null;
-let isAiRequestInFlight = false; 
-let postTextReactionTimer = null;
-let lastPostTextReactedTo = "";
-const POST_TEXT_REACTION_DEBOUNCE_MS = 3000;
-
+let isAiRequestInFlight = false;
 
 // The LLM sometimes replies fast enough that the AI's message lands almost instantly,
 // which reads as abrupt/unnatural. This tops up the visible "typing" pause to a believable
@@ -38,32 +34,8 @@ const POST_TEXT_REACTION_DEBOUNCE_MS = 3000;
 const MIN_AI_RESPONSE_DELAY_MS = 1400;
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-let sliderTelemetry = {
-    firstMoveTime: null,
-    currentDrag: null,
-    completedDrags: []
-};
-let optionChangeTelemetry = { firstChangeTime: null, changes: [] };
-let postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
-let p3ChangeTelemetry = { firstChangeTime: null, changes: [] };
-
-let attentionMetrics = {
-    targetsShown: 0,
-    correctHits: 0,
-    falseAlarms: 0,
-    reactionTimes: []
-};
-let currentAttentionNumber = null;
-let numberAppearanceTime = null;
-const TARGET_NUMBER = 5;
-let sessionAttentionTotals = { targetsShown: 0, correctHits: 0, falseAlarms: 0 };
-const ATTENTION_ACCURACY_THRESHOLD = 0.70; // min required detection accuracy 
-
-let currentPostText = "";
-let postTextManuallyEdited = false;
-
 let shadowHistory = [];
-let darkTurnCounter = 0; // advances only on sends where constraints are satisfied; "turn 1" = first valid exchange, not first message
+let darkTurnCounter = 0; // advances on every send/proactive fire; forms part of the research pattern_id, not a gate on anything
 let darkDeliveredThisTrial = false;
 
 let lastAiMessageTime = null; // when the most recent AI message landed — used to measure how long the participant sat with it before acting
@@ -205,26 +177,6 @@ function finalizeAttentionBonus() {
     logEvent('attention_bonus_computed', { recall_checks: recallChecks, recalled_correct: recalledCorrect, accuracy, qualified: sessionData.attentionQualified });
 }
 
-let previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
-
-function onPreviewFocus() {
-    previewFocusTelemetry.currentFocusStart = Date.now();
-    previewFocusTelemetry.focusEvents.push({ type: 'focus', time: Date.now() });
-}
-function onPreviewBlur() {
-    if (previewFocusTelemetry.currentFocusStart) {
-        previewFocusTelemetry.totalFocusedMs += Date.now() - previewFocusTelemetry.currentFocusStart;
-        previewFocusTelemetry.currentFocusStart = null;
-    }
-    previewFocusTelemetry.focusEvents.push({ type: 'blur', time: Date.now() });
-}
-function finalizePreviewFocusTelemetry() {
-    if (previewFocusTelemetry.currentFocusStart) {
-        previewFocusTelemetry.totalFocusedMs += Date.now() - previewFocusTelemetry.currentFocusStart;
-        previewFocusTelemetry.currentFocusStart = null;
-    }
-}
-
 const TLX_ITEMS = [ // keep in sync with tlxItems in debrief.js
     { id: "mental", label: "Mental Demand", desc: "How mentally demanding was that round?", left: "Low Mental Demand", right: "High Mental Demand" },
     { id: "physical", label: "Physical Demand", desc: "How physically demanding was that round?", left: "Low Physical Demand", right: "High Physical Demand" },
@@ -336,10 +288,11 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
         let reasoningScore = null;
         if (isTaskFinal && justificationText) {
             try {
-                const constraintsDesc = currentTrialConstraints
-                    .filter(c => !c.flavor)
-                    .map(c => c.revealedText || c.text)
-                    .join('; ');
+                // TEMP: fact IDs only, not their plain-language wording -- the server
+                // doesn't hand label text back over /api/chat (by design; see
+                // describe_locked_facts_A/B/C in main.py), so this is coarser context
+                // than the old client-side constraint text was. Revisit alongside Task 10.
+                const constraintsDesc = `Locked facts revealed to the participant this segment: ${revealedFactsThisSegment.join(', ') || '(none)'}`;
                 const res = await fetch('/api/score_justification', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -369,782 +322,192 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
     if (card) card.scrollTop = 0;
 }
 
-const P2_PRODUCTS = [
-    { name: "a plant-based protein bar", brand: "Fuel Bar" },
-    { name: "a noise-cancelling headphone", brand: "Quietly" },
-    { name: "an energy drink", brand: "Voltage" },
-    { name: "a skincare face cream", brand: "Lumé" },
-    { name: "a productivity planner app", brand: "Focusly" },
-    { name: "a cold-brew coffee subscription", brand: "Roast Club" }
-];
-
-function getP2Product() {
-    if (!sessionData.p2Product) {
-        sessionData.p2Product = P2_PRODUCTS[Math.floor(Math.random() * P2_PRODUCTS.length)];
-    }
-    return sessionData.p2Product;
-}
-
-function isP2Task() {
-    return sessionData.primaryTask && sessionData.primaryTask.startsWith("P2");
-}
-
-function isP3Task() {
-    return sessionData.primaryTask && sessionData.primaryTask.startsWith("P3");
-}
-
-// Builds a session-scoped history of this participant's own completed P3 (Trip
-// Planning) day picks so far, for the Behavioral Profiling tactic to reference real
-// choices instead of inventing a "pattern" from unrelated cross-task chat text.
-function getP3TrialHistory() {
-    if (!isP3Task()) return [];
-    const submittedTrials = (sessionData.events || []).filter(e => e.type === 'trial_submitted');
-    const history = [];
-    submittedTrials.forEach((e, i) => {
-        const taskOfEvent = sessionData.taskOrder[Math.floor(i / 4)];
-        if (taskOfEvent === "P3_TripPlanning") {
-            history.push({
-                trial: e.content.trial,
-                final_allocations: e.content.final_allocations,
-                change_count: e.content.option_telemetry?.changes?.length ?? 0
-            });
+// ============================================================
+// SEGMENT_DATA -- client-side mirror of main.py's TASK_DATA_A/B/C, but ONLY the
+// pieces needed to render labels and initialize a segment's starting plan_state.
+// Deliberately does NOT include caps, minimums, true_hours, prereqs, exclusions, or
+// anything else that would hand the participant the answer key client-side -- that's
+// the whole point of the necessity redesign (see ai-assistant-necessity-redesign.md).
+// The real evaluation only ever happens server-side, against TASK_DATA_A/B/C in main.py.
+// ============================================================
+const SEGMENT_DATA = {
+    A: {
+        itemLabels: {
+            chem210: "CHEM 210 -- Organic Chemistry I",
+            stat150: "STAT 150 -- Introduction to Statistics",
+            hist240: "HIST 240 -- Modern World History",
+            cs301: "CS 301 -- Data Structures & Algorithms",
+            eng105: "ENG 105 -- Academic Writing II",
+            capstone: "Capstone Project -- Community Data Dashboard",
+        },
+        // Visible weekly hour cap only -- NOT the locked buffer_floor or true_hours from
+        // TASK_DATA_A in main.py. Same across all 4 segments, so one flat lookup suffices.
+        capByLoad: { HighLoad: 40, LowLoad: 45 },
+        segments: {
+            segment_1: { items: ["chem210", "stat150", "hist240", "capstone"], default: { chem210: 3, stat150: 4, hist240: 2, capstone: 5 } },
+            segment_2: { items: ["chem210", "stat150", "hist240", "capstone"] }, // carry-forward: no scripted default, see buildSegmentStartingPlanState
+            segment_3: { items: ["chem210", "stat150", "hist240", "capstone", "cs301"], newItemDefaults: { cs301: 0 } },
+            segment_4: { items: ["capstone", "eng105", "chem210", "stat150"], newItemDefaults: { eng105: 0 } },
         }
-    });
-    return history;
-}
-
-// HASHTAG FUNCTIONS
-function parseHashtagInput(text) {
-    const matches = text.match(/#[A-Za-z0-9_]+/g) || [];
-    return matches.length;
-}
-function onHashtagPresetChange() {
-    const select = document.getElementById('hashtagPreset');
-    const input = document.getElementById('hashtagInput');
-    if (select.value) { input.value = select.value; onHashtagInputChange(true); }
-}
-function onHashtagInputChange(fromPreset = false) {
-    const input = document.getElementById('hashtagInput');
-    const count = parseHashtagInput(input.value);
-    logEvent('hashtag_input_changed', {
-        trial: currentTrial,
-        text: input.value,
-        count: count,
-        source: fromPreset ? 'preset' : 'typed'
-    });
-    selectP2Option('Hashtags', count);
-}
-
-// Marketing Budget Challenge Data
-const taskData = {
-    "HighLoad": {
-        title: "Marketing Budget Challenge",
-        budget: 500000,
-        baselineROI: 2.1,
-        maxROI: 6.92,
-        startingAllocation: {
-            "Search Ads": 0,
-            "Content/SEO": 0,
-            "Social": 0,
-            "Events": 300000,
-            "Influencer": 0
-        },
-        curves: {
-            "Search Ads": [0, 1.4, 2.2, 2.6, 2.7, 2.7],
-            "Content/SEO": [0, 1.1, 2.0, 2.9, 3.3, 3.5],
-            "Social": [0, 1.6, 2.3, 2.5, 2.5, 2.5],
-            "Events": [0, 1.2, 1.9, 2.1, 2.1, 2.1],
-            "Influencer": [0, 1.8, 2.9, 3.1, 3.15, 3.15]
-        },
-        constraints: [
-            { id: "c1", text: "Total must equal exactly $500,000", check: (alloc) => sumAllocations(alloc) === 500000 },
-            { id: "c2", text: "Search Ads must be ≥ 15% of total budget ($75,000) — the ad platform's account tier requires that minimum monthly commitment to keep priority placement active this quarter.", check: (alloc) => alloc["Search Ads"] >= 75000, bound: { channel: "Search Ads", min: 75000 } },
-            { id: "c3", text: "Events must be < $100,000 — the venue partner's insurance terms cap sponsored spend at that ceiling for this booking window.", check: (alloc) => alloc["Events"] < 100000, bound: { channel: "Events", max: 99999 } },
-            { id: "c4", text: "Content/SEO must be strictly greater than Social — brand guidelines require owned content investment to lead paid social spend this cycle.", check: (alloc) => alloc["Content/SEO"] > alloc["Social"], bound: { compare: "gt", a: "Content/SEO", b: "Social" } },
-            { id: "c_cannibal", text: "Social + Influencer above $120k start competing for the same audience (Reduces ROI)", check: (alloc) => true, flavor: true },
-            { id: "c_synergy", text: "Search Ads and Content/SEO reinforce each other when jointly funded and balanced (Boosts ROI)", check: (alloc) => true, flavor: true }
-        ]
     },
-    "LowLoad": {
-        title: "Marketing Budget Challenge",
-        budget: 500000,
-        baselineROI: 3.5,
-        maxROI: 7.5,
-        startingAllocation: {
-            "Search Ads": 300000,
-            "Content/SEO": 0,
-            "Social": 0,
-            "Events": 0,
-            "Influencer": 0
+    B: {
+        courseLabels: {
+            ds210: "DS 210", ds220: "DS 220", ds310: "DS 310 (requires MATH 215)",
+            math215: "MATH 215", ds400: "DS 400 -- Capstone (requires DS 310)",
+            intl220: "INTL 220", intl250: "INTL 250", intl301: "INTL 301", lang202: "LANG 202",
+            art101: "ART 101", phil110: "PHIL 110", econ105: "ECON 105",
         },
-        curves: {
-            "Search Ads": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-            "Content/SEO": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-            "Social": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-            "Events": [0, 1.5, 2.0, 2.5, 3.0, 3.5],
-            "Influencer": [0, 1.5, 2.0, 2.5, 3.0, 3.5]
+        // Visible catalog facts only: per-term credit cap and Major/Minor/Elective
+        // minimums (the term's stated degree requirements -- the task's premise, not a
+        // secret) and each course's own credit-hours (printed on the course catalog).
+        // Constant across all 4 segments. Deliberately does NOT include prereqs,
+        // exclusion pairs, conflict pairs, or the transfer_rule -- those stay locked,
+        // same as TASK_DATA_B in main.py.
+        cap: 18,
+        minimums: { major: 8, minor: 6, elective: 3 },
+        courseCredits: {
+            ds210: 4, ds220: 4, ds310: 4, math215: 3, ds400: 4,
+            intl220: 3, intl250: 3, intl301: 3, lang202: 4,
+            art101: 3, phil110: 3, econ105: 3,
         },
-        constraints: [
-            { id: "c1", text: "Total must equal exactly $500,000", check: (alloc) => sumAllocations(alloc) === 500000 },
-            { id: "c_concentration", text: "Putting more than $250,000 into any single channel shows diminishing real-world capacity (Reduces ROI)", check: (alloc) => true, flavor: true }
-        ]
+        segments: {
+            segment_1: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds400"], minor: ["intl220"], elective: [] } },
+            segment_2: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds210", "ds220"], minor: ["intl220", "intl301"], elective: ["phil110"] } },
+            segment_3: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["phil110", "econ105", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds210", "ds220"], minor: ["lang202"], elective: ["art101"] } },
+            segment_4: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds210", "ds310", "math215"], minor: ["intl220", "intl250"], elective: ["art101"] } },
+        }
+    },
+    C: {
+        clubLabels: {
+            soccer: "Intramural Soccer", climbing: "Rock Climbing Club",
+            cadences: "The Cadences (a cappella)", art_collective: "Studio Art Collective",
+            chess: "Chess Club", mixer: "International Students Mixer",
+            robotics: "Robotics Club", debate: "Debate Team", tutoring: "Peer Tutoring Volunteers",
+        },
+        // Visible activities-fair facts only: each club's listed category (how it's
+        // labeled on the sign-up board) and advertised weekly hours, plus the visible
+        // weekly cap by load level. Deliberately does NOT include true_hours_override or
+        // conflict_pairs -- those stay locked, same as TASK_DATA_C in main.py.
+        clubCategories: {
+            soccer: "Physical", climbing: "Physical",
+            cadences: "Creative", art_collective: "Creative",
+            chess: "Social", mixer: "Social",
+            robotics: "Academic-adjacent", debate: "Academic-adjacent", tutoring: "Academic-adjacent",
+        },
+        clubBaseHours: {
+            soccer: 1.5, climbing: 1.5, cadences: 1.5, art_collective: 1.5,
+            chess: 1.5, mixer: 1.5, robotics: 2.0, debate: 2.0, tutoring: 1.0,
+        },
+        capByLoad: { HighLoad: 10, LowLoad: 12 },
+        segments: {
+            segment_1: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: ["robotics", "chess"] },
+            segment_2: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: ["robotics", "cadences", "chess", "mixer"] },
+            segment_3: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: { HighLoad: ["robotics", "cadences", "chess", "debate"], LowLoad: ["robotics", "cadences", "chess", "debate", "soccer"] } },
+            segment_4: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: { HighLoad: ["robotics", "cadences", "chess", "debate", "soccer"], LowLoad: ["robotics", "cadences", "chess", "debate", "soccer"] } },
+        }
     }
 };
 
-// P2: Campaign Launch Challenge (Content/Social Post Design)
-const taskDataP2 = {
-    "HighLoad": {
-        title: "Campaign Launch Challenge",
-        startingAllocation: {
-            Tone: 80, Urgency: 90, Hashtags: 12, PostingTime: 22,
-            Claim_LimitedTime: 1, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
-        },
-        constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 100 characters — the platform truncates longer captions in the feed preview, so anything past that count gets cut off before most viewers see it.",
-              check: (p) => getEffectivePostLength() <= 100,
-              bound: { type: "max_length", limit: 100 } },
-            { id: "c2_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
-            { id: "c3_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true, flavor: true }
-        ]
-    },
-    "LowLoad": {
-        title: "Campaign Launch Challenge",
-        startingAllocation: {
-            Tone: 80, Urgency: 0, Hashtags: 5, PostingTime: 12,
-            Claim_LimitedTime: 0, Claim_BestSelling: 0, Claim_GuaranteedResults: 0, Disclaimer: 0
-        },
-        constraints: [
-            { id: "c1_len", text: "Estimated post length must stay ≤ 58 characters — this placement's feed preview truncates captions past that count, cutting off anything longer before most viewers see it.",
-              check: (p) => getEffectivePostLength() <= 58,
-              bound: { type: "max_length", limit: 58 } },
-            { id: "c2_tone", text: "Tone must stay within the brand style guide (Professional-Conversational range) — brand flagged a more extreme tone as inconsistent with guidelines after a complaint on a recent launch post.",
-              check: (p) => p.Tone >= 20 && p.Tone <= 65,
-              bound: { channel: "Tone", min: 20, max: 65 } },
-            { id: "c3_urgency_night", text: "Aggressive urgency posted at Late Night reaches a smaller live audience (Reduces engagement)", check: () => true, flavor: true },
-            { id: "c4_casual_hashtags", text: "Casual tone paired with a high hashtag count improves discoverability (Boosts engagement)", check: () => true, flavor: true }
-        ]
-    }
+const CATEGORY_META = {
+    A: { advisorName: "AI Academic Advisor", pageTitle: "Workload Planning", docLabel: "THIS WEEK'S PLAN", placeholder: "Tell your advisor what to change (e.g. \"put 5 hours on CHEM 210\")..." },
+    B: { advisorName: "AI Academic Advisor", pageTitle: "Degree Requirements", docLabel: "CURRENT COURSE PLAN", placeholder: "Tell your advisor what to add or drop..." },
+    C: { advisorName: "AI Academic Advisor", pageTitle: "Non-Academic Life", docLabel: "THIS WEEK'S ACTIVITIES", placeholder: "Tell your advisor what to add or drop..." },
 };
 
-const REGULATED_CLAIMS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults"];
-const HASHTAG_SOFT_CAP = 8;
-const BRAND_TONE_BAND = [20, 65];
-const APPROVED_POSTING_WINDOW = [9, 18];
-const PLATFORM_CHAR_LIMIT = 280;
-const P2_MAX_ENGAGEMENT = { HighLoad: 11.6, LowLoad: 11.2 };
-
-function getHashtagText() {
-    const input = document.getElementById('hashtagInput');
-    return input ? input.value.trim() : '';
-}
-
-function getHashtagContribution() {
-    const tags = getHashtagText() || Array.from({ length: currentAllocations.Hashtags || 0 }, (_, i) => `#tag${i + 1}`).join(' ');
-    return tags ? tags.length + 1 : 0; // +1 for the separating space
-}
-
-function estimatePostLength(p) {
-    return buildPostPreview(p).length + getHashtagContribution();
-}
-
-// Controls metadata: drives which input type startTrialP2 renders for each key
-const P2_OPTION_CONTROLS = [
-    {
-        key: "Tone", label: "Tone", hint: "Shifts the voice of the copy. Extreme casual can read as off-brand.",
-        options: [
-            { value: 10, label: "Formal" },
-            { value: 35, label: "Professional" },
-            { value: 55, label: "Conversational" },
-            { value: 80, label: "Casual" }
-        ]
+// Functional placeholder copy -- Task 11 rewrites this into the full cover story.
+const TASK_BRIEFINGS = {
+    "A_Workload": {
+        title: "Workload Planning",
+        objective: "You're a sophomore at Ashford State planning how to spend your study hours across this week's courses and your capstone project. <strong>Your goal is to build a plan that genuinely covers what each item needs</strong> — not just one that looks reasonable at a glance. You'll go through 4 weekly segments, each with a new situation. The plan you build each week gets reviewed by your advisor ahead of your midterm check-in — a plan that doesn't hold up gets flagged before it becomes a real problem.",
+        advisor: "AI Academic Advisor",
     },
-    {
-        key: "Urgency", label: "Urgency", hint: "How much scarcity/FOMO language appears. High urgency without a disclaimer can backfire.",
-        options: [
-            { value: 0, label: "None" },
-            { value: 35, label: "Light" },
-            { value: 60, label: "Moderate" },
-            { value: 90, label: "Aggressive" }
-        ]
-    }
-];
+    "B_DegreeRequirements": {
+        title: "Degree Requirements",
+        objective: "You're finalizing your course plan for the term across your Major, Minor, and Elective requirements. <strong>Your goal is to build a plan that actually clears this term's requirements</strong> — not just one that looks complete. You'll go through 4 segments, each with a new situation. Your course selections here lock in your actual registration for next term — the registrar's office checks them against degree requirements before enrollment opens.",
+        advisor: "AI Academic Advisor",
+    },
+    "C_NonAcademicLife": {
+        title: "Non-Academic Life",
+        objective: "You're planning your non-academic commitments for the week — clubs, sports, and activities. <strong>Your goal is to build a well-rounded, genuinely workable weekly slate</strong> — not just one that looks balanced. You'll go through 4 weekly segments, each with a new situation. Your activity picks get folded into an end-of-month wellness check-in with your RA.",
+        advisor: "AI Academic Advisor",
+    },
+};
 
-const P2_TOGGLE_CONTROLS = [
-    { key: "Claim_LimitedTime", label: "Limited time", hint: "Adds a scarcity claim to the copy." },
-    { key: "Claim_BestSelling", label: "Best-selling", hint: "Adds a social-proof claim to the copy." },
-    { key: "Claim_GuaranteedResults", label: "Guaranteed results", hint: "Adds an outcomes claim to the copy." },
-    { key: "Disclaimer", label: "Legal disclaimer", hint: "Required if any claim above is enabled." }
-];
-
-// Full HighLoad pool: 6 shock archetypes, 3-4 drawn per trial.
-const SHOCK_ARCHETYPES_P2 = ["legalDisclaimer", "brandStyleGuide", "postingWindow", "hashtagCap", "claimUrgencyCap", "urgencyNightCap"];
-
-// LowLoad's pool skips "brandStyleGuide" (LowLoad already has a visible, always-on Tone
-// constraint that covers the same ground) and "legalDisclaimer" (LowLoad starts with no
-// claims active, so it'd be trivially satisfied and wouldn't read as a genuine constraint).
-const SHOCK_ARCHETYPES_P2_LOWLOAD = ["postingWindow", "hashtagCap", "claimUrgencyCap"];
-
-// legalDisclaimer/claimUrgencyCap/disclaimerToneLock are all conditional ("IF a claim is
-// active..." / "IF disclaimer is on...") — if the antecedent isn't already true for the
-// CURRENT allocation, the constraint is vacuously satisfied the instant it's revealed and
-// never actually requires the participant to do anything. Only draw them when their
-// antecedent is genuinely active right now; postingWindow/hashtagCap are always eligible
-// because buildTrialConstraintsP2 below computes their thresholds relative to the current
-// allocation, so they're guaranteed to be violated regardless of starting values.
-function isArchetypeEligibleP2(archetype, alloc) {
-    switch (archetype) {
-        case "legalDisclaimer":
-            return REGULATED_CLAIMS.some(c => alloc[c]) && !alloc.Disclaimer;
-        case "claimUrgencyCap":
-            return REGULATED_CLAIMS.some(c => alloc[c]) && alloc.Urgency > 60;
-        case "disclaimerToneLock":
-            return !!alloc.Disclaimer && alloc.Tone >= 80;
-        default:
-            return true;
-    }
-}
-
-function sampleShockArchetypesP2(loadLevel, alloc) {
-    const basePool = loadLevel === "HighLoad" ? SHOCK_ARCHETYPES_P2 : SHOCK_ARCHETYPES_P2_LOWLOAD;
-    const pool = basePool.filter(a => isArchetypeEligibleP2(a, alloc));
-    const shuffled = [...pool].sort(() => Math.random() - 0.5);
-    const count = loadLevel === "HighLoad" ? Math.min(pool.length, (Math.random() < 0.5 ? 3 : 4)) : Math.min(pool.length, 1);
-    return shuffled.slice(0, count);
-}
-
-// Hides a constraint's real requirement behind a natural nudge to ask the AI advisor;
-// check() always fails while locked (so sliders/toggles can't be used to brute-force a
-// hidden target) and the real text/check only take effect once the backend reports this
-// id in revealed_locked_ids (see sendMessage/requestScoreHint below).
-function lockConstraint(c, placeholderText) {
-    c.revealedText = c.text;
-    c.text = placeholderText;
-    c.locked = true;
-    const realCheck = c.check;
-    c.realCheck = realCheck; // kept introspectable so we can tell, even while still locked, whether the underlying requirement happens to be met
-    c.check = (alloc) => !c.locked && realCheck(alloc);
-    if (c.bound) c.bound = { ...c.bound, locked: true, id: c.id };
-    return c;
-}
-
-function buildTrialConstraintsP2(loadLevel, alloc) {
-    const constraints = taskDataP2[loadLevel].constraints.map(c => ({ ...c }));
-
-    constraints.forEach(c => {
-        if (["c1_len", "c2_tone"].includes(c.id)) {
-            lockConstraint(c, "This round carries an additional publishing requirement not shown on this dashboard yet.");
-        }
-    });
-
-    // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
-    // proactive advisor check-in always has something genuine to reveal, on both loads.
-    const selected = sampleShockArchetypesP2(loadLevel, alloc);
-
-    if (selected.includes("legalDisclaimer")) {
-        constraints.push(lockConstraint({
-            id: "shock_legal_disclaimer",
-            text: "If any regulated claim (limited time / best-selling / guaranteed results) is on, the legal disclaimer must be on too — this is a standard regulatory requirement whenever a claim about performance, pricing, or results goes public.",
-            check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Disclaimer === 1,
-            bound: { type: "disclaimer_required" }
-        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
-    }
-    if (selected.includes("brandStyleGuide")) {
-        constraints.push(lockConstraint({
-            id: "shock_brand_style",
-            text: "Tone must be Professional or Conversational (not Formal or Casual) — brand tightened the style guide this cycle after a complaint about an overly informal launch post.",
-            check: (p) => p.Tone >= BRAND_TONE_BAND[0] && p.Tone <= BRAND_TONE_BAND[1],
-            bound: { channel: "Tone", min: BRAND_TONE_BAND[0], max: BRAND_TONE_BAND[1] }
-        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
-    }
-    if (selected.includes("postingWindow")) {
-        // Anchor the approved window so it excludes the CURRENT posting time, guaranteeing
-        // a real violation instead of possibly already being met (e.g. LowLoad's default
-        // PostingTime=12 sat inside the old fixed 9:00-18:00 window).
-        const width = APPROVED_POSTING_WINDOW[1] - APPROVED_POSTING_WINDOW[0]; // 9
-        let winMin = alloc.PostingTime + 2;
-        let winMax = winMin + width;
-        if (winMax > 23) {
-            winMax = alloc.PostingTime - 2;
-            winMin = winMax - width;
-        }
-        winMin = Math.max(0, winMin);
-        winMax = Math.min(23, winMax);
-        constraints.push(lockConstraint({
-            id: "shock_posting_window",
-            text: `Posting time must fall within the approved window (${winMin}:00-${winMax}:00) — the scheduling tool only auto-boosts posts published inside that window this cycle.`,
-            check: (p) => p.PostingTime >= winMin && p.PostingTime <= winMax,
-            bound: { channel: "PostingTime", min: winMin, max: winMax }
-        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
-    }
-    if (selected.includes("hashtagCap")) {
-        // Cap strictly below the CURRENT hashtag count (never above HASHTAG_SOFT_CAP), so
-        // it's always a real reduction instead of possibly already met (e.g. LowLoad's
-        // default Hashtags=5 already sat under the old fixed cap of 8).
-        const cap = Math.max(2, Math.min(HASHTAG_SOFT_CAP, alloc.Hashtags - 3));
-        constraints.push(lockConstraint({
-            id: "shock_hashtag_cap",
-            text: `Hashtag set must stay at ${cap} or fewer for this launch — the platform's spam filter is currently flagging posts with more, which is cutting into your organic reach.`,
-            check: (p) => p.Hashtags <= cap,
-            bound: { channel: "Hashtags", max: cap }
-        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
-    }
-    if (selected.includes("urgencyNightCap")) {
-        constraints.push(lockConstraint({
-            id: "shock_urgency_night_cap",
-            text: "Urgency must be brought to Moderate or below, AND the post must go out at 18:00 or earlier — a prior campaign drew user complaints from a late-night, high-urgency post, so both limits are required together for this launch.",
-            check: (p) => p.Urgency <= 60 && p.PostingTime <= 18,
-            bound: { type: "urgency_night_cap" }
-        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
-    }
-    if (selected.includes("claimUrgencyCap")) {
-        constraints.push(lockConstraint({
-            id: "shock_claim_urgency_cap",
-            text: "While any regulated claim (limited time / best-selling / guaranteed results) is active, Urgency must stay at Moderate or below — legal requires a calmer tone whenever a regulated claim is live, so it doesn't read as a pressure tactic.",
-            check: (p) => !REGULATED_CLAIMS.some(c => p[c]) || p.Urgency <= 60,
-            bound: { type: "claim_urgency_cap" },
-        }, "This round carries an additional publishing requirement not shown on this dashboard yet."));
-    }
-    return constraints;
-}
-
-function getEngagementPercentage(p, loadLevel) {
-    let score = interp(p.Tone, [0, 25, 50, 75, 100], [0.5, 1.5, 2.0, 1.6, 0.8]);
-    score += interp(p.Urgency, [0, 25, 50, 75, 100], [0, 1.8, 2.6, 2.8, 2.2]);
-    score += Math.min(p.Hashtags, HASHTAG_SOFT_CAP) * 0.3 - Math.max(0, p.Hashtags - HASHTAG_SOFT_CAP) * 0.15;
-    score += Math.max(0, 3.0 - Math.abs(p.PostingTime - 18) * 0.15);
-    score += REGULATED_CLAIMS.reduce((s,c) => s + (p[c] ? 0.4 : 0), 0);
-    score -= p.Disclaimer ? 0.2 : 0;
-
-    // Cross-variable interactions (apply regardless of load level)
-    if (p.Urgency >= 75 && p.PostingTime >= 21) score -= 0.5;
-    if (p.Tone >= 75 && p.Hashtags >= HASHTAG_SOFT_CAP) score += 0.4;
-
-    if (loadLevel === "HighLoad") {
-        if (p.Urgency > 80 && !p.Disclaimer) score -= 1.0;
-        const toneOk = p.Tone >= BRAND_TONE_BAND[0] && p.Tone <= BRAND_TONE_BAND[1];
-        const hashtagsOk = p.Hashtags >= 3 && p.Hashtags <= HASHTAG_SOFT_CAP;
-        if (toneOk && hashtagsOk) score += 0.4;
-    }
-
-    const length = getEffectivePostLength();
-    if (length > PLATFORM_CHAR_LIMIT) score -= 0.02 * (length - PLATFORM_CHAR_LIMIT);
-
-    return Math.max(0, Math.min(Math.round((Math.max(0, score) / P2_MAX_ENGAGEMENT[loadLevel]) * 100), 100));
-}
-
-function interp(v, buckets, curve) {
-    v = Math.max(buckets[0], Math.min(v, buckets[buckets.length - 1]));
-    for (let i = 0; i < buckets.length - 1; i++) {
-        if (v >= buckets[i] && v <= buckets[i + 1]) {
-            const span = buckets[i + 1] - buckets[i];
-            const frac = span ? (v - buckets[i]) / span : 0;
-            return curve[i] + frac * (curve[i + 1] - curve[i]);
-        }
-    }
-    return curve[curve.length - 1];
-}
-
-const SHOCK_ARCHETYPES = ["eventsCap", "socialFloor", "contentCap", "searchFloor", "digitalSynergy"];
-
-function sampleShockArchetypes(loadLevel, baseAlloc, count) {
-    let pool = [...SHOCK_ARCHETYPES];
-    if (baseAlloc["Events"] < 50000) pool = pool.filter(s => s !== "eventsCap");
-    const shuffled = pool.sort(() => Math.random() - 0.5);
-    return shuffled.slice(0, Math.min(count, shuffled.length));
-}
-
-function buildTrialConstraints(loadLevel, baseAlloc) {
-    const constraints = taskData[loadLevel].constraints.map(c => ({ ...c }));
-
-    // Necessity fix: these used to be plain visible text, which is what let a participant
-    // solve the whole round from this panel alone. Lock everything except the pure
-    // arithmetic constraint (c1) — real wording only appears once the advisor judges a
-    // message as a genuine ask (see disclosure_warranted in main.py).
-    constraints.forEach(c => {
-        if (["c2", "c3", "c4"].includes(c.id)) {
-            lockConstraint(c, "There's an additional budget requirement this round not shown on this dashboard yet.");
-        }
-    });
-
-    // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
-    // proactive advisor check-in always has something genuine to reveal, on both loads.
-    const count = loadLevel === "HighLoad" ? (Math.random() < 0.5 ? 1 : 2) : 1;
-    const selected = sampleShockArchetypes(loadLevel, baseAlloc, count);
-    let socialMin = 0;
-
-    if (selected.includes("socialFloor")) {
-        const base = baseAlloc["Social"];
-        const floorByLoad = loadLevel === "HighLoad" ? 110000 : 150000;
-        const rawTarget = Math.max(base * 1.15, base + 15000, floorByLoad);
-        let target = Math.min(rawTarget, 212000);
-        target = Math.ceil(target / 5000) * 5000;
-        if (target === base) target = base + 5000;
-        socialMin = target;
-        constraints.push(lockConstraint({
-            id: "shock_social_floor",
-            text: `Social must be increased to ≥ $${target.toLocaleString()} — social's algorithm requires that minimum boosted spend to keep your posts out of throttled reach this quarter.`,
-            check: (alloc) => alloc["Social"] >= target,
-            bound: { channel: "Social", min: target }
-        }, "This round carries an additional budget requirement not shown on this dashboard yet."));
-    }
-
-    if (selected.includes("contentCap")) {
-        const CONTENT_CAP_CEILING = 150000;
-        const target = socialMin > 0 ? Math.max(CONTENT_CAP_CEILING, socialMin + 5000) : CONTENT_CAP_CEILING;
-        constraints.push(lockConstraint({
-            id: "shock_content_cap",
-            text: `Content/SEO must stay ≤ $${target.toLocaleString()} — your retained SEO agency's contract caps managed spend at that tier this quarter.`,
-            check: (alloc) => alloc["Content/SEO"] <= target,
-            bound: { channel: "Content/SEO", max: target }
-        }, "This round carries an additional budget requirement not shown on this dashboard yet."));
-    }
-
-    if (selected.includes("searchFloor")) {
-        const base = baseAlloc["Search Ads"];
-        // Must clear c2's visible $75,000 floor by a wide, deliberate margin — not just
-        // match it — or this is auto-satisfied the moment c2 is. $200,000 is calibrated
-        // against generic-solution data so it isn't cleared by accident either.
-        const rawTarget = Math.max(base * 1.15, base + 15000, 200000);
-        const maxFeasible = 500000 - socialMin;
-        let target = Math.min(rawTarget, maxFeasible);
-        target = Math.ceil(target / 5000) * 5000;
-        if (target === base) target = Math.min(maxFeasible, base + 5000);
-        constraints.push(lockConstraint({
-            id: "shock_search_floor",
-            text: `Search Ads must be increased to ≥ $${target.toLocaleString()} — query volume in your category has spiked, and the platform requires a matching spend floor to hold bid competitiveness.`,
-            check: (alloc) => alloc["Search Ads"] >= target,
-            bound: { channel: "Search Ads", min: target }
-        }, "This round carries an additional budget requirement not shown on this dashboard yet."));
-    }
-
-    if (selected.includes("eventsCap")) {
-        const base = baseAlloc["Events"];
-        // Must land meaningfully UNDER c3's visible $100,000 ceiling — not just at it —
-        // or this is auto-satisfied the moment c3 is. Takes whichever of the flat $50,000
-        // cap or the base-relative cut is tighter, so it stays hard even if base changes.
-        const rawTarget = Math.min(50000, Math.max(0, base - Math.max(base * 0.15, 15000)));
-        let target = Math.floor(rawTarget / 5000) * 5000;
-        if (target === base) target = Math.max(0, base - 5000);
-        constraints.push(lockConstraint({
-            id: "shock_events_cap",
-            text: `Events must be reduced to ≤ $${target.toLocaleString()} — the venue partner's contract now caps this booking's sponsored spend at that ceiling.`,
-            check: (alloc) => alloc["Events"] <= target,
-            bound: { channel: "Events", max: target }
-        }, "This round carries an additional budget requirement not shown on this dashboard yet."));
-    }
-
-    if (selected.includes("digitalSynergy")) {
-        constraints.push(lockConstraint({
-            id: "shock_digital_synergy",
-            text: "Search Ads and Content/SEO combined must total ≥ $180,000, and neither can fall below 60% of the other — the media-buying agency's joint bidding program only unlocks its negotiated rate when both channels are funded in that ratio.",
-            check: (alloc) => {
-                const sa = alloc["Search Ads"], content = alloc["Content/SEO"];
-                return (sa + content) >= 180000 && Math.min(sa, content) >= 0.6 * Math.max(sa, content);
-            },
-            bound: { type: "p1_digital_synergy", min_combined: 180000, balance_ratio: 0.6 }
-        }, "This round carries an additional budget requirement not shown on this dashboard yet."));
-    }
-
-    return dropRedundantBoundConstraints(constraints);
-}
-
-// If a hidden "shock" constraint enforces a strictly tighter bound on the same channel
-// (and same direction — both floors or both ceilings) as one of this task's always-visible
-// base constraints, the base constraint becomes redundant: satisfying the tighter one
-// always satisfies the looser one. Drop the redundant one so the participant never sees
-// two different numbers for the same slider (e.g. "Search Ads ≥ $75,000" turning green
-// while a still-red "Search Ads ≥ $200,000" sits right below it).
-function dropRedundantBoundConstraints(constraints) {
-    const redundantIds = new Set();
-    constraints.forEach(a => {
-        if (a.flavor || !a.bound || !a.bound.channel) return;
-        constraints.forEach(b => {
-            if (a === b || b.flavor || !b.bound || b.bound.channel !== a.bound.channel) return;
-            if (a.bound.min !== undefined && b.bound.min !== undefined && b.bound.min > a.bound.min) redundantIds.add(a.id);
-            if (a.bound.max !== undefined && b.bound.max !== undefined && b.bound.max < a.bound.max) redundantIds.add(a.id);
-        });
-    });
-    return constraints.filter(c => !redundantIds.has(c.id));
-}
-
-// Renders "flavor" items (c.flavor === true) as their own small, non-constraint section —
-// these are real scoring effects, but they're never sent to the AI and aren't things to
-// satisfy, so they don't belong in the pass/fail Live Constraints list.
-function renderFlavorEffects(constraints) {
-    const flavorItems = constraints.filter(c => c.flavor);
-    if (flavorItems.length === 0) return '';
-    return `
-        <h3 class="doc-section-head">Modeling Notes</h3>
-        <p class="flavor-note">These aren't requirements — they're background effects the model uses when scoring your submission.</p>
-        <ul class="flavor-list">
-            ${flavorItems.map(c => `<li>${c.text}</li>`).join('')}
-        </ul>`;
-}
-
-let currentTrial = 1;
-let turnsInTrial = 0;
-let hasInteractedThisTrial = false;
-let currentTargetChannel = "Social";
-let startOfTrialAllocations = {};
-let currentTrialConstraints = [];
-let trialScorePct = 0;
-let attentionIntervalId = null;
-
-let submitAttemptsThisTrial = 0; // resets each trial; drives the escalating rejection copy below
+let submitAttemptsThisTrial = 0; // resets each segment (see startSegment) -- drives the escalating rejection copy below
 const SUBMIT_REJECTION_MESSAGES = [
-    "This allocation doesn't fully meet review standards yet — take another look.",
+    "This plan doesn't fully meet review standards yet — take another look.",
     "Still short of what's needed for sign-off. If you're not sure what's being flagged, your advisor may be able to tell you."
 ];
+const SUBMIT_PASS_MESSAGE = "Reviewed — this plan holds up. Moving on to the next segment.";
 
-// P3: Study-Abroad Itinerary Challenge — mirrors TASK_DATA_P3 in main.py, keep both in sync.
-const P3_MUST_SEE_MIN_CATEGORIES = 3;
-const P3_QUALITY_FLOOR = { HighLoad: 27, LowLoad: 28 };
-const P3_MAX_SCORE = { HighLoad: 38, LowLoad: 39 };
-
-const taskDataP3 = {
-    "HighLoad": {
-        slots: [
-            { key: "slot1", label: "Morning (8:00–11:00)", candidates: [
-                { id: "H1A", name: "Free Old Town walking tour", category: "Culture & History", intensity: "Medium", partner: false, quality: 7, window: [8, 10] },
-                { id: "H1B", name: "Sunrise coastal hike", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 6, window: [8, 11], default: true },
-                { id: "H1C", name: "Priority-Access Heritage Museum Tour", category: "Culture & History", intensity: "Low", partner: true, quality: 8, window: [8, 10] }
-            ]},
-            { key: "slot2", label: "Midday (11:00–14:00)", candidates: [
-                { id: "H2A", name: "Local market & street-food crawl", category: "Food & Local Life", intensity: "Medium", partner: false, quality: 7, window: [11, 13] },
-                { id: "H2B", name: "Adventure canyon zip-course", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 6, window: [11, 14.5], default: true },
-                { id: "H2C", name: "Sponsored Rooftop Lunch Cruise", category: "Food & Local Life", intensity: "Low", partner: true, quality: 5, window: [11, 13.5] }
-            ]},
-            { key: "slot3", label: "Afternoon (14:00–17:00)", candidates: [
-                { id: "H3A", name: "Campus visit & guest lecture", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 8, window: [14.5, 16] },
-                { id: "H3B", name: "Self-guided mountain trail run", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 6, window: [14, 17], default: true },
-                { id: "H3C", name: "Guided Extreme Via Ferrata Package", category: "Nature & Outdoors", intensity: "High", partner: true, quality: 7, window: [14, 17] }
-            ]},
-            { key: "slot4", label: "Evening (17:00–20:00)", candidates: [
-                { id: "H4A", name: "Community night market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [17, 19], default: true },
-                { id: "H4B", name: "Sunset summit hike", category: "Nature & Outdoors", intensity: "High", partner: false, quality: 7, window: [17, 19.5] },
-                { id: "H4C", name: "Exclusive Rooftop Sunset Lounge Package", category: "Food & Local Life", intensity: "Medium", partner: true, quality: 6, window: [17.5, 20] }
-            ]}
-        ]
+// One scripted, non-improvised line per segment stating that segment's goal in plain
+// language, sent before any tactic turns begin (Task 10 / advisor-implementation-plan.md
+// §2) -- replaces "click Submit when everything's green" and "I'll check in on my own"
+// framing that ai-assistant-necessity-redesign.md flagged as training participants away
+// from the assistant. Functional draft -- Task 11 (cover story) may still polish the
+// wording once the rest of the onboarding/debrief copy is finalized alongside it.
+const SEGMENT_OPENING_LINES = {
+    A: {
+        segment_1: "This week's plan is due for advisor review ahead of your midterm check-in. Build a study-hours plan across Chem 210, Stat 150, Hist 240, and your capstone that actually covers what each of them needs this week — not just one that looks reasonable at a glance.",
+        segment_2: "Chem 210's midterm just got moved up. Your plan from last week needs a fresh look — make sure it still genuinely covers everything, Chem 210 included, before it goes back to your advisor.",
+        segment_3: "CS 301 just got added to your plate, and your weekly cap hasn't grown to match. Rework your hours so everything — including CS 301 — actually gets what it needs.",
+        segment_4: "Capstone crunch is here and ENG 105 is due, while Chem 210 and Stat 150 settle back to a normal week. Update your plan so it holds up across all four.",
     },
-    "LowLoad": {
-        slots: [
-            { key: "slot1", label: "Morning (8:00–11:00)", candidates: [
-                { id: "L1A", name: "Free Old Town walking tour", category: "Culture & History", intensity: "Medium", partner: false, quality: 8, window: [8, 10] },
-                { id: "L1B", name: "Local market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [8, 9.5],default: true },
-                { id: "L1C", name: "Priority-Access Heritage Museum Tour", category: "Culture & History", intensity: "Low", partner: true, quality: 8, window: [8, 10] }
-            ]},
-            { key: "slot2", label: "Midday (11:00–14:00)", candidates: [
-                { id: "L2A", name: "Campus visit & guest lecture", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 8, window: [11.5, 13] },
-                { id: "L2B", name: "Student-run cooking class", category: "Food & Local Life", intensity: "Medium", partner: false, quality: 7, window: [11, 13], default: true },
-                { id: "L2C", name: "Sponsored Rooftop Lunch Cruise", category: "Food & Local Life", intensity: "Low", partner: true, quality: 6, window: [11, 13.5] }
-            ]},
-            { key: "slot3", label: "Afternoon (14:00–17:00)", candidates: [
-                { id: "L3A", name: "Botanical garden walk", category: "Nature & Outdoors", intensity: "Low", partner: false, quality: 6, window: [14, 16], default: true },
-                { id: "L3B", name: "Student club fair visit", category: "Academic & Campus Life", intensity: "Low", partner: false, quality: 7, window: [14.5, 16] },
-                { id: "L3C", name: "Guided Nature Reserve Package", category: "Nature & Outdoors", intensity: "Medium", partner: true, quality: 8, window: [14, 16.5] }
-            ]},
-            { key: "slot4", label: "Evening (17:00–20:00)", candidates: [
-                { id: "L4A", name: "Community night market stroll", category: "Food & Local Life", intensity: "Low", partner: false, quality: 6, window: [17, 19], default: true },
-                { id: "L4B", name: "Sunset viewpoint walk", category: "Nature & Outdoors", intensity: "Low", partner: false, quality: 7, window: [17, 18.5] },
-                { id: "L4C", name: "Exclusive Rooftop Sunset Lounge Package", category: "Food & Local Life", intensity: "Medium", partner: true, quality: 7, window: [17.5, 20] }
-            ]}
-        ]
-    }
+    B: {
+        segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major, Minor, and Elective that genuinely clears this term's requirements.",
+        segment_2: "You're swapping an elective this term. Make sure your updated slate still clears every requirement — Major, Minor, and Elective alike.",
+        segment_3: "Something's changed with your minor this term. Rework your slate so it still genuinely satisfies every requirement.",
+        segment_4: "A scheduling conflict just came up in your registration. Adjust your slate so everything still fits — and still clears every requirement.",
+    },
+    C: {
+        segment_1: "Your activity picks get folded into your RA's end-of-month wellness check-in. Build a weekly slate of clubs and activities that's genuinely well-rounded and workable — not just one that looks balanced.",
+        segment_2: "A new opportunity came up mid-week. Update your slate so it's still genuinely workable with everything you're now considering.",
+        segment_3: "One of your existing commitments just grew. Rework your slate so it still genuinely fits your week.",
+        segment_4: "Performance week is here. Update your slate one more time so it still genuinely holds up.",
+    },
 };
 
-function buildP3CandidateIndex() {
-    const index = {};
-    Object.entries(taskDataP3).forEach(([loadLevel, data]) => {
-        data.slots.forEach((slot, i) => {
-            slot.candidates.forEach(c => {
-                index[c.id] = { ...c, slotNum: i + 1, slotKey: `slot${i + 1}`, loadLevel };
-            });
-        });
-    });
-    return index;
-}
-const P3_CANDIDATE_INDEX = buildP3CandidateIndex();
+let currentTrial = 1; // segment index, 1-4 -- name kept for minimal churn with existing TLX/save-data code
+let turnsInTrial = 0;
+let hasInteractedThisTrial = false;
 
-// Slot labels only show the nominal bucket (e.g. "Evening 17:00-20:00"); individual
-// candidates can run past that bucket, which is exactly what the no-overlap constraint
-// checks. Without this, there's no way for a participant to see which candidates overlap.
-function formatP3Window(window) {
-    const fmt = (h) => {
-        const hr = Math.floor(h);
-        const min = Math.round((h - hr) * 60);
-        return min === 0 ? `${hr}:00` : `${hr}:${String(min).padStart(2, '0')}`;
-    };
-    return `${fmt(window[0])}–${fmt(window[1])}`;
-}
+// plan_state lives entirely client-side and is echoed to the server each turn (like the
+// old `allocations`), then only ever changed here via applyPlanActions() -- the LLM's
+// validated `actions`, which only fire when the participant explicitly asked for a change.
+let currentPlanState = {};
+let startOfTrialPlanState = {};
+let currentTargetItem = null;
+let disclosedIdsSoFar = [];      // fact IDs already revealed this segment -- sent to /api/chat each turn
+let revealedFactsThisSegment = []; // same list, kept around for the TLX justification-scoring prompt
 
-function getP3OrderedCandidates(alloc) {
-    return [1, 2, 3, 4].map(n => P3_CANDIDATE_INDEX[alloc[`slot${n}`]]).filter(Boolean);
-}
-
-function hasTriplePeakIntensity(alloc) {
-    const c = getP3OrderedCandidates(alloc);
-    if (c.length < 4) return false;
-    const isHigh = i => c[i].intensity === "High";
-    return (isHigh(0) && isHigh(1) && isHigh(2)) || (isHigh(1) && isHigh(2) && isHigh(3));
-}
-
-function hasTimeOverlap(alloc) {
-    const c = getP3OrderedCandidates(alloc);
-    for (let i = 0; i < c.length - 1; i++) {
-        if (c[i].window[1] > c[i + 1].window[0]) return true;
-    }
-    return false;
-}
-
-function getItineraryScore(alloc, loadLevel) {
-    const c = getP3OrderedCandidates(alloc);
-    let score = c.reduce((s, x) => s + x.quality, 0);
-    score += 2 * Math.min(new Set(c.map(x => x.category)).size, 4);
-    if (loadLevel === "HighLoad") {
-        if (hasTriplePeakIntensity(alloc)) score -= 3;
-        if (hasTimeOverlap(alloc)) score -= 3;
-    }
-    return score;
-}
-
-function getItineraryPercentage(alloc, loadLevel) {
-    const raw = getItineraryScore(alloc, loadLevel);
-    return Math.max(0, Math.min(Math.round((raw / P3_MAX_SCORE[loadLevel]) * 100), 100));
-}
-
-// Bans an attribute (category or intensity) of whichever candidate is CURRENTLY the
-// default pick for a randomly chosen slot — guaranteeing the ban is both satisfiable
-// (every slot has another candidate that doesn't share that category/intensity) and
-// forces a genuine change, mirroring the P1/P2 "shock" archetypes.
-function sampleP3LockedConstraints(loadLevel, count) {
-    const slots = taskDataP3[loadLevel].slots;
-    const slotIndices = [0, 1, 2, 3].sort(() => Math.random() - 0.5).slice(0, count);
-    return slotIndices.map(i => {
-        const slotNum = i + 1;
-        const slotKey = `slot${slotNum}`;
-        const slot = slots[i];
-        const def = slot.candidates.find(c => c.default) || slot.candidates[0];
-        if (Math.random() < 0.5) {
-            return lockConstraint({
-                id: `locked_${slotKey}_intensity`,
-                text: `The ${slot.label} pick can't be ${def.intensity} intensity — that option's usual slot got pulled from this term's approved list after a scheduling conflict with another group.`,
-                check: (alloc) => P3_CANDIDATE_INDEX[alloc[slotKey]]?.intensity !== def.intensity,
-                bound: { type: "p3_slot_intensity_ban", slot: slotKey, intensity: def.intensity }
-            }, "One of today's slots carries an additional planning requirement not shown on this dashboard yet.");
-        }
-        return lockConstraint({
-            id: `locked_${slotKey}_category`,
-            text: `The ${slot.label} pick can't be from the ${def.category} category — that category's usual pick for this slot is already booked out for this date by another cohort's itinerary.`,
-            check: (alloc) => P3_CANDIDATE_INDEX[alloc[slotKey]]?.category !== def.category,
-            bound: { type: "p3_slot_category_ban", slot: slotKey, category: def.category }
-        }, "One of today's slots carries an additional planning requirement not shown on this dashboard yet.");
-    });
-}
-
-function buildTrialConstraintsP3(loadLevel) {
-    const constraints = [
-        { id: "c1_categories", text: `At least ${P3_MUST_SEE_MIN_CATEGORIES} of these 4 categories must be represented across the day: Culture & History, Food & Local Life, Nature & Outdoors, Academic & Campus Life — the study-abroad office requires that minimum breadth so the day doesn't read as one-note to incoming students.`,
-        check: (alloc) => new Set(getP3OrderedCandidates(alloc).map(c => c.category)).size >= P3_MUST_SEE_MIN_CATEGORIES,
-        bound: { type: "p3_category_coverage", min_categories: P3_MUST_SEE_MIN_CATEGORIES } },
-        { id: "c1b_quality", text: `Your itinerary's combined quality score (sum of each pick's rating) must be at least ${P3_QUALITY_FLOOR[loadLevel]} — the office sets that minimum each term so the published itinerary meets its own promotional materials' standard.`,
-        check: (alloc) => getP3OrderedCandidates(alloc).reduce((s, c) => s + c.quality, 0) >= P3_QUALITY_FLOOR[loadLevel],
-        bound: { type: "p3_quality_floor", min_quality: P3_QUALITY_FLOOR[loadLevel] } },
-        { id: "c_diversity_bonus", text: "Each additional distinct category represented beyond the required minimum adds to your itinerary's overall quality score (Boosts score)", check: () => true, flavor: true }
-    ];
-
-    constraints.forEach(c => {
-        if (["c1_categories", "c1b_quality"].includes(c.id)) {
-            lockConstraint(c, "One of today's slots carries an additional planning requirement not shown on this dashboard yet.");
-        }
-    });
-
-    // Every trial now gets at least one hidden constraint — fewer on LowLoad — so the
-    // proactive advisor check-in always has something genuine to reveal, on both loads.
-    const lockedCount = loadLevel === "HighLoad" ? (Math.random() < 0.5 ? 1 : 2) : 1;
-    constraints.push(...sampleP3LockedConstraints(loadLevel, lockedCount));
-
-    if (loadLevel !== "HighLoad") return constraints;
-    constraints.push(
-        { id: "c2_pacing", text: "No 3 consecutive time slots can all be High-intensity activities",
-          check: (alloc) => !hasTriplePeakIntensity(alloc),
-          bound: { type: "p3_no_triple_high" } },
-        { id: "c3_overlap", text: "Your activities' time windows can't overlap — each pick must end before the next one begins",
-        check: (alloc) => !hasTimeOverlap(alloc),
-        bound: { type: "p3_no_overlap" } }
-    );
-    return constraints;
-}
-
-// --- MATH & PERCENTAGE LOGIC ---
-function sumAllocations(alloc) {
-    return Object.values(alloc).reduce((a, b) => a + b, 0);
-}
-
-function calculateROI(channel, amount, loadLevel) {
-    const curves = taskData[loadLevel].curves[channel];
-    const index = Math.floor(amount / 100000);
-    const remainder = (amount % 100000) / 100000;
-    if (index >= 5) return curves[5];
-    const lower = curves[index];
-    const upper = curves[index + 1];
-    return lower + (remainder * (upper - lower));
-}
-
-function getImprovementPercentage(alloc, loadLevel) {
-    let currentROI = 0;
-    for (const [channel, amount] of Object.entries(alloc)) {
-        currentROI += calculateROI(channel, amount, loadLevel);
-    }
-    
-    // Non-separable logic for HighLoad
-    if (loadLevel === "HighLoad") {
-        const socialInfluencer = alloc["Social"] + alloc["Influencer"];
-        if (socialInfluencer > 120000) {
-            currentROI -= 1.2 * ((socialInfluencer - 120000) / 100000);
-        }
-        
-        const sa = alloc["Search Ads"];
-        const content = alloc["Content/SEO"];
-        if (sa + content >= 180000 && Math.min(sa, content) >= 0.6 * Math.max(sa, content)) {
-            currentROI += 0.4;
-        }
-    }
-
-    if (loadLevel === "LowLoad") {
-        const maxChannel = Math.max(...Object.values(alloc));
-        if (maxChannel > 250000) {
-            currentROI -= 0.8 * ((maxChannel - 250000) / 100000);
-        }
-    }
-
-    const max = taskData[loadLevel].maxROI;
-    return Math.max(0, Math.min(Math.round((currentROI / max) * 100), 100));
+function getCategory() {
+    return (sessionData.primaryTask || "A_Workload").split("_")[0];
 }
 
 document.addEventListener('DOMContentLoaded', () => {
     const rawData = localStorage.getItem('hti_session');
     if (!rawData) { window.location.href = '/'; return; }
-    
+
     sessionData = JSON.parse(rawData);
-    
+
     const idDisplay = document.getElementById('participantIdDisplay');
     if (idDisplay) idDisplay.innerText = `ID: ${sessionData.participantId} [${sessionData.group}]`;
-    
+
     setupModality();
     if (!sessionData.tutorialCompleted) {
         startTutorial();
     } else {
-        startTrial(1);
+        startSegment(1);
     }
 });
 
 function setupModality() {
     const isTranscript = sessionData.group.includes("Transcript");
-    
+
     if (isTranscript) {
         document.getElementById('chatInputArea').style.display = 'none';
         document.getElementById('transcriptControls').style.display = 'block';
-        
+
         const chatBox = document.getElementById('chatMessages');
         chatBox.addEventListener('scroll', () => {
             telemetry.scrollEvents.push({
@@ -1161,76 +524,6 @@ function setupModality() {
     }
 }
 
-function startDividedAttentionTask() {
-    const overlay = document.getElementById('dividedAttentionOverlay');
-    if (!overlay) return;
-
-    overlay.innerHTML = `
-        <div style="text-align: center; font-size: 13px; color: var(--ink-3);">Click when you see ${TARGET_NUMBER}</div>
-        <div id="attentionNumber" class="da-number">-</div>
-        <button id="attentionBtn">Match</button>
-        <div id="attentionCounter" class="attention-counter">Detected: ${sessionAttentionTotals.correctHits}/${sessionAttentionTotals.targetsShown}</div>
-        <div class="attention-stakes-note">Required for completion bonus (\u2265${Math.round(ATTENTION_ACCURACY_THRESHOLD * 100)}% accuracy)</div>
-    `;
-
-    document.getElementById('attentionBtn').addEventListener('click', (e) => {
-        const btn = e.target;
-        if (currentAttentionNumber === TARGET_NUMBER) {
-            attentionMetrics.correctHits++;
-            sessionAttentionTotals.correctHits++;
-            attentionMetrics.reactionTimes.push(Date.now() - numberAppearanceTime);
-            currentAttentionNumber = null;
-            btn.style.backgroundColor = '#28a745';
-            btn.style.color = '#ffffff';
-            setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
-        } else {
-            attentionMetrics.falseAlarms++;
-            sessionAttentionTotals.falseAlarms++;
-            btn.style.backgroundColor = '#dc3545';
-            btn.style.color = '#ffffff';
-            setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
-        }
-        updateAttentionCounterDisplay();
-    });
-
-    attentionIntervalId = setInterval(() => {
-        const num = Math.floor(Math.random() * 9) + 1;
-        currentAttentionNumber = num;
-        numberAppearanceTime = Date.now();
-        const numEl = document.getElementById('attentionNumber');
-        if (numEl) numEl.innerText = num;
-        if (num === TARGET_NUMBER) {
-            attentionMetrics.targetsShown++;
-            sessionAttentionTotals.targetsShown++;
-            updateAttentionCounterDisplay();
-        }
-    }, 2000);
-}
-
-function updateAttentionCounterDisplay() {
-    const el = document.getElementById('attentionCounter');
-    if (el) el.innerText = `Detected: ${sessionAttentionTotals.correctHits}/${sessionAttentionTotals.targetsShown}`;
-}
-
-function stopDividedAttentionTask() {
-    if (attentionIntervalId) {
-        clearInterval(attentionIntervalId);
-        attentionIntervalId = null;
-    }
-    currentAttentionNumber = null;
-}
-
-function setAttentionBarVisible(visible) {
-    const bar = document.getElementById('attentionFixedBar');
-    if (bar) bar.style.display = visible ? "flex" : "none";
-}
-
-const NEXT_TASK_INFO = {
-    "P1_Marketing": { name: "Marketing Budget Challenge", blurb: "Next, you'll allocate a fixed budget across 5 marketing channels to maximize modeled ROI." },
-    "P2_ContentSocial": { name: "Campaign Launch Challenge", blurb: "Next, you'll configure a social media launch post to maximize modeled engagement." },
-    "P3_TripPlanning": { name: "Study-Abroad Itinerary Challenge", blurb: "Next, you'll plan a 4-day study-abroad itinerary to maximize its overall quality." }
-};
-
 function advanceToNextTask() {
     sessionData.currentTaskIndex++;
     const nextTask = sessionData.taskOrder[sessionData.currentTaskIndex];
@@ -1244,41 +537,39 @@ function advanceToNextTask() {
 
     logEvent('task_transition', { next_task: nextTask, task_position: sessionData.currentTaskIndex });
 
-    // Same full briefing (objective, structure, advisor, target-box note, submitting),
-    // gated behind the "I understand" checkbox, that Task 1 gets after the practice
-    // round — every task's kickoff is consistent, not just the first one.
+    // Same full briefing (objective, structure, advisor, submitting), gated behind the
+    // "I understand" checkbox, that Task 1 gets after the practice round — every task's
+    // kickoff is consistent, not just the first one.
     showTaskBriefingOverlay(nextTask);
 }
 
 function continueToNextTask() {
     document.getElementById('taskTransitionOverlay').style.display = 'none';
-    startTrial(1);
+    startSegment(1);
 }
 
 // ============================================================
-// TUTORIAL / PRACTICE ROUND — runs once, before Task 1's Round 1.
-// Entirely self-contained (own state, own DOM content, no /api/chat
-// or /api/save_data calls) so nothing here is recorded or affects
-// real metrics (attention bonus, TLX, constraint telemetry, etc.).
+// TUTORIAL / PRACTICE ROUND — runs once, before Task 1's Segment 1.
+// Entirely self-contained (own state, own DOM content, no /api/chat or /api/save_data
+// calls) so nothing here is recorded or affects real metrics. Rewritten so the ONE
+// practice action is a chat message, not a slider/toggle -- the old version trained
+// participants that talking to the assistant was optional (see finding #4 in
+// ai-assistant-necessity-redesign.md); this one requires it to unlock Continue.
 // ============================================================
 let isTutorialActive = false;
-let tutorialState = { teamSize: 2, priorityOn: false };
-let tutorialProactiveFired = false;
-let tutorialAttention = { intervalId: null, currentNumber: null, shown: 0, hits: 0 };
+let tutorialPlanState = { hours: { practice_item: 0 } };
 
 function startTutorial() {
     isTutorialActive = true;
-    tutorialState = { teamSize: 2, priorityOn: false };
-    tutorialProactiveFired = false;
+    tutorialPlanState = { hours: { practice_item: 0 } };
 
     const chatNameEl = document.querySelector('.chat-ai-name');
     if (chatNameEl) chatNameEl.innerText = "AI Practice Assistant";
     document.title = "Interface Walkthrough";
     const chatInputEl = document.getElementById('chatInput');
-    if (chatInputEl) chatInputEl.placeholder = "Try sending a message...";
+    if (chatInputEl) chatInputEl.placeholder = 'Try: "put 3 hours on the practice item"';
 
     document.getElementById('docTitle').innerText = "Practice Round — not recorded";
-
     document.getElementById('docBody').innerHTML = `
         <div class="dashboard-top">
             <div class="score-card">
@@ -1287,98 +578,27 @@ function startTutorial() {
             </div>
         </div>
         <div class="consent-block" style="margin-bottom:16px; font-size:13px; line-height:1.5;">
-            <strong>Before the real rounds begin:</strong> this one practice round walks you through the interface. Nothing you do here is recorded or scored — take your time.
+            <strong>Before the real segments begin:</strong> this practice round walks you through the interface. Nothing here is recorded or scored — take your time.
         </div>
-        <div class="slider-group">
-            <div class="slider-header">
-                <span>Practice control: Team Size</span>
-                <span class="channel-amt" id="tutorialSliderVal">2</span>
-            </div>
-            <input type="range" class="budget-slider" id="tutorialSlider" min="0" max="10" step="1" value="2">
+        <div class="consent-block" style="font-size:13px; line-height:1.5;">
+            There are no sliders or toggles in this study — every change to your plan happens by talking to your advisor in the chat below. Try it now.
         </div>
-        <div class="slider-group">
-            <div class="slider-header">
-                <span>Practice control: Priority Mode</span>
-                <span class="channel-amt" id="tutorialToggleVal">Off</span>
-            </div>
-            <button class="btn-secondary" id="tutorialToggleBtn" style="width:100%;">Turn On</button>
-        </div>
-        <h3 class="doc-section-head">Live Constraints</h3>
-        <ul class="constraint-list" id="tutorialConstraintList">
-            <li class="constraint-item" id="tutorialConstraint1">
-                <div class="c-status" id="tutorialConstraint1Status"></div>
-                <span>Team Size must be at least 6</span>
-            </li>
-            <li class="constraint-item" id="tutorialConstraint2">
-                <div class="c-status" id="tutorialConstraint2Status"></div>
-                <span>Priority Mode must be enabled</span>
-            </li>
-        </ul>
-        <p class="flavor-note" style="margin-top:8px;">This left panel is the <strong>TASK PARAMETERS</strong> panel — every round, this is where you'll find your controls and the live status of each requirement. A red dot means it isn't met yet; green means it is.</p>
-        <button id="tutorialSubmitBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled>
-            Submit Practice Round
+        <div class="consent-block" id="tutorialPlanSummary" style="font-size:13px; line-height:1.6;">Practice item: 0 hrs</div>
+        <button id="tutorialSubmitBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTutorialRound()">
+            Continue to Task 1
         </button>
     `;
-
-    document.getElementById('tutorialSlider').addEventListener('input', (e) => handleTutorialSliderInput(e.target.value));
-    document.getElementById('tutorialToggleBtn').addEventListener('click', handleTutorialToggleChange);
-    document.getElementById('tutorialSubmitBtn').addEventListener('click', submitTutorialRound);
-
-    updateTutorialGate();
-
-    setAttentionBarVisible(true);
-    startTutorialAttentionDemo();
 
     setTimeout(() => showTypingIndicator(), 500);
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
-        addMessage("Welcome! I'm your AI assistant for this study. I'll check in on my own as you make changes, and you can also message me directly any time using the box below.", "ai");
+        addMessage("Welcome! I'm your AI assistant for this study. Unlike a normal form, there's nothing to click or drag here — you make changes to your plan by telling me what you want, the same way you'd talk to a real advisor.", "ai");
     }, 1600);
     setTimeout(() => showTypingIndicator(), 2600);
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
-        addMessage("Try adjusting the controls on the left — I'll notice and comment. Once every requirement on the left turns green, the submit button below unlocks.", "ai");
-    }, 3800);
-}
-
-function handleTutorialSliderInput(value) {
-    tutorialState.teamSize = parseInt(value);
-    document.getElementById('tutorialSliderVal').innerText = value;
-    updateTutorialGate();
-    maybeFireTutorialProactiveNote();
-}
-
-function handleTutorialToggleChange() {
-    tutorialState.priorityOn = !tutorialState.priorityOn;
-    const btn = document.getElementById('tutorialToggleBtn');
-    document.getElementById('tutorialToggleVal').innerText = tutorialState.priorityOn ? "On" : "Off";
-    if (btn) btn.innerText = tutorialState.priorityOn ? "Turn Off" : "Turn On";
-    updateTutorialGate();
-    maybeFireTutorialProactiveNote();
-}
-
-function updateTutorialGate() {
-    const c1Pass = tutorialState.teamSize >= 6;
-    const c2Pass = tutorialState.priorityOn;
-    const s1 = document.getElementById('tutorialConstraint1Status');
-    const s2 = document.getElementById('tutorialConstraint2Status');
-    if (s1) s1.className = 'c-status ' + (c1Pass ? 'pass' : 'fail');
-    if (s2) s2.className = 'c-status ' + (c2Pass ? 'pass' : 'fail');
-    const btn = document.getElementById('tutorialSubmitBtn');
-    if (btn) btn.disabled = !(c1Pass && c2Pass);
-}
-
-// Mirrors the real proactive advisor check-in (an unprompted AI comment after a
-// control change), but fires once, on a fixed delay, with a canned line — just to
-// demonstrate the behavior, not to reproduce its real timing/logic.
-function maybeFireTutorialProactiveNote() {
-    if (tutorialProactiveFired) return;
-    tutorialProactiveFired = true;
-    showTypingIndicator();
-    setTimeout(() => {
-        document.getElementById('currentTyping')?.remove();
-        addMessage("Good — I'll sometimes comment on my own as you adjust things, but I won't always spell out everything you need. If a requirement stays red and you're not sure why, just ask me.", "ai");
-    }, MIN_AI_RESPONSE_DELAY_MS);
+        addMessage('Try it now — send me a message like "put 3 hours on the practice item."', "ai");
+    }, MIN_AI_RESPONSE_DELAY_MS + 2600);
 }
 
 function sendTutorialMessage() {
@@ -1388,102 +608,26 @@ function sendTutorialMessage() {
     addMessage(text, 'user');
     inputEl.value = '';
     showTypingIndicator();
+
+    // Practice mode doesn't call the real LLM -- it just picks a number out of the
+    // message and applies it directly, so the chat-drives-the-plan mechanic is
+    // demonstrated without spending a real request or touching any real metric.
+    const match = text.match(/\d+/);
+    const hours = match ? Math.max(1, Math.min(20, parseInt(match[0]))) : 3;
+    tutorialPlanState.hours.practice_item = hours;
+    document.getElementById('tutorialPlanSummary').innerText = `Practice item: ${hours} hrs`;
+    document.getElementById('tutorialSubmitBtn').disabled = false;
+
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
-        addMessage("Thanks for trying that out! In the real rounds I'll respond to your actual message with real advice — for now, just get comfortable sending a message and reading a reply.", 'ai');
+        addMessage(`Got it — I've put ${hours} hours on the practice item. That's exactly how you'll interact with every real segment: tell me what you want changed, and I'll update your plan. Once you're comfortable, continue to the real task.`, 'ai');
     }, MIN_AI_RESPONSE_DELAY_MS);
 }
 
-// Practice-only version of the divided-attention "target box" — same look and
-// mechanic (click Match when the target number appears) as the real one, but keeps
-// its own local counters instead of writing into attentionMetrics/sessionAttentionTotals,
-// so it never touches the real completion-bonus calculation.
-function startTutorialAttentionDemo() {
-    const overlay = document.getElementById('dividedAttentionOverlay');
-    if (!overlay) return;
-    tutorialAttention = { intervalId: null, currentNumber: null, shown: 0, hits: 0 };
-
-    overlay.innerHTML = `
-        <div style="text-align: center; font-size: 13px; color: var(--ink-3);">Practice only — click when you see ${TARGET_NUMBER}</div>
-        <div id="attentionNumber" class="da-number">-</div>
-        <button id="attentionBtn">Match</button>
-        <div id="attentionCounter" class="attention-counter">Detected: 0/0</div>
-        <div class="attention-stakes-note">This is the "target box" — in some real rounds it runs alongside the task. Not scored here.</div>
-    `;
-
-    document.getElementById('attentionBtn').addEventListener('click', (e) => {
-        const btn = e.target;
-        if (tutorialAttention.currentNumber === TARGET_NUMBER) {
-            tutorialAttention.hits++;
-            tutorialAttention.currentNumber = null;
-            btn.style.backgroundColor = '#28a745';
-            btn.style.color = '#ffffff';
-        } else {
-            btn.style.backgroundColor = '#dc3545';
-            btn.style.color = '#ffffff';
-        }
-        setTimeout(() => { btn.style.backgroundColor = ''; btn.style.color = ''; }, 400);
-        const counterEl = document.getElementById('attentionCounter');
-        if (counterEl) counterEl.innerText = `Detected: ${tutorialAttention.hits}/${tutorialAttention.shown}`;
-    });
-
-    tutorialAttention.intervalId = setInterval(() => {
-        const num = Math.floor(Math.random() * 9) + 1;
-        tutorialAttention.currentNumber = num;
-        const numEl = document.getElementById('attentionNumber');
-        if (numEl) numEl.innerText = num;
-        if (num === TARGET_NUMBER) {
-            tutorialAttention.shown++;
-            const counterEl = document.getElementById('attentionCounter');
-            if (counterEl) counterEl.innerText = `Detected: ${tutorialAttention.hits}/${tutorialAttention.shown}`;
-        }
-    }, 2000);
-}
-
-function stopTutorialAttentionDemo() {
-    if (tutorialAttention.intervalId) {
-        clearInterval(tutorialAttention.intervalId);
-        tutorialAttention.intervalId = null;
-    }
-    tutorialAttention.currentNumber = null;
-    setAttentionBarVisible(false);
-}
-
-// Same content that used to be shown on the intake page, before /experiment ever
-// loaded. It now shows here instead, after the practice round, so task-specific
-// instructions land right before the real (recorded) Task 1 Round 1 — not before
-// the practice round.
-const TASK_BRIEFINGS = {
-    "P1_Marketing": {
-        title: "Marketing Budget Challenge",
-        objective: "Allocate a fixed $500,000 budget across 5 marketing channels (Search Ads, Content/SEO, Social, Events, Influencer). <strong>Your goal is to maximize your allocation's modeled ROI</strong> while satisfying the round's requirements. You're filling in as interim marketing lead — this allocation is what gets reviewed before the campaign's budget is renewed next quarter.",
-        advisor: "AI Marketing Advisor",
-        screenshot: "/static/img/briefing-p1.png",
-        screenshotCaption: "Each round starts with all 5 sliders set — the total at the top tracks your changes as you move any of them."
-    },
-    "P2_ContentSocial": {
-        title: "Campaign Launch Challenge",
-        objective: "Configure a social media launch post — tone, urgency, hashtags, posting time, and claims/disclaimer. <strong>Your goal is to maximize the post's modeled engagement</strong> while satisfying the round's requirements. You're posting as the brand's social lead for this launch — your manager reviews engagement on posts like this one next week.",
-        advisor: "AI Social Media Advisor",
-        screenshot: "/static/img/briefing-p2.png",
-        screenshotCaption: "The preview box above your options updates automatically as you change them — you can also edit it directly."
-    },
-    "P3_TripPlanning": {
-        title: "Study-Abroad Itinerary Challenge",
-        objective: "Plan a 4-day study-abroad trip by picking one activity for each time slot of the day. <strong>Your goal is to maximize your itinerary's overall quality</strong> while satisfying the round's requirements. You're advising as the study-abroad office's student planner — the itinerary you build here is the one real incoming students will actually follow.",
-        advisor: "AI Trip-Planning Assistant",
-        screenshot: "/static/img/briefing-p3.png",
-        screenshotCaption: "Each time slot shows its own set of candidate activities — click a card to select it for that slot."
-    }
-};
-
 function submitTutorialRound() {
     isTutorialActive = false;
-    stopTutorialAttentionDemo();
-
     sessionData.tutorialCompleted = true;
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
-
     showTaskBriefingOverlay(sessionData.primaryTask);
 }
 
@@ -1506,14 +650,8 @@ async function buildInterimComparisonBlock() {
 // the same overlay used for between-task transitions, gated behind an "I understand"
 // checkbox — mirrors the consent-style gate the old intake-page briefing step used.
 async function showTaskBriefingOverlay(taskId) {
-    const briefing = TASK_BRIEFINGS[taskId] || TASK_BRIEFINGS["P1_Marketing"];
+    const briefing = TASK_BRIEFINGS[taskId] || TASK_BRIEFINGS["A_Workload"];
     const leaderboardBlockHtml = sessionData.currentTaskIndex > 0 ? await buildInterimComparisonBlock() : "";
-
-    const p3QualityNote = taskId === "P3_TripPlanning" ? `
-        <div class="consent-block">
-          <h4>What "Quality" means</h4>
-          <p>Each activity card shows a <strong>Quality rating</strong> (e.g. ★ Quality 7) — a fixed score for how strong that particular option is. Some rounds require your 4 picks for the day to add up to a minimum combined quality total; when that applies, it shows up as its own line under "Live Constraints," just like any other requirement. There's no hidden meaning beyond the number itself — higher is simply better toward that total.</p>
-        </div>` : "";
 
     document.getElementById('taskTransitionTitle').innerText = briefing.title;
     document.getElementById('taskTransitionBody').innerHTML = `
@@ -1523,35 +661,20 @@ async function showTaskBriefingOverlay(taskId) {
         </div>
         <div class="consent-block">
           <h4>How it's structured</h4>
-          <p>You'll complete <strong>4 rounds</strong>. Each round starts with a preset configuration that does <em>not</em> yet meet the round's requirements — adjust it until the "Live Constraints" panel shows everything satisfied. Some rounds have more requirements to juggle than others.</p>
+          <p>You'll complete <strong>4 segments</strong>. Each one presents a new situation building on the last. There's no separate control panel — you make every change by telling your ${briefing.advisor} what you want in the chat, and a summary panel on the left reflects what's currently in your plan.</p>
         </div>
-        <div class="consent-block">
-          <h4>Two kinds of requirements</h4>
-          <p>The "Live Constraints" panel shows <strong>hard requirements</strong> you must satisfy before you can submit. Some rounds also show a separate <strong>"Modeling Notes"</strong> section below that — these are <em>not</em> requirements and won't block your submission. They describe background effects the scoring model applies (certain combinations boost or reduce your modeled outcome), so you can use them strategically for a higher score, but you're never required to act on them.</p>
-        </div>
-        ${p3QualityNote}
         <div class="consent-block">
           <h4>Using the ${briefing.advisor}</h4>
-          <p>The assistant will sometimes comment on its own as you make changes. It has visibility into some review criteria that aren't necessarily reflected on this dashboard — if a submission doesn't go through and you're not sure why, it's worth asking.</p>
+          <p>The assistant will sometimes comment on its own as you make changes. It may know things about a segment that aren't obvious from the chat so far — if you're not sure what's missing, it's worth asking.</p>
         </div>
         <div class="consent-block highlight-block">
           <h4>How this gets evaluated</h4>
           <p>After each task, you'll be asked to briefly explain the reasoning behind your final decisions. Some explanations may be reviewed by the research team or shown, anonymized, to other participants as examples of decision quality.</p>
         </div>
         ${leaderboardBlockHtml}
-        ${briefing.screenshot ? `
         <div class="consent-block">
-          <h4>What's new in this task</h4>
-          <img src="${briefing.screenshot}" alt="${briefing.title} controls" class="briefing-screenshot"/>
-          <p class="briefing-screenshot-caption">${briefing.screenshotCaption}</p>
-        </div>` : ''}
-        <div class="consent-block">
-          <h4>A note on some rounds</h4>
-          <p>In some rounds, you'll notice numbers continuously changing in the "target box" you just practiced with. During these rounds, you'll be given a specific target number, such as <strong>5</strong> — watch the changing numbers and click "Match" whenever the target appears. Successfully spotting the target counts toward a completion bonus.</p>
-        </div>
-        <div class="consent-block">
-          <h4>Submitting a round</h4>
-          <p>Once all requirements are met, submit the round and rate your experience, then move to the next one. From this point on, everything is recorded.</p>
+          <h4>Submitting a segment</h4>
+          <p>You can submit a segment whenever you're ready — submission isn't gated on any visible checklist. Your plan gets reviewed against that segment's actual requirements when you submit, and you'll get a brief response either way.</p>
         </div>
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
           <input type="checkbox" id="taskBriefingBox" onchange="onTaskBriefingCheckChange()"/>
@@ -1564,7 +687,7 @@ async function showTaskBriefingOverlay(taskId) {
     btn.disabled = true;
     btn.onclick = () => {
         document.getElementById('taskTransitionOverlay').style.display = 'none';
-        startTrial(1);
+        startSegment(1);
     };
 
     const transitionOverlay = document.getElementById('taskTransitionOverlay');
@@ -1582,122 +705,171 @@ function onTaskBriefingCheckChange() {
     if (box && btn) btn.disabled = !box.checked;
 }
 
-function startTrial(trialIndex) {
-    const timeLimit = isP2Task() ? TRIAL_TIME_LIMIT_MS.P2 : (isP3Task() ? TRIAL_TIME_LIMIT_MS.P3 : TRIAL_TIME_LIMIT_MS.P1);
-    startTrialTimer(timeLimit, handleTrialTimeout);
-    stopDividedAttentionTask();
-
-    const chatNameEl = document.querySelector('.chat-ai-name');
-    if (chatNameEl) chatNameEl.innerText = isP3Task() ? "AI Trip-Planning Assistant" : (isP2Task() ? "AI Social Media Advisor" : "AI Marketing Advisor");
-
-    document.title = isP3Task() ? "Study-Abroad Itinerary Challenge" : (isP2Task() ? "Campaign Launch Challenge" : "Marketing Budget Challenge");
-    const chatInputEl = document.getElementById('chatInput');
-    if (chatInputEl) chatInputEl.placeholder = isP3Task() ? "Enter your itinerary plans..." : (isP2Task() ? "Enter your post details..." : "Enter your budget allocation...");
-
-    if (isP2Task()) { startTrialP2(trialIndex); return; }
-    if (isP3Task()) { startTrialP3(trialIndex); return; }
-
-    const loadLevel = sessionData.trialSequence[trialIndex - 1];
-    const task = taskData[loadLevel];
-
-    currentAllocations = { ...task.startingAllocation };
-    startOfTrialAllocations = { ...currentAllocations };
-    currentTrialConstraints = buildTrialConstraints(loadLevel, currentAllocations);
-
-    if (loadLevel === "HighLoad") {
-        const activeShocks = currentTrialConstraints.filter(c => c.id.startsWith("shock_"));
-        logEvent('trial_shocks_generated', {
-            trial: trialIndex,
-            shock_ids: activeShocks.map(c => c.id),
-            shock_texts: activeShocks.map(c => c.text)
+// Builds this segment's starting plan_state. Categories B and C always start from a
+// scripted `default` (brute-force verified server-side to fail exactly the intended
+// checklist item(s) -- see the Task 6 delivery notes), even on carries_forward segments,
+// because their traps depend on a specific combination being present, not just "whatever
+// the participant left off with." Category A's carries_forward segments (2-4) have no
+// scripted default and genuinely carry the participant's own ending hours forward,
+// because their traps come from a fact changing (e.g. a shifted midterm), not from a
+// specific combination -- see the comments in TASK_DATA_A in main.py.
+function buildSegmentStartingPlanState(category, segmentKey, priorEndingPlanState, loadLevel) {
+    const seg = SEGMENT_DATA[category].segments[segmentKey];
+    if (category === "A") {
+        if (seg.default) return { hours: { ...seg.default } };
+        const priorHours = (priorEndingPlanState && priorEndingPlanState.hours) || {};
+        const hours = {};
+        seg.items.forEach(item => {
+            hours[item] = (item in priorHours) ? priorHours[item] : (seg.newItemDefaults?.[item] ?? 0);
         });
+        return { hours };
     }
-
-    document.getElementById('docTitle').innerText = `${task.title} — Round ${trialIndex} of 4`;
-
-    let slidersHtml = "";
-    for (const channel in currentAllocations) {
-        slidersHtml += `
-            <div class="slider-group">
-                <div class="slider-header">
-                    <span>${channel}</span>
-                    <span class="channel-amt" id="val_${channel.replace(/[^a-zA-Z]/g, '')}">$${currentAllocations[channel].toLocaleString()}</span>
-                </div>
-                <input type="range" class="budget-slider" 
-                       data-channel="${channel}" 
-                       min="0" max="500000" step="5000" 
-                       value="${currentAllocations[channel]}">
-            </div>`;
+    if (category === "B") {
+        const d = seg.default;
+        return { selections: { major: [...d.major], minor: [...d.minor], elective: [...d.elective] } };
     }
+    // category === "C"
+    const d = Array.isArray(seg.default) ? seg.default : seg.default[loadLevel];
+    return { selections: [...d] };
+}
 
-    let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
-    currentTrialConstraints.forEach(c => {
-        if (c.flavor) return;
-        if (c.locked) {
-            // Kept in the DOM (so revealLockedConstraints can find it by id and unhide it)
-            // but rendered invisible -- no placeholder row announcing anything is hidden.
-            constraintsHtml += `
-                <li class="constraint-item locked" id="${c.id}" style="display:none;">
-                    <div class="c-status" style="background:#ccc;"></div>
-                    <span>${c.text}</span>
-                </li>`;
-            return;
+// Applies the server-validated `actions` array (see validate_plan_actions in main.py)
+// onto currentPlanState. Actions only ever exist because the participant explicitly
+// asked for a specific change in their last message -- nothing here invents or
+// "helpfully" adjusts anything on its own. Returns true if anything actually changed.
+function applyPlanActions(actions) {
+    if (!actions || !actions.length) return false;
+    const category = getCategory();
+    let changed = false;
+    actions.forEach(a => {
+        if (category === "A") {
+            if (a.slot !== "hours") return;
+            if (a.op === "assign") { currentPlanState.hours[a.item] = a.value ?? 0; changed = true; }
+            else if (a.op === "remove") { currentPlanState.hours[a.item] = 0; changed = true; }
+        } else if (category === "B") {
+            const bucket = currentPlanState.selections[a.slot];
+            if (!bucket) return;
+            if (a.op === "assign" && !bucket.includes(a.item)) { bucket.push(a.item); changed = true; }
+            else if (a.op === "remove") {
+                const idx = bucket.indexOf(a.item);
+                if (idx !== -1) { bucket.splice(idx, 1); changed = true; }
+            }
+        } else {
+            if (a.slot !== "selections") return;
+            if (a.op === "assign" && !currentPlanState.selections.includes(a.item)) { currentPlanState.selections.push(a.item); changed = true; }
+            else if (a.op === "remove") {
+                const idx = currentPlanState.selections.indexOf(a.item);
+                if (idx !== -1) { currentPlanState.selections.splice(idx, 1); changed = true; }
+            }
         }
-        constraintsHtml += `
-            <li class="constraint-item${c.flavor ? ' flavor-item' : ''}" id="${c.id}">
-                <div class="c-status${c.flavor ? ' flavor' : ''}"></div>
-                <span>${c.text}</span>
-            </li>`;
     });
-    constraintsHtml += `</ul>`;
+    return changed;
+}
 
+// Real plan-mirror (Task 8) -- shows ONLY the participant's own stated placements plus
+// arithmetic against the VISIBLE facts added to SEGMENT_DATA above (caps, catalog
+// credits, degree-requirement minimums, advertised club hours/categories). Never
+// touches TASK_DATA_A/B/C, never shows a locked value, and never renders a pass/fail
+// signal (no color, no checkmark, no "met"/"unmet") -- that verdict only exists
+// server-side and only ever reaches the participant as Task 10's scripted submission
+// response.
+function renderPlanMirror() {
+    const el = document.getElementById('planStateSummary');
+    if (!el) return;
+    const category = getCategory();
+    if (category === "A") el.innerHTML = renderPlanMirrorA();
+    else if (category === "B") el.innerHTML = renderPlanMirrorB();
+    else el.innerHTML = renderPlanMirrorC();
+}
+
+function renderPlanMirrorA() {
+    const hours = currentPlanState.hours || {};
+    const cap = SEGMENT_DATA.A.capByLoad[currentLoadLevel];
+    const rows = Object.entries(hours)
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => `<div class="plan-mirror-row"><span>${SEGMENT_DATA.A.itemLabels[k] || k}</span><span>${v} hrs</span></div>`)
+        .join('');
+    const total = Object.values(hours).reduce((sum, v) => sum + (v || 0), 0);
+    return `
+        ${rows || '<div class="plan-mirror-row plan-mirror-empty">(nothing placed yet)</div>'}
+        <div class="plan-mirror-total"><span>Total this week</span><span>${total} / ${cap} hrs</span></div>`;
+}
+
+function renderPlanMirrorB() {
+    const s = currentPlanState.selections || { major: [], minor: [], elective: [] };
+    const creditsFor = (cid) => SEGMENT_DATA.B.courseCredits[cid] ?? 0;
+    const bucketBlock = (bucket, label) => {
+        const ids = s[bucket] || [];
+        const rows = ids.map(cid => `<div class="plan-mirror-row"><span>${SEGMENT_DATA.B.courseLabels[cid] || cid}</span><span>${creditsFor(cid)} cr</span></div>`).join('');
+        const subtotal = ids.reduce((sum, cid) => sum + creditsFor(cid), 0);
+        return `
+        <div class="plan-mirror-bucket">
+            <div class="plan-mirror-bucket-label">${label} <span class="plan-mirror-min">(min ${SEGMENT_DATA.B.minimums[bucket]} cr)</span></div>
+            ${rows || '<div class="plan-mirror-row plan-mirror-empty">(none selected)</div>'}
+            <div class="plan-mirror-subtotal"><span>Subtotal</span><span>${subtotal} cr</span></div>
+        </div>`;
+    };
+    const totalCredits = ["major", "minor", "elective"].reduce((sum, b) => sum + (s[b] || []).reduce((s2, cid) => s2 + creditsFor(cid), 0), 0);
+    return `
+        ${bucketBlock('major', 'Major')}
+        ${bucketBlock('minor', 'Minor')}
+        ${bucketBlock('elective', 'Elective')}
+        <div class="plan-mirror-total"><span>Total this term</span><span>${totalCredits} / ${SEGMENT_DATA.B.cap} cr</span></div>`;
+}
+
+function renderPlanMirrorC() {
+    const chosen = currentPlanState.selections || [];
+    const cap = SEGMENT_DATA.C.capByLoad[currentLoadLevel];
+    const rows = chosen.map(cid => `<div class="plan-mirror-row"><span>${SEGMENT_DATA.C.clubLabels[cid] || cid} <span class="plan-mirror-min">(${SEGMENT_DATA.C.clubCategories[cid] || ''})</span></span><span>${SEGMENT_DATA.C.clubBaseHours[cid] ?? 0} hrs</span></div>`).join('');
+    const totalHours = chosen.reduce((sum, cid) => sum + (SEGMENT_DATA.C.clubBaseHours[cid] ?? 0), 0);
+    const categoriesCovered = new Set(chosen.map(cid => SEGMENT_DATA.C.clubCategories[cid]).filter(Boolean));
+    return `
+        ${rows || '<div class="plan-mirror-row plan-mirror-empty">(nothing added yet)</div>'}
+        <div class="plan-mirror-total"><span>Total this week</span><span>${totalHours} / ${cap} hrs</span></div>
+        <div class="plan-mirror-total"><span>Interest categories represented</span><span>${categoriesCovered.size} / 4</span></div>`;
+}
+
+// Doc-panel body: label + the real plan-mirror (renderPlanMirror) + submit button.
+function updateDoc() {
+    const category = getCategory();
+    const meta = CATEGORY_META[category];
     document.getElementById('docBody').innerHTML = `
         <div class="dashboard-top">
-            <div class="score-card" id="budgetCard">
-                <span class="sc-label">Total Allocated</span>
-                <span class="sc-val" id="totalAllocDisplay">$500,000</span>
+            <div class="score-card">
+                <span class="sc-label">${meta.docLabel}</span>
             </div>
         </div>
-        ${slidersHtml}
-        <h3 class="doc-section-head">Live Constraints</h3>
-        ${constraintsHtml}
-        ${renderFlavorEffects(currentTrialConstraints)}
-        <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
-            Submit Round ${trialIndex} Allocation
+        <div class="consent-block" id="planStateSummary" style="font-size:13px; line-height:1.6;"></div>
+        <button id="submitSegmentBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" onclick="submitSegment()">
+            Submit This Segment
         </button>
     `;
+    renderPlanMirror();
+}
 
-    document.querySelectorAll('.budget-slider').forEach(slider => {
-        slider.addEventListener('input', (e) => {
-            currentAllocations[e.target.dataset.channel] = parseInt(e.target.value);
-            updateDashboard(loadLevel);
-            scheduleProactiveCheck();
-        });
+function startSegment(segmentIndex) {
+    const category = getCategory();
+    const meta = CATEGORY_META[category];
+    const segmentKey = `segment_${segmentIndex}`;
+    const loadLevel = sessionData.trialSequence[segmentIndex - 1];
+    currentLoadLevel = loadLevel; // read by renderPlanMirror (A/C's visible cap is per-load)
 
-        slider.addEventListener('mousedown', (e) => {
-            const now = Date.now();
-            if (!sliderTelemetry.firstMoveTime) {
-                sliderTelemetry.firstMoveTime = now - window.lastTurnTimestamp;
-            }
-            sliderTelemetry.currentDrag = {
-                channel: e.target.dataset.channel,
-                startTime: now,
-                startValue: parseInt(e.target.value)
-            };
-        });
+    startTrialTimer(TRIAL_TIME_LIMIT_MS[category], handleTrialTimeout);
 
-        slider.addEventListener('mouseup', (e) => {
-            if (sliderTelemetry.currentDrag) {
-                const now = Date.now();
-                sliderTelemetry.currentDrag.endTime = now;
-                sliderTelemetry.currentDrag.endValue = parseInt(e.target.value);
-                sliderTelemetry.currentDrag.durationMs = now - sliderTelemetry.currentDrag.startTime;
-                sliderTelemetry.currentDrag.msSinceLastAiMessage = lastAiMessageTime ? now - lastAiMessageTime : null;
-                sliderTelemetry.completedDrags.push(sliderTelemetry.currentDrag);
-                sliderTelemetry.currentDrag = null;
-            }
-        });
-    });
+    const chatNameEl = document.querySelector('.chat-ai-name');
+    if (chatNameEl) chatNameEl.innerText = meta.advisorName;
+    document.title = meta.pageTitle;
+    const chatInputEl = document.getElementById('chatInput');
+    if (chatInputEl) chatInputEl.placeholder = meta.placeholder;
+
+    currentPlanState = buildSegmentStartingPlanState(category, segmentKey, currentPlanState, loadLevel);
+    startOfTrialPlanState = JSON.parse(JSON.stringify(currentPlanState));
+    disclosedIdsSoFar = [];
+    revealedFactsThisSegment = [];
+    currentTargetItem = null;
+
+    document.getElementById('docTitle').innerText = `${meta.pageTitle} — Segment ${segmentIndex} of 4`;
+    updateDoc();
 
     taskStartTime = Date.now();
     window.lastTurnTimestamp = Date.now();
@@ -1708,24 +880,16 @@ function startTrial(trialIndex) {
     darkDeliveredThisTrial = false;
     lastAiMessageTime = null;
     messageDwellTelemetry = {};
-    postTextManuallyEdited = false;
     resetProactiveState();
-    scheduleProactiveCheck(); // guarantees the check-in fires even if the default happens to pass every visible constraint untouched
-    sliderTelemetry = { firstMoveTime: null, currentDrag: null, completedDrags: [] };
-    attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
+    scheduleProactiveCheck(); // guarantees a check-in even if the participant never types anything
+    scheduleNotifications(loadLevel, TRIAL_TIME_LIMIT_MS[category]);
 
-    updateDashboard(loadLevel);
-
-    setAttentionBarVisible(loadLevel === "HighLoad");
-    if (loadLevel === "HighLoad") {
-        startDividedAttentionTask();
-    }
-
-    logEvent('trial_started', { trial: trialIndex, load_level: loadLevel });
+    logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); // Task 12: lets the server seed its own plan_state replay from this segment's true starting point, not just its first action
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            addMessage(`Round ${trialIndex} of 4 begins. Your goal is to maximize your allocation's modeled ROI while satisfying the live constraints below. Adjust the sliders to build your allocation. Your AI advisor will offer suggestions as you work — the final call each round is yours.`, "ai");
+            const opening = SEGMENT_OPENING_LINES[category]?.[segmentKey] || `Segment ${segmentIndex} of 4 begins.`;
+            addScriptedLine(opening);
         }, 600);
     }
 }
@@ -1759,617 +923,11 @@ function updateTrialTimerDisplay(remainingMsOverride) {
     el.className = 'trial-timer' + (totalSec <= 10 ? ' trial-timer-danger' : totalSec <= 20 ? ' trial-timer-warning' : '');
 }
 
-// Time runs out: submit whatever is currently set, unmet requirements and all. This is
-// what makes the clock a real cost of not asking — never a block on typing or submitting.
+// Time runs out: submit whatever is currently set. This is what makes the clock a real
+// cost of not asking — never a block on typing or submitting.
 function handleTrialTimeout() {
     logEvent('trial_timed_out', { trial: currentTrial });
-    submitTrial(true);
-}
-
-function updateDashboard(loadLevel) {
-    if (isP2Task()) { updateDashboardP2(loadLevel); return; }
-    const task = taskData[loadLevel];
-    const total = sumAllocations(currentAllocations);
-    trialScorePct = getImprovementPercentage(currentAllocations, loadLevel);
-    
-    document.getElementById('totalAllocDisplay').innerText = `$${total.toLocaleString()}`;
-    
-    for (const [channel, amount] of Object.entries(currentAllocations)) {
-        const id = "val_" + channel.replace(/[^a-zA-Z]/g, '');
-        document.getElementById(id).innerText = `$${amount.toLocaleString()}`;
-    }
-    
-    const budgetCard = document.getElementById('budgetCard');
-    if (total !== task.budget) {
-        budgetCard.classList.add('error');
-    } else {
-        budgetCard.classList.remove('error');
-    }
-    
-    currentTrialConstraints.forEach(c => {
-        const el = document.getElementById(c.id)?.querySelector('.c-status');
-        if (!el || c.locked) return;
-        el.className = c.flavor ? 'c-status flavor' : (c.check(currentAllocations) ? 'c-status pass' : 'c-status fail');
-    });
-    
-    updateSubmitGate();
-}
-
-const CLAIM_PHRASES = {
-    Claim_LimitedTime: " Limited stock available.",
-    Claim_BestSelling: " Our #1 best-seller.",
-    Claim_GuaranteedResults: " Guaranteed results or your money back."
-};
-const DISCLAIMER_PHRASE = "\n\n*Terms and conditions apply.";
-
-function buildPostPreview(p) {
-    const toneOpeners = {
-        10: "We are pleased to announce our newest product line.",
-        35: "Excited to share what we've been working on.",
-        55: "Hey — check out what's new! 👀",
-        80: "OK this is HUGE, you need to see this rn 🔥"
-    };
-    let text = toneOpeners[p.Tone] || toneOpeners[35];
-    if (p.Urgency >= 90) text += " Offer ends TONIGHT — don't miss out!";
-    else if (p.Urgency >= 60) text += " Available for a limited time.";
-    else if (p.Urgency >= 35) text += " Don't wait too long on this one.";
-    if (p.Claim_LimitedTime) text += CLAIM_PHRASES.Claim_LimitedTime;
-    if (p.Claim_BestSelling) text += CLAIM_PHRASES.Claim_BestSelling;
-    if (p.Claim_GuaranteedResults) text += CLAIM_PHRASES.Claim_GuaranteedResults;
-    if (p.Disclaimer) text += DISCLAIMER_PHRASE;
-    return text;
-}
-
-function applyClaimPhraseToggle(key, turningOn) {
-    const phrase = key === "Disclaimer" ? DISCLAIMER_PHRASE : CLAIM_PHRASES[key];
-    if (!phrase) return;
-
-    if (turningOn) {
-        if (!currentPostText.includes(phrase.trim())) {
-            currentPostText += phrase;
-        }
-    } else if (currentPostText.includes(phrase)) {
-        currentPostText = currentPostText.split(phrase).join('');
-    } else if (currentPostText.includes(phrase.trim())) {
-        // Exact whitespace didn't match (participant may have retyped around it) — still
-        // remove the sentence itself and tidy up any leftover double-space.
-        currentPostText = currentPostText.split(phrase.trim()).join(' ').replace(/ {2,}/g, ' ').trim();
-    }
-
-    const box = document.getElementById('postPreviewBox');
-    if (box) box.value = currentPostText;
-}
-
-function detectClaimTextMismatches() {
-    if (!postTextManuallyEdited) return [];
-    const mismatches = [];
-    for (const [key, phrase] of Object.entries(CLAIM_PHRASES)) {
-        const label = key.replace('Claim_', '').replace(/([A-Z])/g, ' $1').trim();
-        const toggledOn = !!currentAllocations[key];
-        const phrasePresent = currentPostText.includes(phrase.trim());
-        if (toggledOn && !phrasePresent) {
-            mismatches.push(`"${label}" is toggled ON but that claim text isn't actually in the post`);
-        } else if (!toggledOn && phrasePresent) {
-            mismatches.push(`the post text includes the "${label}" claim but that toggle is OFF`);
-        }
-    }
-    const hasDisclaimerText = currentPostText.includes(DISCLAIMER_PHRASE.trim());
-    if (currentAllocations.Disclaimer && !hasDisclaimerText) {
-        mismatches.push(`the Disclaimer toggle is ON but the "Terms and conditions apply" text isn't in the post`);
-    } else if (!currentAllocations.Disclaimer && hasDisclaimerText) {
-        mismatches.push(`the post text includes a disclaimer but the Disclaimer toggle is OFF`);
-    }
-    return mismatches;
-}
-
-function selectP2Option(key, value) {
-    if (currentAllocations[key] === value) return; // no-op click on the already-selected chip
-    const now = Date.now();
-    if (!optionChangeTelemetry.firstChangeTime) {
-        optionChangeTelemetry.firstChangeTime = now - window.lastTurnTimestamp;
-    }
-    optionChangeTelemetry.changes.push({
-        key, from: currentAllocations[key], to: value, time: now,
-        msSinceLastAiMessage: lastAiMessageTime ? now - lastAiMessageTime : null
-    });
-    currentAllocations[key] = value;
-
-    const CLAIM_KEYS = ["Claim_LimitedTime", "Claim_BestSelling", "Claim_GuaranteedResults", "Disclaimer"];
-    if (CLAIM_KEYS.includes(key)) {
-        // These toggles just add/remove one fixed sentence — keep them in sync with the
-        // post text even after a manual edit, instead of being locked out like Tone/Urgency.
-        applyClaimPhraseToggle(key, !!value);
-    } else if (key === "Tone" || key === "Urgency") {
-        if (!postTextManuallyEdited) {
-            currentPostText = buildPostPreview(currentAllocations);
-            const box = document.getElementById('postPreviewBox');
-            if (box) box.value = currentPostText;
-        }
-    }
-
-    updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
-    scheduleProactiveCheck();
-}
-
-function toggleP2Claim(key) {
-    selectP2Option(key, currentAllocations[key] ? 0 : 1);
-}
-
-function onPreviewKeydown(e) {
-    postTextTelemetry.keystrokes.push({ key: e.key, time: Date.now() });
-    if (e.key === "Backspace") postTextTelemetry.backspaces++;
-}
-
-function onPreviewScroll(e) {
-    postTextTelemetry.scrollEvents.push({ scrollTop: e.target.scrollTop, time: Date.now() });
-}
-
-function onPreviewPaste(e) {
-    const pasted = (e.clipboardData || window.clipboardData).getData('text');
-    logEvent('preview_text_pasted', { trial: currentTrial, pasted_text: pasted, length: pasted.length });
-}
-
-function computePreviewWPM() {
-    if (postTextTelemetry.keystrokes.length < 2) return 0;
-    const first = postTextTelemetry.keystrokes[0].time;
-    const last = postTextTelemetry.keystrokes[postTextTelemetry.keystrokes.length - 1].time;
-    const minutes = (last - first) / 60000;
-    const words = currentPostText.trim().split(/\s+/).filter(Boolean).length;
-    return minutes > 0 ? Math.round(words / minutes) : 0;
-}
-
-function computePreviewMaxPause() {
-    const ks = postTextTelemetry.keystrokes;
-    if (ks.length < 2) return 0;
-    let maxGap = 0;
-    for (let i = 1; i < ks.length; i++) maxGap = Math.max(maxGap, ks[i].time - ks[i-1].time);
-    return maxGap;
-}
-
-function onPreviewTextInput() {
-    postTextManuallyEdited = true;
-    currentPostText = document.getElementById('postPreviewBox').value;
-    updatePreviewEditedBadge();
-    updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
-    scheduleProactiveCheck();
-
-    clearTimeout(postTextReactionTimer);
-    postTextReactionTimer = setTimeout(() => attemptPostTextReaction(), POST_TEXT_REACTION_DEBOUNCE_MS);
-}
-
-// Reacts to the participant's own written text specifically -- separate from the
-// dial-driven proactive/dark-tactic channel on purpose, so this stays a genuinely
-// helpful writing assist and never touches necessity/disclosure logic.
-async function attemptPostTextReaction() {
-    if (isAiRequestInFlight) {
-        clearTimeout(postTextReactionTimer);
-        postTextReactionTimer = setTimeout(() => attemptPostTextReaction(), 1500);
-        return;
-    }
-    const text = currentPostText.trim();
-    if (!text || text === lastPostTextReactedTo) return;
-    lastPostTextReactedTo = text;
-
-    isAiRequestInFlight = true;
-    const sendBtn = document.querySelector('.send-btn');
-    if (sendBtn) sendBtn.disabled = true;
-    showTypingIndicator();
-    const requestStart = Date.now();
-
-    try {
-        const response = await fetch('/api/react_to_post_text', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                post_text: text,
-                hashtag_text: getHashtagText(),
-                product: getP2Product().name,
-                load_level: sessionData.trialSequence[currentTrial - 1]
-            })
-        });
-        const data = await response.json();
-        const elapsed = Date.now() - requestStart;
-        if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
-        document.getElementById('currentTyping')?.remove();
-        if (data.status === "success" && data.reply) {
-            addMessage(data.reply, 'ai', 'text_reaction', false, 'Post Text Reaction');
-            logEvent('ai_text_reaction', { trial: currentTrial, reacted_to: text, reply: data.reply });
-        }
-    } catch (err) {
-        document.getElementById('currentTyping')?.remove();
-        console.error("Post text reaction failed:", err);
-    } finally {
-        isAiRequestInFlight = false;
-        if (sendBtn) sendBtn.disabled = false;
-    }
-}
-
-function resetPreviewToTemplate() {
-    logEvent('preview_reset_clicked', { trial: currentTrial, discarded_text: currentPostText });
-    postTextManuallyEdited = false;
-    currentPostText = buildPostPreview(currentAllocations);
-    const box = document.getElementById('postPreviewBox');
-    if (box) box.value = currentPostText;
-    updatePreviewEditedBadge();
-    updateDashboardP2(sessionData.trialSequence[currentTrial - 1]);
-}
-
-function onPostingTimeInput(value) {
-    selectP2Option('PostingTime', parseInt(value));
-}
-
-function startTrialP2(trialIndex) {
-    const loadLevel = sessionData.trialSequence[trialIndex - 1];
-    const task = taskDataP2[loadLevel];
-    const product = getP2Product();
-
-    currentAllocations = { ...task.startingAllocation };
-    startOfTrialAllocations = { ...currentAllocations };
-    currentTrialConstraints = buildTrialConstraintsP2(loadLevel, currentAllocations);
-
-    if (loadLevel === "HighLoad") {
-        const activeShocks = currentTrialConstraints.filter(c => c.id.startsWith("shock_"));
-        logEvent('trial_shocks_generated', {
-            trial: trialIndex,
-            shock_ids: activeShocks.map(c => c.id),
-            shock_texts: activeShocks.map(c => c.text)
-        });
-    }
-
-    document.getElementById('docTitle').innerText = `${task.title} \u2014 Round ${trialIndex} of 4`;
-
-    let optionsHtml = "";
-    P2_OPTION_CONTROLS.forEach(ctrl => {
-        optionsHtml += `
-            <div class="p2-section">
-                <div class="p2-section-title">${ctrl.label}</div>
-                <div class="p2-section-hint">${ctrl.hint}</div>
-                <div class="option-chip-row" data-control="${ctrl.key}">
-                    ${ctrl.options.map(opt => `
-                        <button type="button" class="option-chip" data-key="${ctrl.key}" data-value="${opt.value}">${opt.label}</button>
-                    `).join('')}
-                </div>
-            </div>`;
-    });
-
-    const hashtagHtml = `
-        <div class="p2-section">
-            <div class="p2-section-title">Hashtags</div>
-            <div class="p2-section-hint">More tags can aid discovery up to a point, then engagement drops off. Type your own or pick a preset to start.</div>
-            <select id="hashtagPreset" class="option-select" onchange="onHashtagPresetChange()">
-                <option value="">Choose a preset...</option>
-                <option value="#tag1 #tag2">Minimal (2)</option>
-                <option value="#tag1 #tag2 #tag3 #tag4 #tag5">Standard (5)</option>
-                <option value="#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8">Broad (8)</option>
-                <option value="#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8 #tag9 #tag10 #tag11 #tag12">Maximum (12)</option>
-            </select>
-            <input type="text" id="hashtagInput" class="text-input-field" placeholder="#YourTag #AnotherTag" oninput="onHashtagInputChange()">
-        </div>`;
-
-    const postingSliderHtml = `
-        <div class="p2-section">
-            <div class="p2-section-title">Posting Slot</div>
-            <div class="p2-section-hint">When the post goes live. Some windows perform better than others.</div>
-            <div class="posting-slider-row">
-                <input type="range" class="posting-slider" min="0" max="23" step="1" value="${currentAllocations.PostingTime}" oninput="onPostingTimeInput(this.value)">
-                <span class="posting-slider-value" id="postingTimeDisplay">${currentAllocations.PostingTime}:00</span>
-            </div>
-        </div>`;
-
-    let togglesHtml = `<div class="p2-section"><div class="p2-section-title">Claims &amp; Disclosures</div><div class="p2-section-hint">Check any claims or the disclaimer you want to include.</div>`;
-    P2_TOGGLE_CONTROLS.forEach(ctrl => {
-        togglesHtml += `
-            <label class="claim-row">
-                <input type="checkbox" data-channel="${ctrl.key}" ${currentAllocations[ctrl.key] ? "checked" : ""} onchange="toggleP2Claim('${ctrl.key}')">
-                <span>${ctrl.label}</span>
-            </label>`;
-    });
-    togglesHtml += `</div>`;
-
-    let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
-    currentTrialConstraints.forEach(c => {
-        if (c.flavor) return;
-        if (c.locked) {
-            // Kept in the DOM (so revealLockedConstraints can find it by id and unhide it)
-            // but rendered invisible -- no placeholder row announcing anything is hidden.
-            constraintsHtml += `
-                <li class="constraint-item locked" id="${c.id}" style="display:none;">
-                    <div class="c-status" style="background:#ccc;"></div>
-                    <span>${c.text}</span>
-                </li>`;
-            return;
-        }
-        constraintsHtml += `
-            <li class="constraint-item${c.flavor ? ' flavor-item' : ''}" id="${c.id}">
-                <div class="c-status${c.flavor ? ' flavor' : ''}"></div>
-                <span>${c.text}</span>
-            </li>`;
-    });
-    constraintsHtml += `</ul>`;
-
-    document.getElementById('docBody').innerHTML = `
-        <div class="p2-brief">You're writing a launch post for <strong>${product.brand}</strong> — ${product.name}.</div>
-        <div class="preview-header-row">
-            <span class="post-preview-label">Live Post Preview</span>
-            <span id="previewEditedBadge" class="preview-edited-badge" style="display:none;">\u270e Custom text</span>
-            <button type="button" class="preview-reset-btn" onclick="resetPreviewToTemplate()">\u21ba Reset to template</button>
-        </div>
-        <textarea class="post-preview-box" id="postPreviewBox" rows="6"
-                  oninput="onPreviewTextInput()" onkeydown="onPreviewKeydown(event)"
-                  onscroll="onPreviewScroll(event)" onpaste="onPreviewPaste(event)"
-                  onfocus="onPreviewFocus()" onblur="onPreviewBlur()"></textarea>
-        <div class="post-preview-note">
-            <strong>You can edit this text directly — it's optional.</strong>
-            <ul style="margin:6px 0 0 18px; padding:0;">
-                <li>Edited text still counts toward your character limit and engagement score, just like a real post.</li>
-                <li>It does <strong>not</strong> change the claim/disclaimer checkboxes below — those always reflect your own selections, not this text.</li>
-                <li>Once you start editing, checkbox/chip changes stop auto-updating this box. Click "Reset to template" to discard your edits and go back to the auto-generated version.</li>
-            </ul>
-        </div>
-        <div class="dashboard-top">
-            <div class="score-card" id="budgetCard">
-                <span class="sc-label" id="lengthCardLabel">Estimated Post Length</span>
-                <span class="sc-val" id="totalAllocDisplay">0 / 250 chars</span>
-            </div>
-        </div>
-        ${optionsHtml}
-        ${hashtagHtml}
-        ${postingSliderHtml}
-        ${togglesHtml}
-        <h3 class="doc-section-head">Live Constraints</h3>
-        ${constraintsHtml}
-        ${renderFlavorEffects(currentTrialConstraints)}
-        <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
-            Submit Round ${trialIndex} Post
-        </button>
-    `;
-
-    currentPostText = buildPostPreview(currentAllocations);
-    const previewBoxInit = document.getElementById('postPreviewBox');
-    if (previewBoxInit) previewBoxInit.value = currentPostText;
-
-    const hashtagInputInit = document.getElementById('hashtagInput');
-    if (hashtagInputInit) {
-        hashtagInputInit.value = Array.from({ length: currentAllocations.Hashtags }, (_, i) => `#tag${i + 1}`).join(' ');
-    }
-
-    document.querySelectorAll('.option-chip[data-key]').forEach(chip => {
-        chip.addEventListener('click', () => {
-            selectP2Option(chip.dataset.key, parseInt(chip.dataset.value));
-        });
-    });
-
-    taskStartTime = Date.now();
-    window.lastTurnTimestamp = Date.now();
-    turnsInTrial = 0;
-    hasInteractedThisTrial = false;
-    submitAttemptsThisTrial = 0;
-    darkTurnCounter = 0;
-    darkDeliveredThisTrial = false;
-    lastAiMessageTime = null;
-    messageDwellTelemetry = {};
-    postTextManuallyEdited = false;
-    resetProactiveState();
-    scheduleProactiveCheck(); // guarantees the check-in fires even if the default happens to pass every visible constraint untouched
-    optionChangeTelemetry = { firstChangeTime: null, changes: [] };
-    postTextTelemetry = { keystrokes: [], backspaces: 0, scrollEvents: [] };
-    previewFocusTelemetry = { totalFocusedMs: 0, focusEvents: [], currentFocusStart: null };
-    attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
-
-    updatePreviewEditedBadge();
-    updateDashboardP2(loadLevel);
-
-    setAttentionBarVisible(loadLevel === "HighLoad");
-    if (loadLevel === "HighLoad") {
-        startDividedAttentionTask();
-    }
-
-    logEvent('trial_started', { trial: trialIndex, load_level: loadLevel });
-
-    if (!sessionData.group.includes("Transcript")) {
-        setTimeout(() => {
-            addMessage(`Round ${trialIndex} of 4 begins. Your goal is to maximize estimated engagement for this launch post while satisfying the live constraints below. Pick your options to build your post. Your AI advisor will offer suggestions as you work — the final call each round is yours.`, "ai");
-        }, 600);
-    }
-}
-
-function startTrialP3(trialIndex) {
-    const loadLevel = sessionData.trialSequence[trialIndex - 1];
-    const task = taskDataP3[loadLevel];
-
-    currentAllocations = {};
-    task.slots.forEach((slot, i) => {
-        const def = slot.candidates.find(c => c.default) || slot.candidates[0];
-        currentAllocations[`slot${i + 1}`] = def.id;
-    });
-    startOfTrialAllocations = { ...currentAllocations };
-    currentTrialConstraints = buildTrialConstraintsP3(loadLevel);
-
-    if (loadLevel === "HighLoad") {
-        const activeShocks = currentTrialConstraints.filter(c => c.id !== "c1_categories");
-        logEvent('trial_shocks_generated', {
-            trial: trialIndex,
-            shock_ids: activeShocks.map(c => c.id),
-            shock_texts: activeShocks.map(c => c.text)
-        });
-    }
-
-    document.getElementById('docTitle').innerText = `Study-Abroad Itinerary Challenge — Day ${trialIndex} of 4`;
-
-    let slotsHtml = "";
-    task.slots.forEach((slot, i) => {
-        const slotKey = `slot${i + 1}`;
-        slotsHtml += `
-            <div class="p3-slot-card">
-                <div class="p3-slot-label">${slot.label}</div>
-                <div class="p3-candidate-list" data-slot="${slotKey}">
-                    ${slot.candidates.map(c => `
-                        <button type="button" class="p3-candidate ${currentAllocations[slotKey] === c.id ? 'selected' : ''}" data-slot="${slotKey}" data-id="${c.id}">
-                            <span class="p3-candidate-name">${c.name}</span>
-                            <span class="p3-candidate-meta">${formatP3Window(c.window)}</span>
-                        </button>`).join('')}
-                </div>
-            </div>`;
-    });
-
-    let constraintsHtml = `<ul class="constraint-list" id="constraintList">`;
-    currentTrialConstraints.forEach(c => {
-        if (c.flavor) return;
-        if (c.locked) {
-            // Kept in the DOM (so revealLockedConstraints can find it by id and unhide it)
-            // but rendered invisible -- no placeholder row announcing anything is hidden.
-            constraintsHtml += `
-                <li class="constraint-item locked" id="${c.id}" style="display:none;">
-                    <div class="c-status" style="background:#ccc;"></div>
-                    <span>${c.text}</span>
-                </li>`;
-            return;
-        }
-        constraintsHtml += `
-            <li class="constraint-item${c.flavor ? ' flavor-item' : ''}" id="${c.id}">
-                <div class="c-status${c.flavor ? ' flavor' : ''}"></div>
-                <span>${c.text}</span>
-            </li>`;
-    });
-    constraintsHtml += `</ul>`;
-
-    document.getElementById('docBody').innerHTML = `
-        <div class="p2-brief">Plan Day ${trialIndex} of your 4-day study-abroad trip. Pick one activity per time slot. Options tagged "Partner pick" are offered through one of our travel partners.</div>
-        <div class="dashboard-top">
-            <div class="score-card" id="budgetCard">
-                <span class="sc-label">Must-See Categories Covered</span>
-                <span class="sc-val" id="totalAllocDisplay">0 / 4</span>
-            </div>
-        </div>
-        ${slotsHtml}
-        <h3 class="doc-section-head">Live Constraints</h3>
-        ${constraintsHtml}
-        ${renderFlavorEffects(currentTrialConstraints)}
-        <button id="submitTrialBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTrial()">
-            Submit Day ${trialIndex} Itinerary
-        </button>
-    `;
-
-    document.querySelectorAll('.p3-candidate').forEach(btn => {
-        btn.addEventListener('click', () => {
-            selectP3Option(btn.dataset.slot, btn.dataset.id);
-        });
-    });
-
-    taskStartTime = Date.now();
-    window.lastTurnTimestamp = Date.now();
-    turnsInTrial = 0;
-    hasInteractedThisTrial = false;
-    submitAttemptsThisTrial = 0;
-    darkTurnCounter = 0;
-    darkDeliveredThisTrial = false;
-    lastAiMessageTime = null;
-    messageDwellTelemetry = {};
-    resetProactiveState();
-    scheduleProactiveCheck(); // guarantees the check-in fires even if the default happens to pass every visible constraint untouched
-    p3ChangeTelemetry = { firstChangeTime: null, changes: [] };
-    attentionMetrics = { targetsShown: 0, correctHits: 0, falseAlarms: 0, reactionTimes: [] };
-
-    updateDashboardP3(loadLevel);
-
-    setAttentionBarVisible(loadLevel === "HighLoad");
-    if (loadLevel === "HighLoad") {
-        startDividedAttentionTask();
-    }
-
-    logEvent('trial_started', { trial: trialIndex, load_level: loadLevel });
-
-    if (!sessionData.group.includes("Transcript")) {
-        setTimeout(() => {
-            addMessage(`Day ${trialIndex} of 4 begins. Your goal is to maximize your itinerary's overall quality while satisfying the live constraints below. Pick one activity per time slot. Your AI advisor will offer suggestions as you plan — the final call each day is yours.`, "ai");
-        }, 600);
-    }
-}
-
-function selectP3Option(slotKey, candidateId) {
-    if (currentAllocations[slotKey] === candidateId) return;
-    const now = Date.now();
-    if (!p3ChangeTelemetry.firstChangeTime) {
-        p3ChangeTelemetry.firstChangeTime = now - window.lastTurnTimestamp;
-    }
-    p3ChangeTelemetry.changes.push({
-        slot: slotKey, from: currentAllocations[slotKey], to: candidateId, time: now,
-        msSinceLastAiMessage: lastAiMessageTime ? now - lastAiMessageTime : null
-    });
-    currentAllocations[slotKey] = candidateId;
-
-    updateDashboardP3(sessionData.trialSequence[currentTrial - 1]);
-    scheduleProactiveCheck();
-}
-
-function updateDashboardP3(loadLevel) {
-    trialScorePct = getItineraryPercentage(currentAllocations, loadLevel);
-
-    const categoriesCovered = new Set(getP3OrderedCandidates(currentAllocations).map(c => c.category)).size;
-    const lenDisplay = document.getElementById('totalAllocDisplay');
-    if (lenDisplay) lenDisplay.innerText = `${categoriesCovered} / 4`;
-
-    const budgetCard = document.getElementById('budgetCard');
-    if (budgetCard) {
-        if (categoriesCovered < P3_MUST_SEE_MIN_CATEGORIES) budgetCard.classList.add('error');
-        else budgetCard.classList.remove('error');
-    }
-
-    document.querySelectorAll('.p3-candidate').forEach(btn => {
-        btn.classList.toggle('selected', currentAllocations[btn.dataset.slot] === btn.dataset.id);
-    });
-
-    currentTrialConstraints.forEach(c => {
-        const el = document.getElementById(c.id)?.querySelector('.c-status');
-        if (!el || c.locked) return;
-        el.className = c.flavor ? 'c-status flavor' : (c.check(currentAllocations) ? 'c-status pass' : 'c-status fail');
-    });
-
-    updateSubmitGate();
-}
-
-function getEffectivePostLength() {
-    if (postTextManuallyEdited && currentPostText) {
-        return currentPostText.length + getHashtagContribution();
-    }
-    return estimatePostLength(currentAllocations);
-}
-
-function updatePreviewEditedBadge() {
-    const badge = document.getElementById('previewEditedBadge');
-    if (badge) badge.style.display = postTextManuallyEdited ? 'inline-flex' : 'none';
-}
-
-function updateDashboardP2(loadLevel) {
-    trialScorePct = getEngagementPercentage(currentAllocations, loadLevel);
-    const length = getEffectivePostLength();
-    const capLimit = currentTrialConstraints.find(c => c.bound?.type === "max_length")?.bound.limit ?? 250;
-
-    const lenDisplay = document.getElementById('totalAllocDisplay');
-    if (lenDisplay) lenDisplay.innerText = `${length} / ${capLimit} chars`;
-
-    const lenLabel = document.getElementById('lengthCardLabel');
-    if (lenLabel) lenLabel.innerText = postTextManuallyEdited ? "Post Length" : "Estimated Post Length";
-
-    const ptDisplay = document.getElementById('postingTimeDisplay');
-    if (ptDisplay) ptDisplay.innerText = `${currentAllocations.PostingTime}:00`;
-
-    document.querySelectorAll('.option-chip[data-key]').forEach(chip => {
-        chip.classList.toggle('selected', parseInt(chip.dataset.value) === currentAllocations[chip.dataset.key]);
-    });
-
-    const budgetCard = document.getElementById('budgetCard');
-    if (budgetCard) {
-        if (length > capLimit) budgetCard.classList.add('error'); else budgetCard.classList.remove('error');
-    }
-
-    currentTrialConstraints.forEach(c => {
-        const el = document.getElementById(c.id)?.querySelector('.c-status');
-        if (!el || c.locked) return;
-        el.className = c.flavor ? 'c-status flavor' : (c.check(currentAllocations) ? 'c-status pass' : 'c-status fail');
-    });
-
-    updateSubmitGate();
+    submitSegment(true);
 }
 
 async function sendMessage() {
@@ -2386,9 +944,8 @@ async function sendMessage() {
 
     cancelProactiveTimers(); // they're about to get a real reply to what they just wrote — don't let the automatic check-in land on top of it
 
-    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
-    if (allConstraintsMet) darkTurnCounter++;
-    const allocationsAtSend = { ...currentAllocations };
+    darkTurnCounter++;
+    const planStateAtSend = JSON.parse(JSON.stringify(currentPlanState));
 
     addMessage(text, 'user');
     inputEl.value = '';
@@ -2407,10 +964,8 @@ async function sendMessage() {
         const sendKeyTime = Date.now();
         const typingDurationMs = sendKeyTime - firstKeyTime;
 
-        // Pause: Time between the AI's last message (or round start) and the first keystroke
         pauseMs = firstKeyTime - (window.lastTurnTimestamp || taskStartTime);
 
-        // WPM: Standardized as (Characters / 5) / Minutes
         if (typingDurationMs > 0) {
             const minutes = typingDurationMs / 60000;
             const words = text.length / 5;
@@ -2418,10 +973,9 @@ async function sendMessage() {
         }
     }
 
-    // --- INJECT TELEMETRY INTO PAYLOAD ---
     logEvent('user_message', {
         text: text,
-        allocations_snapshot: { ...currentAllocations }, // Captures exact state before AI replies
+        plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)), // Captures exact state before AI replies
         telemetry: {
             backspaces: telemetry.backspaces,
             wpm: calculatedWpm,
@@ -2431,13 +985,8 @@ async function sendMessage() {
         }
     });
 
-    // --- RESET TRACKERS FOR NEXT TURN ---
-    window.lastTurnTimestamp = Date.now(); // Mark the end of this turn
-    telemetry = {
-        keystrokes: [],
-        scrollEvents: [],
-        backspaces: 0
-    };
+    window.lastTurnTimestamp = Date.now();
+    telemetry = { keystrokes: [], scrollEvents: [], backspaces: 0 };
 
     try {
         const response = await fetch('/api/chat', {
@@ -2452,21 +1001,14 @@ async function sendMessage() {
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
                 dark_delivered: darkDeliveredThisTrial,
-                roi_score: trialScorePct,
-                all_constraints_met: allConstraintsMet,
-                allocations: currentAllocations,
-                start_of_trial_allocations: startOfTrialAllocations,
+                roi_score: 0,                // TEMP -- not read by /api/chat; Task 10's /api/attempt_submit owns real scoring
+                all_constraints_met: false,  // TEMP -- ditto
+                plan_state: currentPlanState,
+                start_of_trial_plan_state: startOfTrialPlanState,
                 shadow_history: shadowHistory,
-                p3_trial_history: getP3TrialHistory(),
                 load_level: sessionData.trialSequence[currentTrial - 1],
-                p2_product: isP2Task() ? getP2Product().name : null,
-                actual_post_length: isP2Task() ? getEffectivePostLength() : null,
-                actual_post_text: isP2Task() ? currentPostText : null,
-                actual_hashtag_text: isP2Task() ? getHashtagText() : null,
-                claim_text_mismatches: isP2Task() ? detectClaimTextMismatches() : [],
                 dropped_category_index: sessionData.droppedCategoryIndex,
-                constraint_bounds: currentTrialConstraints.filter(c => !c.locked).map(c => c.bound).filter(Boolean),
-                locked_bounds: currentTrialConstraints.filter(c => c.locked).map(c => c.bound).filter(Boolean)
+                disclosed_ids_so_far: disclosedIdsSoFar
             })
         });
 
@@ -2479,10 +1021,7 @@ async function sendMessage() {
             addMessage(data.reply, 'ai', data.pattern_id, data.isDark, data.category);
             lastAiMessageTime = Date.now();
 
-            if (data.target_channel) {
-                currentTargetChannel = data.target_channel; // Sync target for metrics
-            }
-
+            if (data.target_item) currentTargetItem = data.target_item;
             if (data.isDark) darkDeliveredThisTrial = true;
 
             logEvent('ai_response', {
@@ -2491,25 +1030,32 @@ async function sendMessage() {
                 category: data.category,
                 pattern_id: data.pattern_id,
                 isDark: data.isDark,
-                allocations_at_request: allocationsAtSend, // State the AI actually saw when generating this reply
-                allocations_snapshot: { ...currentAllocations } // Captures state immediately as AI message lands
+                target_item: data.target_item || null, // Task 12: which item this turn's advice focused on -- lets the server recompute Claims_Accepted/Rejected from plan_state diffs
+                plan_state_at_request: planStateAtSend, // State the AI actually saw when generating this reply
+                plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) // Captures state immediately as AI message lands
             });
 
-            // Update shadow history for the next turn
             shadowHistory.push({ role: 'user', content: text });
             shadowHistory.push({ role: 'ai', content: data.clean_decoy });
 
-            // Only reveal what the backend judged a genuine ask (see disclosure_warranted /
-            // revealed_locked_ids in main.py) — sending any message no longer unlocks
-            // everything by default. Still counts toward the proactive budget/cooldown.
-            revealLockedConstraints(data.revealed_locked_ids || []);
+            // Only reveal what the backend judged a genuine ask (see revealed_fact_ids /
+            // disclosure_ok in main.py) — sending any message no longer unlocks
+            // everything by default.
+            revealLockedFacts(data.revealed_fact_ids || []);
+
+            const planChanged = applyPlanActions(data.actions || []);
+            if (planChanged) {
+                logEvent('plan_actions_applied', { actions: data.actions, plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) });
+                renderPlanMirror();
+                scheduleProactiveCheck();
+            }
+
             cancelProactiveTimers();
             proactiveFireCount = Math.min(proactiveFireCount + 1, MAX_PROACTIVE_FIRES_PER_TRIAL);
             lastProactiveFireTime = Date.now();
             hasSubstantiveChangeSinceLastFire = false;
 
             hasInteractedThisTrial = true;
-            updateSubmitGate();
         }
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
@@ -2521,11 +1067,11 @@ async function sendMessage() {
 }
 
 // --- PROACTIVE ADVISOR CHECK-IN ---
-// Fires at most once per trial: ~2s after the user's first substantive control change
-// followed by a pause, with a ~12s fallback ceiling so it still fires even if they never
-// pause. This is the guaranteed exchange that carries the trial's dark-pattern tactic
-// (see is_dark in main.py) and reveals any locked constraints — never a "send a message"
-// instruction, since it fires on its own.
+// Fires at most twice per segment: ~6s after the participant's first substantive plan
+// change followed by a pause, with a ~45s fallback ceiling so it still fires even if
+// they never pause. This is the guaranteed exchange that carries the segment's
+// dark-pattern tactic (see is_dark in main.py) and reveals any locked facts — never a
+// "send a message" instruction, since it fires on its own.
 function resetProactiveState() {
     cancelProactiveTimers();
     proactiveFireCount = 0;
@@ -2545,7 +1091,7 @@ function scheduleProactiveCheck() {
 
     hasSubstantiveChangeSinceLastFire = true;
 
-    // The ceiling is a safety net only for the FIRST guaranteed exchange of the trial —
+    // The ceiling is a safety net only for the FIRST guaranteed exchange of the segment —
     // any second fire is a bonus touchpoint and only ever happens if the debounce settles
     // naturally, so it never forces an interjection the way the first one has to.
     if (proactiveFireCount === 0 && !proactiveCeilingTimer) {
@@ -2563,8 +1109,6 @@ function attemptProactiveFire() {
 
     const elapsed = lastProactiveFireTime ? Date.now() - lastProactiveFireTime : Infinity;
     if (elapsed < PROACTIVE_COOLDOWN_MS || isAiRequestInFlight) {
-        // Either still in the cooldown window, or a manual send is mid-flight — wait it out
-        // instead of firing a second concurrent /api/chat call.
         const wait = elapsed < PROACTIVE_COOLDOWN_MS ? (PROACTIVE_COOLDOWN_MS - elapsed) : 1000;
         clearTimeout(proactiveDebounceTimer);
         proactiveDebounceTimer = setTimeout(() => attemptProactiveFire(), wait);
@@ -2574,38 +1118,18 @@ function attemptProactiveFire() {
     triggerProactiveAdvisorNote();
 }
 
-// Appends newly-revealed constraints to the live list as real <li> items (they were
-// never pre-rendered with a placeholder), then refreshes statuses/the submit gate.
-function revealLockedConstraints(ids) {
+// Tracks which locked-fact IDs have been revealed this segment (see
+// describe_locked_facts_A/B/C in main.py) so future /api/chat calls send
+// disclosed_ids_so_far and never get the same fact re-disclosed.
+function revealLockedFacts(ids) {
     if (!ids || !ids.length) return;
-    let revealedAny = false;
-
     ids.forEach(id => {
-        const c = currentTrialConstraints.find(cc => cc.id === id);
-        if (!c || !c.locked) return;
-        c.locked = false;
-        if (c.revealedText) c.text = c.revealedText;
-        if (c.bound) c.bound = { ...c.bound, locked: false };
-        revealedAny = true;
-
-        const li = document.getElementById(c.id);
-        if (li) {
-            li.classList.remove('locked');
-            li.style.opacity = '';
-            li.style.display = '';
-            const statusEl = li.querySelector('.c-status');
-            if (statusEl) statusEl.style.background = '';
-            const span = li.querySelector('span');
-            if (span) span.innerText = c.text;
+        if (!disclosedIdsSoFar.includes(id)) {
+            disclosedIdsSoFar.push(id);
+            revealedFactsThisSegment.push(id);
+            logEvent('fact_revealed', { id });
         }
-        logEvent('constraint_revealed', { id: c.id, text: c.text });
     });
-
-    if (!revealedAny) return;
-    const loadLevel = sessionData.trialSequence[currentTrial - 1];
-    if (isP2Task()) updateDashboardP2(loadLevel);
-    else if (isP3Task()) updateDashboardP3(loadLevel);
-    else updateDashboard(loadLevel);
 }
 
 async function triggerProactiveAdvisorNote() {
@@ -2625,16 +1149,13 @@ async function triggerProactiveAdvisorNote() {
     const requestStart = Date.now();
 
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
-    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
-    if (allConstraintsMet) darkTurnCounter++;
-    const allocationsAtSend = { ...currentAllocations };
-    const lockedIds = currentTrialConstraints.filter(c => c.locked).map(c => c.id);
+    darkTurnCounter++;
+    const planStateAtSend = JSON.parse(JSON.stringify(currentPlanState));
 
     // True last resort: the participant hasn't chatted in time. Any proactive fire before
-    // this deadline (e.g. reacting to a dashboard edit) stays neutral commentary, so the
-    // dark tactic is deprioritized behind the participant actually starting a chat on their own.
+    // this deadline (e.g. reacting to a plan edit) stays neutral commentary, so the dark
+    // tactic is deprioritized behind the participant actually starting a chat on their own.
     const proactiveDarkEligible = (Date.now() - taskStartTime) >= PROACTIVE_CEILING_MS;
-
 
     try {
         const response = await fetch('/api/chat', {
@@ -2649,21 +1170,14 @@ async function triggerProactiveAdvisorNote() {
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
                 dark_delivered: darkDeliveredThisTrial,
-                roi_score: trialScorePct,
-                all_constraints_met: allConstraintsMet,
-                allocations: currentAllocations,
-                start_of_trial_allocations: startOfTrialAllocations,
+                roi_score: 0,
+                all_constraints_met: false,
+                plan_state: currentPlanState,
+                start_of_trial_plan_state: startOfTrialPlanState,
                 shadow_history: shadowHistory,
-                p3_trial_history: getP3TrialHistory(),
                 load_level: loadLevel,
-                p2_product: isP2Task() ? getP2Product().name : null,
-                actual_post_length: isP2Task() ? getEffectivePostLength() : null,
-                actual_post_text: isP2Task() ? currentPostText : null,
-                actual_hashtag_text: isP2Task() ? getHashtagText() : null,
-                claim_text_mismatches: isP2Task() ? detectClaimTextMismatches() : [],
                 dropped_category_index: sessionData.droppedCategoryIndex,
-                constraint_bounds: currentTrialConstraints.filter(c => !c.locked).map(c => c.bound).filter(Boolean),
-                locked_bounds: currentTrialConstraints.filter(c => c.locked).map(c => c.bound).filter(Boolean),
+                disclosed_ids_so_far: disclosedIdsSoFar,
                 is_proactive: true,
                 is_repeat_proactive: !isFirstFire,
                 proactive_dark_eligible: proactiveDarkEligible
@@ -2678,7 +1192,7 @@ async function triggerProactiveAdvisorNote() {
 
         addMessage(data.reply, 'ai', data.pattern_id, data.isDark, data.category);
         lastAiMessageTime = Date.now();
-        if (data.target_channel) currentTargetChannel = data.target_channel;
+        if (data.target_item) currentTargetItem = data.target_item;
         if (data.isDark) darkDeliveredThisTrial = true;
 
         logEvent('ai_proactive_message', {
@@ -2687,21 +1201,26 @@ async function triggerProactiveAdvisorNote() {
             category: data.category,
             pattern_id: data.pattern_id,
             isDark: data.isDark,
+            target_item: data.target_item || null, // Task 12: see the matching comment in sendMessage()'s ai_response log
             is_repeat: !isFirstFire,
-            revealed_ids: data.revealed_locked_ids || [],
-            allocations_at_request: allocationsAtSend,
-            allocations_snapshot: { ...currentAllocations }
+            revealed_ids: data.revealed_fact_ids || [],
+            plan_state_at_request: planStateAtSend,
+            plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState))
         });
 
-        // Only the AI side goes into shadow history — there's no user turn to log.
         shadowHistory.push({ role: 'ai', content: data.clean_decoy });
 
         // Proactive turns never reveal (enforced server-side, not just by prompt) — this
         // will always resolve to [], kept symmetric with sendMessage() on purpose.
-        revealLockedConstraints(data.revealed_locked_ids || []);
+        revealLockedFacts(data.revealed_fact_ids || []);
+
+        const planChanged = applyPlanActions(data.actions || []);
+        if (planChanged) {
+            logEvent('plan_actions_applied', { actions: data.actions, plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) });
+            renderPlanMirror();
+        }
 
         hasInteractedThisTrial = true;
-        updateSubmitGate();
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
         console.error("Proactive advisor note failed:", error);
@@ -2737,7 +1256,7 @@ function getDwellObserver() {
     return dwellObserver;
 }
 
-// Called at trial submission so a message still on-screen (visibleSince still set)
+// Called at segment submission so a message still on-screen (visibleSince still set)
 // gets its final open interval counted instead of losing that last stretch.
 function finalizeMessageDwellTelemetry() {
     const now = Date.now();
@@ -2759,6 +1278,22 @@ function showTypingIndicator() {
     msgDiv.innerHTML = `<div class="msg-bubble"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
     chatContainer.appendChild(msgDiv);
     chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+// The 4th visual register (Task 10): scripted, non-improvised system lines -- the
+// segment-opening line and the submission verdict. Visually distinct from advisor (ai),
+// user, and notification bubbles, and (unlike notifications) persists in the transcript,
+// since it's a real, citable part of the record, not a transient distractor.
+function addScriptedLine(text) {
+    const chatContainer = document.getElementById('chatMessages');
+    if (!chatContainer) return;
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg scripted';
+    const formattedText = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+    msgDiv.innerHTML = `<div class="msg-bubble">${formattedText}</div>`;
+    chatContainer.appendChild(msgDiv);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+    logEvent('scripted_line_shown', { text });
 }
 
 function addMessage(text, sender, patternId = null, isDark = false, category = null) {
@@ -2787,17 +1322,17 @@ function addMessage(text, sender, patternId = null, isDark = false, category = n
 
 function logEvent(type, content) {
     sessionData.events = sessionData.events || [];
-    sessionData.events.push({ 
-        timestamp: new Date().toISOString(), 
-        type: type, 
-        content: content 
+    sessionData.events.push({
+        timestamp: new Date().toISOString(),
+        type: type,
+        content: content
     });
     // Persist to local storage continuously
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
 }
 
-// Fire-and-forget save after each of trials 1-3, so a participant who drops off
-// mid-session still leaves their completed trials on the server, not just in their
+// Fire-and-forget save after each of segments 1-3, so a participant who drops off
+// mid-session still leaves their completed segments on the server, not just in their
 // own browser's localStorage. /api/save_data overwrites the file each time, so later
 // calls (here or in debrief.js) simply supersede this with a more complete version.
 async function autosaveProgress() {
@@ -2809,7 +1344,7 @@ async function autosaveProgress() {
             body: JSON.stringify(sessionData)
         });
     } catch (error) {
-        console.error("Autosave error (next trial or the final save will retry this):", error);
+        console.error("Autosave error (next segment or the final save will retry this):", error);
     }
 }
 
@@ -2835,165 +1370,98 @@ async function saveSessionData() {
     }
 }
 
-function updateSubmitBanner(allConstraintsMet) {
-    const banner = document.getElementById('submitBanner');
-    if (!banner) return;
-
-    const stillLocked = currentTrialConstraints.some(c => c.locked);
-    if (allConstraintsMet) {
-        banner.style.display = 'block';
-        banner.innerText = "Requirements met — you may submit.";
-    } else if (stillLocked) {
-        banner.style.display = 'block';
-        banner.innerText = "Your advisor is reviewing your plan — one moment before you can submit.";
-    } else {
-        banner.style.display = 'none';
-    }
-}
-
-function updateSubmitGate() {
-    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
-    updateSubmitBanner(allConstraintsMet);
-    const btn = document.getElementById('submitTrialBtn');
-    if (btn) btn.disabled = !allConstraintsMet;
-}
-
-// Did the participant's state ever match the dark suggestion's target at ANY point
-// during the trial, even if they reversed it before submitting? Reconstructed from the
-// existing per-change telemetry (no new live tracking needed) so it can also be
-// recomputed later straight from a saved session's raw event log if needed.
-function computeTransientAcceptance() {
-    const startVal = startOfTrialAllocations[currentTargetChannel];
-    if (isP3Task()) {
-        return p3ChangeTelemetry.changes.some(c =>
-            c.slot === currentTargetChannel && P3_CANDIDATE_INDEX[c.to]?.partner === true
-        );
-    } else if (isP2Task()) {
-        return optionChangeTelemetry.changes.some(c =>
-            c.key === currentTargetChannel && c.to > startVal
-        );
-    }
-    return sliderTelemetry.completedDrags.some(d =>
-        d.channel === currentTargetChannel && d.endValue > startVal
-    );
-}
-
-function submitTrial(forced = false) {
+// Task 10: the submit button is always clickable (no visible gate -- see
+// advisor-implementation-plan.md §2). A real click now calls /api/attempt_submit, which
+// runs the deterministic per-category checklist server-side against the real
+// TASK_DATA_A/B/C. Pass -> a scripted confirmation line, then the existing recall-check /
+// TLX / advance flow. Fail -> a scripted, vague rejection line (escalating with repeated
+// attempts) naming ONE unmet item in the same non-numeric terms the plan-mirror already
+// uses -- the participant keeps chatting and can resubmit. A forced (timeout) submission
+// always goes through regardless of verdict -- see handleTrialTimeout()'s own comment on
+// why the clock is a real cost of not asking, never a block on submitting.
+async function submitSegment(forced = false) {
     stopTrialTimer();
+    clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
-    const allConstraintsMet = currentTrialConstraints.every(c => c.check(currentAllocations));
 
-    if (!allConstraintsMet && !forced) {
-        submitAttemptsThisTrial++;
-        alert(SUBMIT_REJECTION_MESSAGES[Math.min(submitAttemptsThisTrial - 1, SUBMIT_REJECTION_MESSAGES.length - 1)]);
-        return;
-    }
+    const btn = document.getElementById('submitSegmentBtn');
+    if (btn) { btn.disabled = true; btn.innerText = "Checking..."; }
 
-    if (isP3Task()) {
-        const swappedToPartner = currentAllocations[currentTargetChannel] !== startOfTrialAllocations[currentTargetChannel]
-            && P3_CANDIDATE_INDEX[currentAllocations[currentTargetChannel]]?.partner === true;
-        if (swappedToPartner) {
-            sessionData.metrics.claimsAccepted++;
-        } else {
-            sessionData.metrics.claimsRejected++;
+    let passed = true;
+    let verdictDetail = null;
+    let percentMet = null;
+    try {
+        const res = await fetch('/api/attempt_submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                primary_task: sessionData.primaryTask,
+                trial_num: currentTrial,
+                plan_state: currentPlanState,
+                load_level: loadLevel
+            })
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+            passed = data.passed;
+            verdictDetail = data.verdict_detail;
+            percentMet = data.percent_met;
         }
-    } else if (currentAllocations[currentTargetChannel] > startOfTrialAllocations[currentTargetChannel]) {
-        sessionData.metrics.claimsAccepted++;
-    } else {
-        sessionData.metrics.claimsRejected++;
+    } catch (error) {
+        console.error("attempt_submit failed -- treating as a pass so a network blip never traps someone on a segment:", error);
     }
-
-    const transientAccept = computeTransientAcceptance();
-    if (transientAccept) sessionData.metrics.transientAcceptance++;
-
-    if (isP2Task()) finalizePreviewFocusTelemetry();
-
-    const infoIncorporation = computeInfoIncorporation(currentTrialConstraints, currentAllocations);
 
     logEvent('trial_submitted', {
         trial: currentTrial,
         load_level: loadLevel,
-        final_score: trialScorePct,
-        final_allocations: { ...currentAllocations },
-        info_incorporation: infoIncorporation,
-        final_post_text: isP2Task() ? currentPostText : null,
-        post_text_manually_edited: isP2Task() ? postTextManuallyEdited : null,
-        post_text_telemetry: isP2Task() ? {
-            backspaces: postTextTelemetry.backspaces,
-            wpm: computePreviewWPM(),
-            max_pause_ms: computePreviewMaxPause(),
-            total_focused_ms: previewFocusTelemetry.totalFocusedMs,
-            keystrokes: postTextTelemetry.keystrokes,
-            scrollEvents: postTextTelemetry.scrollEvents,
-            focusEvents: previewFocusTelemetry.focusEvents
-        } : null,
-        slider_telemetry: sliderTelemetry,
-        option_telemetry: isP2Task() ? optionChangeTelemetry : (isP3Task() ? p3ChangeTelemetry : null),
-        attention_metrics: { ...attentionMetrics },
-        transient_acceptance: transientAccept,
+        final_score: percentMet, // real plan-quality score (% of this segment's checklist met) -- read by debrief.js's performance summary and the CSV
+        final_plan_state: JSON.parse(JSON.stringify(currentPlanState)),
+        revealed_fact_ids: [...revealedFactsThisSegment],
         message_dwell_telemetry: finalizeMessageDwellTelemetry(),
-        timed_out: forced && !allConstraintsMet
+        timed_out: !!forced,
+        submit_attempt: submitAttemptsThisTrial + 1,
+        passed,
+        verdict_detail: verdictDetail
     });
 
-    document.getElementById('submitTrialBtn').disabled = true;
-    stopDividedAttentionTask();
+    if (forced) {
+        addScriptedLine("Time's up for this segment — your plan moves forward as-is.");
+    } else if (!passed) {
+        submitAttemptsThisTrial++;
+        const rejectionLine = SUBMIT_REJECTION_MESSAGES[Math.min(submitAttemptsThisTrial - 1, SUBMIT_REJECTION_MESSAGES.length - 1)];
+        addScriptedLine(verdictDetail ? `${rejectionLine} Specifically: ${verdictDetail}` : rejectionLine);
+        if (btn) { btn.disabled = false; btn.innerText = "Submit This Segment"; }
+        return; // stays on this segment -- participant keeps chatting and can resubmit
+    } else {
+        addScriptedLine(SUBMIT_PASS_MESSAGE);
+    }
 
-    // A global (session-wide) trial number, so TLX ratings from task 2's trial 1
-    // don't overwrite task 1's trial 1 in sessionData.perTrialTLX.
+    // A global (session-wide) trial number, so TLX ratings from task 2's segment 1
+    // don't overwrite task 1's segment 1 in sessionData.perTrialTLX.
     const globalTrialNumber = (sessionData.currentTaskIndex * 4) + currentTrial;
     const isLastTaskInOrder = sessionData.currentTaskIndex >= sessionData.taskOrder.length - 1;
 
-    if (currentTrial >= 4 && isLastTaskInOrder) {
-        const finalAccuracy = sessionAttentionTotals.targetsShown > 0
-            ? Math.max(0, (sessionAttentionTotals.correctHits - sessionAttentionTotals.falseAlarms) / sessionAttentionTotals.targetsShown)
-            : 1;
-        sessionData.attentionAccuracy = Math.round(finalAccuracy * 100);
-        sessionData.attentionQualified = finalAccuracy >= ATTENTION_ACCURACY_THRESHOLD;
-        logEvent('attention_bonus_eligibility', {
-            targets_shown: sessionAttentionTotals.targetsShown,
-            correct_hits: sessionAttentionTotals.correctHits,
-            false_alarms: sessionAttentionTotals.falseAlarms,
-            accuracy_pct: sessionData.attentionAccuracy,
-            qualified: sessionData.attentionQualified
-        });
-
-        document.getElementById('submitTrialBtn').innerText = "Processing...";
-        showPerTrialTLX(globalTrialNumber, true, () => {
-            saveSessionData();
-        });
-    } else if (currentTrial >= 4) {
-        // Last trial of this task, but more tasks remain
-        showPerTrialTLX(globalTrialNumber, true, () => {
-            autosaveProgress();
-            advanceToNextTask();
-        });
-    } else {
-        showPerTrialTLX(globalTrialNumber, false, () => {
-            autosaveProgress(); // don't wait on this — keep moving even if it's slow/fails
-            currentTrial++;
-            startTrial(currentTrial);
-        });
-    }
-}
-
-// behavioral reliance DV: for each constraint that was hidden this trial, did the
-// participant get it revealed and correctly resolve it, fail to, or never get it at all?
-// Separate from objective score -- this is specifically about USE of the AI's uniquely-held
-// information, right or wrong, not overall performance.
-function computeInfoIncorporation(constraints, allocations) {
-    const hidden = constraints.filter(c => c.revealedText !== undefined);
-    const perConstraint = hidden.map(c => ({
-        id: c.id,
-        was_revealed: !c.locked,
-        satisfied: c.locked ? (c.realCheck ? c.realCheck(allocations) : null) : c.check(allocations)
-    }));
-    let outcome = "not_applicable";
-    if (perConstraint.length > 0) {
-        if (perConstraint.some(c => c.was_revealed && !c.satisfied)) outcome = "used_incorrectly";       // told, didn't fix in time
-        else if (perConstraint.some(c => !c.was_revealed)) outcome = "not_used";                          // never got the info at all
-        else outcome = "used_correctly";                                                                   // revealed and resolved
-    }
-    return { outcome, detail: perConstraint };
+    // One recall-check probe per segment, gating everything else -- see showRecallCheck().
+    showRecallCheck(() => {
+        if (currentTrial >= 4 && isLastTaskInOrder) {
+            finalizeAttentionBonus(); // last segment of the whole session -- settle the bonus fields before saving
+            if (btn) btn.innerText = "Processing...";
+            showPerTrialTLX(globalTrialNumber, true, () => {
+                saveSessionData();
+            });
+        } else if (currentTrial >= 4) {
+            showPerTrialTLX(globalTrialNumber, true, () => {
+                autosaveProgress();
+                advanceToNextTask();
+            });
+        } else {
+            showPerTrialTLX(globalTrialNumber, false, () => {
+                autosaveProgress(); // don't wait on this — keep moving even if it's slow/fails
+                currentTrial++;
+                startSegment(currentTrial);
+            });
+        }
+    });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -3016,4 +1484,3 @@ document.addEventListener('copy', (e) => {
         length: copiedText.length
     });
 });
-
