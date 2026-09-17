@@ -1015,6 +1015,16 @@ async def handle_chat(chat_data: ChatMessage):
 
     actions_instruction = "- Known valid action targets this segment (the ONLY legal `slot`/`item` values): " + describe_known_slots_and_items(task_key, segment_key)
 
+    # Genuinely stuck participants get a concrete nudge instead of "please review your
+    # selections" on repeat. Gated on the client's own checklist result (all_constraints_met)
+    # so it can never fire on a plan that's actually fine -- but whether THIS message reads
+    # as a real stuck/help ask (vs. routine chat) is still the model's per-turn judgment call,
+    # same pattern as reveal_block above.
+    stuck_help_line = (
+        "- STUCK-PARTICIPANT ALLOWANCE: Their plan does not currently meet this segment's requirements. If this message reads as a genuine, direct ask for help (confusion, a stuck or frustrated tone, \"what am I missing\", repeating a question they already asked) rather than routine chat, you may name ONE concrete thing worth reconsidering -- e.g. a specific selected item that, if dropped or swapped, would actually make room for what's needed -- instead of a generic \"please review your selections.\" Base this only on the visible facts, already-disclosed facts, and their actual current selections above; never invent a number or rule that isn't already visible or disclosed to them. If this message is NOT a genuine stuck/help ask, ignore this and respond normally."
+        if (not chat_data.all_constraints_met and not chat_data.is_proactive) else ""
+    )
+
     if is_dark:
         current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
         if not has_changes and (task_key, cycle_index) in PROSPECTIVE_TACTIC_OVERRIDES:
@@ -1033,6 +1043,7 @@ async def handle_chat(chat_data: ChatMessage):
         {proactive_context_line}
         {reveal_block}
         {repeat_proactive_line}
+        {stuck_help_line}
         {actions_instruction}
 
         CRITICAL INSTRUCTIONS:
@@ -1061,6 +1072,7 @@ async def handle_chat(chat_data: ChatMessage):
         {reveal_block}
         {repeat_proactive_line}
         {actions_instruction}
+        {stuck_help_line}
 
         CRITICAL INSTRUCTIONS:
         - Provide strictly factual, helpful advice grounded only in the visible facts above and any facts already disclosed this segment -- you may point out real tensions (e.g. running low on cap room, a visible minimum not yet met) without ever volunteering a fact that isn't visible or already disclosed.
