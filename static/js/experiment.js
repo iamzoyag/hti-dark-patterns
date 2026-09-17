@@ -43,15 +43,7 @@ let messageDwellTelemetry = {}; // patternId -> { totalVisibleMs, visibleSince, 
 let dwellObserver = null;
 
 // ============================================================
-// COGNITIVE LOAD -- IN-CHAT NOTIFICATIONS (Task 9)
-// Replaces the old divided-attention mini-game: task-irrelevant "notification" bubbles
-// land in the chat log itself on a timer (more often on HighLoad, rarer on LowLoad),
-// each auto-removing after NOTIFICATION_VISIBLE_MS -- catching them takes attention away
-// from the actual plan, same purpose the old mini-game served, but it no longer competes
-// for a separate widget. Recall is checked once at the end of each segment
-// (showRecallCheck) and the session-wide accuracy across all checks decides
-// sessionData.attentionAccuracy / sessionData.attentionQualified, the exact field names
-// main.py's CSV export already reads (see submit_data around line 1981-1982).
+// COGNITIVE LOAD -- IN-CHAT NOTIFICATIONS 
 // ============================================================
 let currentLoadLevel = null; // set in startSegment(); read by renderPlanMirror + scheduleNotifications
 let notificationTimers = [];
@@ -288,10 +280,6 @@ function showPerTrialTLX(trialIndex, isTaskFinal, onContinue) {
         let reasoningScore = null;
         if (isTaskFinal && justificationText) {
             try {
-                // TEMP: fact IDs only, not their plain-language wording -- the server
-                // doesn't hand label text back over /api/chat (by design; see
-                // describe_locked_facts_A/B/C in main.py), so this is coarser context
-                // than the old client-side constraint text was. Revisit alongside Task 10.
                 const constraintsDesc = `Locked facts revealed to the participant this segment: ${revealedFactsThisSegment.join(', ') || '(none)'}`;
                 const res = await fetch('/api/score_justification', {
                     method: 'POST',
@@ -414,7 +402,6 @@ const CATEGORY_META = {
     C: { advisorName: "AI Academic Advisor", pageTitle: "Non-Academic Life", docLabel: "THIS WEEK'S ACTIVITIES", placeholder: "Tell your advisor what to add or drop..." },
 };
 
-// Functional placeholder copy -- Task 11 rewrites this into the full cover story.
 const TASK_BRIEFINGS = {
     "A_Workload": {
         title: "Workload Planning",
@@ -440,12 +427,6 @@ const SUBMIT_REJECTION_MESSAGES = [
 ];
 const SUBMIT_PASS_MESSAGE = "Reviewed — this plan holds up. Moving on to the next segment.";
 
-// One scripted, non-improvised line per segment stating that segment's goal in plain
-// language, sent before any tactic turns begin (Task 10 / advisor-implementation-plan.md
-// §2) -- replaces "click Submit when everything's green" and "I'll check in on my own"
-// framing that ai-assistant-necessity-redesign.md flagged as training participants away
-// from the assistant. Functional draft -- Task 11 (cover story) may still polish the
-// wording once the rest of the onboarding/debrief copy is finalized alongside it.
 const SEGMENT_OPENING_LINES = {
     A: {
         segment_1: "This week's plan is due for advisor review ahead of your midterm check-in. Build a study-hours plan across Chem 210, Stat 150, Hist 240, and your capstone that actually covers what each of them needs this week — not just one that looks reasonable at a glance.",
@@ -537,9 +518,6 @@ function advanceToNextTask() {
 
     logEvent('task_transition', { next_task: nextTask, task_position: sessionData.currentTaskIndex });
 
-    // Same full briefing (objective, structure, advisor, submitting), gated behind the
-    // "I understand" checkbox, that Task 1 gets after the practice round — every task's
-    // kickoff is consistent, not just the first one.
     showTaskBriefingOverlay(nextTask);
 }
 
@@ -705,14 +683,6 @@ function onTaskBriefingCheckChange() {
     if (box && btn) btn.disabled = !box.checked;
 }
 
-// Builds this segment's starting plan_state. Categories B and C always start from a
-// scripted `default` (brute-force verified server-side to fail exactly the intended
-// checklist item(s) -- see the Task 6 delivery notes), even on carries_forward segments,
-// because their traps depend on a specific combination being present, not just "whatever
-// the participant left off with." Category A's carries_forward segments (2-4) have no
-// scripted default and genuinely carry the participant's own ending hours forward,
-// because their traps come from a fact changing (e.g. a shifted midterm), not from a
-// specific combination -- see the comments in TASK_DATA_A in main.py.
 function buildSegmentStartingPlanState(category, segmentKey, priorEndingPlanState, loadLevel) {
     const seg = SEGMENT_DATA[category].segments[segmentKey];
     if (category === "A") {
@@ -766,13 +736,6 @@ function applyPlanActions(actions) {
     return changed;
 }
 
-// Real plan-mirror (Task 8) -- shows ONLY the participant's own stated placements plus
-// arithmetic against the VISIBLE facts added to SEGMENT_DATA above (caps, catalog
-// credits, degree-requirement minimums, advertised club hours/categories). Never
-// touches TASK_DATA_A/B/C, never shows a locked value, and never renders a pass/fail
-// signal (no color, no checkmark, no "met"/"unmet") -- that verdict only exists
-// server-side and only ever reaches the participant as Task 10's scripted submission
-// response.
 function renderPlanMirror() {
     const el = document.getElementById('planStateSummary');
     if (!el) return;
@@ -884,7 +847,7 @@ function startSegment(segmentIndex) {
     scheduleProactiveCheck(); // guarantees a check-in even if the participant never types anything
     scheduleNotifications(loadLevel, TRIAL_TIME_LIMIT_MS[category]);
 
-    logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); // Task 12: lets the server seed its own plan_state replay from this segment's true starting point, not just its first action
+    logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); 
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
@@ -1001,8 +964,8 @@ async function sendMessage() {
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
                 dark_delivered: darkDeliveredThisTrial,
-                roi_score: 0,                // TEMP -- not read by /api/chat; Task 10's /api/attempt_submit owns real scoring
-                all_constraints_met: false,  // TEMP -- ditto
+                roi_score: 0,                
+                all_constraints_met: false, 
                 plan_state: currentPlanState,
                 start_of_trial_plan_state: startOfTrialPlanState,
                 shadow_history: shadowHistory,
@@ -1030,7 +993,7 @@ async function sendMessage() {
                 category: data.category,
                 pattern_id: data.pattern_id,
                 isDark: data.isDark,
-                target_item: data.target_item || null, // Task 12: which item this turn's advice focused on -- lets the server recompute Claims_Accepted/Rejected from plan_state diffs
+                target_item: data.target_item || null, 
                 plan_state_at_request: planStateAtSend, // State the AI actually saw when generating this reply
                 plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) // Captures state immediately as AI message lands
             });
@@ -1201,7 +1164,7 @@ async function triggerProactiveAdvisorNote() {
             category: data.category,
             pattern_id: data.pattern_id,
             isDark: data.isDark,
-            target_item: data.target_item || null, // Task 12: see the matching comment in sendMessage()'s ai_response log
+            target_item: data.target_item || null, 
             is_repeat: !isFirstFire,
             revealed_ids: data.revealed_fact_ids || [],
             plan_state_at_request: planStateAtSend,
@@ -1280,10 +1243,6 @@ function showTypingIndicator() {
     chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
-// The 4th visual register (Task 10): scripted, non-improvised system lines -- the
-// segment-opening line and the submission verdict. Visually distinct from advisor (ai),
-// user, and notification bubbles, and (unlike notifications) persists in the transcript,
-// since it's a real, citable part of the record, not a transient distractor.
 function addScriptedLine(text) {
     const chatContainer = document.getElementById('chatMessages');
     if (!chatContainer) return;
@@ -1370,15 +1329,6 @@ async function saveSessionData() {
     }
 }
 
-// Task 10: the submit button is always clickable (no visible gate -- see
-// advisor-implementation-plan.md §2). A real click now calls /api/attempt_submit, which
-// runs the deterministic per-category checklist server-side against the real
-// TASK_DATA_A/B/C. Pass -> a scripted confirmation line, then the existing recall-check /
-// TLX / advance flow. Fail -> a scripted, vague rejection line (escalating with repeated
-// attempts) naming ONE unmet item in the same non-numeric terms the plan-mirror already
-// uses -- the participant keeps chatting and can resubmit. A forced (timeout) submission
-// always goes through regardless of verdict -- see handleTrialTimeout()'s own comment on
-// why the clock is a real cost of not asking, never a block on submitting.
 async function submitSegment(forced = false) {
     stopTrialTimer();
     clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment

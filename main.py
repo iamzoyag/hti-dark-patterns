@@ -530,9 +530,7 @@ async def score_justification(request: Request):
         print(f"[score_justification] failed: {e}")
         return {"reasoning_score": None}
 
-# --- TASK 10: SUBMISSION VERDICT ---
-# The submit button is always clickable -- there's no visible gate to wire up (see
-# advisor-implementation-plan.md §2). This endpoint is what actually decides pass/fail:
+# The submit button is always clickable. This endpoint is what actually decides pass/fail:
 # runs the same deterministic evaluate_checklist_A/B/C used nowhere else but here,
 # server-side, against the real TASK_DATA_A/B/C. On failure it returns the human-readable
 # `label` of exactly one unmet checklist item -- vague by construction (every label
@@ -1197,12 +1195,6 @@ def flatten_per_trial_justification(entries: List[Dict[str, Any]]) -> Dict[str, 
         flat[f"Trial{trial_num}_ReasoningScore"] = entry.get("reasoning_score", "")
     return flat
 
-# --- TASK 12: Claims_Accepted / Claims_Rejected / Transient_Acceptance / Corrections_Made,
-# recomputed from plan_state diffs ---
-# The old versions of these four metrics were tied to P1/P2's slider-drag and claim-toggle
-# mechanics, which no longer exist under the plan_state/PlanAction model (see
-# advisor-implementation-plan.md §10: "recomputed from plan_state diffs") -- left as-is
-# they'd sit at a permanent 0 forever, since nothing on the client increments them anymore.
 def _item_contribution(category: Optional[str], plan_state: Optional[dict], item_id: Optional[str]) -> float:
     """How much a given target item/course/club is currently represented in plan_state --
     hours for Category A, 1/0 presence for B/C. Only ever used to compare a plan_state

@@ -336,7 +336,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
 .btn-secondary:disabled { color: var(--ink-4); border-color: var(--border-md); cursor: not-allowed; opacity: 0.6; }
 
 
-/* ── PLAN MIRROR (Task 8) -- arithmetic on visible facts only, deliberately no
+/* ── PLAN MIRROR -- arithmetic on visible facts only, deliberately no
    pass/fail color anywhere (no c-status dot, no red/green) ── */
 .plan-mirror-row {
   display: flex;
@@ -391,7 +391,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   color: var(--ink-4);
 }
 
-/* ── IN-CHAT NOTIFICATION BUBBLE (Task 9) -- task-irrelevant, transient, never a
+/* ── IN-CHAT NOTIFICATION BUBBLE -- task-irrelevant, transient, never a
    pass/fail signal, visually distinct from real AI/user chat bubbles ── */
 .msg.notification {
   align-self: center;
@@ -418,10 +418,6 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   font-style: normal;
 }
 
-/* ── SCRIPTED SYSTEM LINE (Task 10) -- segment-opening + submission-verdict lines.
-   The 4th visual register: distinct from advisor/user/notification, and (unlike
-   notifications) persists in the transcript. No pass/fail color-coding here either --
-   same "no green/red" rule as the plan-mirror. ── */
 .msg.scripted {
   align-self: center;
   max-width: 85%;

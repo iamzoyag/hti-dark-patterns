@@ -197,8 +197,5 @@ async function startExperiment() {
     // Save to localStorage so the /experiment page can pick it up
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
 
-    // Straight into the practice round on the experiment page — the assigned task's
-    // own briefing/instructions are now shown there, after the practice round and
-    // right before Task 1 Round 1 (see showTaskBriefingOverlay in experiment.js).
     window.location.href = "/experiment";
 }
