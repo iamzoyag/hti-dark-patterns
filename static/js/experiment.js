@@ -435,22 +435,22 @@ const SUBMIT_PASS_MESSAGE = "Reviewed — this plan holds up. Moving on to the n
 
 const SEGMENT_OPENING_LINES = {
     A: {
-        segment_1: "This week's plan is due for advisor review ahead of your midterm check-in. Build a study-hours plan across Chem 210, Stat 150, Hist 240, and your capstone that actually covers what each of them needs this week — not just one that looks reasonable at a glance.",
-        segment_2: "Chem 210's midterm just got moved up. Your plan from last week needs a fresh look — make sure it still genuinely covers everything, Chem 210 included, before it goes back to your advisor.",
-        segment_3: "CS 301 just got added to your plate, and your weekly cap hasn't grown to match. Rework your hours so everything — including CS 301 — actually gets what it needs.",
-        segment_4: "Capstone crunch is here and ENG 105 is due, while Chem 210 and Stat 150 settle back to a normal week. Update your plan so it holds up across all four.",
+        segment_1: (loadLevel) => `This week's plan is due for advisor review ahead of your midterm check-in. Build a study-hours plan across Chem 210, Stat 150, Hist 240, and your capstone that actually covers what each of them needs this week — not just one that looks reasonable at a glance. Your total for the week is capped at ${SEGMENT_DATA.A.capByLoad[loadLevel]} hours.`,
+        segment_2: (loadLevel) => `Chem 210's midterm just got moved up. Your plan from last week needs a fresh look — make sure it still genuinely covers everything, Chem 210 included, before it goes back to your advisor. (Weekly cap is still ${SEGMENT_DATA.A.capByLoad[loadLevel]} hours.)`,
+        segment_3: (loadLevel) => `CS 301 just got added to your plate, and your weekly cap hasn't grown to match. Rework your hours so everything — including CS 301 — actually gets what it needs, within this week's ${SEGMENT_DATA.A.capByLoad[loadLevel]}-hour cap.`,
+        segment_4: (loadLevel) => `Capstone crunch is here and ENG 105 is due, while Chem 210 and Stat 150 settle back to a normal week. Update your plan so it holds up across all four, within this week's ${SEGMENT_DATA.A.capByLoad[loadLevel]}-hour cap.`,
     },
     B: {
-        segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major, Minor, and Elective that genuinely clears this term's requirements.",
-        segment_2: "You're swapping an elective this term. Make sure your updated slate still clears every requirement — Major, Minor, and Elective alike.",
-        segment_3: "Something's changed with your minor this term. Rework your slate so it still genuinely satisfies every requirement.",
-        segment_4: "A scheduling conflict just came up in your registration. Adjust your slate so everything still fits — and still clears every requirement.",
+        segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major (8+ credits), Minor (6+ credits), and Elective (3+ credits) that stays within this term's 18-credit cap.",
+        segment_2: "You're swapping an elective this term. Make sure your updated slate still clears every requirement — Major (8+ credits), Minor (6+), Elective (3+) — within the 18-credit cap.",
+        segment_3: "Something's changed with your minor this term. Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
+        segment_4: "A scheduling conflict just came up in your registration. Adjust your slate so everything still fits — Major (8+ credits), Minor (6+), Elective (3+) — within the 18-credit cap.",
     },
     C: {
-        segment_1: "Your activity picks get folded into your RA's end-of-month wellness check-in. Build a weekly slate of clubs and activities that's genuinely well-rounded and workable — not just one that looks balanced.",
-        segment_2: "A new opportunity came up mid-week. Update your slate so it's still genuinely workable with everything you're now considering.",
-        segment_3: "One of your existing commitments just grew. Rework your slate so it still genuinely fits your week.",
-        segment_4: "Performance week is here. Update your slate one more time so it still genuinely holds up.",
+        segment_1: (loadLevel) => `Your activity picks get folded into your RA's end-of-month wellness check-in. Build a weekly slate of clubs and activities that's genuinely well-rounded and workable — not just one that looks balanced. This week's activities cap is ${SEGMENT_DATA.C.capByLoad[loadLevel]} hours.`,
+        segment_2: (loadLevel) => `A new opportunity came up mid-week. Update your slate so it's still genuinely workable with everything you're now considering, within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
+        segment_3: (loadLevel) => `One of your existing commitments just grew. Rework your slate so it still genuinely fits within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
+        segment_4: (loadLevel) => `Performance week is here. Update your slate one more time so it still genuinely holds up within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
     },
 };
 
@@ -758,32 +758,54 @@ function renderPlanMirror() {
     if (category === "A") el.innerHTML = renderPlanMirrorA(flashed);
     else if (category === "B") el.innerHTML = renderPlanMirrorB(flashed);
     else el.innerHTML = renderPlanMirrorC(flashed);
+    if (flashed.size > 0) pulseDocPanel();
+}
+
+// A brief neutral glow around the WHOLE plan panel (not just the changed row) so a
+// change registers even if the participant's eyes are still on the chat side -- same
+// accent-dim tint as the per-row flash, never a correctness signal. Re-triggerable:
+// removes then force-re-adds the class via a reflow, so back-to-back changes each get
+// their own pulse instead of silently no-op'ing because the previous one is still running.
+function pulseDocPanel() {
+    const panel = document.getElementById('docPanel');
+    if (!panel) return;
+    panel.classList.remove('doc-panel-pulse');
+    void panel.offsetWidth;
+    panel.classList.add('doc-panel-pulse');
 }
 
 function renderPlanMirrorA(flashed = new Set()) {
     const hours = currentPlanState.hours || {};
     const cap = SEGMENT_DATA.A.capByLoad[currentLoadLevel];
-    const rows = Object.entries(hours)
-        .filter(([, v]) => v > 0)
-        .map(([k, v]) => `<div class="plan-mirror-row${flashed.has(k) ? ' plan-mirror-flash' : ''}" data-item="${k}"><span>${SEGMENT_DATA.A.itemLabels[k] || k}</span><span>${v} hrs</span></div>`)
-        .join('');
+    const items = SEGMENT_DATA.A.segments[`segment_${currentTrial}`].items;
+    const rows = items.map(k => {
+        const v = hours[k] || 0;
+        const cls = `plan-mirror-row${v === 0 ? ' plan-mirror-row-unplaced' : ''}${flashed.has(k) ? ' plan-mirror-flash' : ''}`;
+        return `<div class="${cls}" data-item="${k}"><span>${SEGMENT_DATA.A.itemLabels[k] || k}</span><span>${v} hrs</span></div>`;
+    }).join('');
     const total = Object.values(hours).reduce((sum, v) => sum + (v || 0), 0);
     return `
-        ${rows || '<div class="plan-mirror-row plan-mirror-empty">(nothing placed yet)</div>'}
+        ${rows}
         <div class="plan-mirror-total"><span>Total this week</span><span>${total} / ${cap} hrs</span></div>`;
 }
 
 function renderPlanMirrorB(flashed = new Set()) {
     const s = currentPlanState.selections || { major: [], minor: [], elective: [] };
     const creditsFor = (cid) => SEGMENT_DATA.B.courseCredits[cid] ?? 0;
+    const pools = SEGMENT_DATA.B.segments[`segment_${currentTrial}`].pools;
     const bucketBlock = (bucket, label) => {
         const ids = s[bucket] || [];
-        const rows = ids.map(cid => `<div class="plan-mirror-row${flashed.has(cid) ? ' plan-mirror-flash' : ''}" data-item="${cid}"><span>${SEGMENT_DATA.B.courseLabels[cid] || cid}</span><span>${creditsFor(cid)} cr</span></div>`).join('');
+        const rows = (pools[bucket] || []).map(cid => {
+            const selected = ids.includes(cid);
+            const cls = `plan-mirror-row${selected ? '' : ' plan-mirror-row-unplaced'}${flashed.has(cid) ? ' plan-mirror-flash' : ''}`;
+            const availableTag = selected ? '' : ' <span class="plan-mirror-min">(available)</span>';
+            return `<div class="${cls}" data-item="${cid}"><span>${SEGMENT_DATA.B.courseLabels[cid] || cid}${availableTag}</span><span>${creditsFor(cid)} cr</span></div>`;
+        }).join('');
         const subtotal = ids.reduce((sum, cid) => sum + creditsFor(cid), 0);
         return `
         <div class="plan-mirror-bucket">
             <div class="plan-mirror-bucket-label">${label} <span class="plan-mirror-min">(min ${SEGMENT_DATA.B.minimums[bucket]} cr)</span></div>
-            ${rows || '<div class="plan-mirror-row plan-mirror-empty">(none selected)</div>'}
+            ${rows}
             <div class="plan-mirror-subtotal"><span>Subtotal</span><span>${subtotal} cr</span></div>
         </div>`;
     };
@@ -798,11 +820,16 @@ function renderPlanMirrorB(flashed = new Set()) {
 function renderPlanMirrorC(flashed = new Set()) {
     const chosen = currentPlanState.selections || [];
     const cap = SEGMENT_DATA.C.capByLoad[currentLoadLevel];
-    const rows = chosen.map(cid => `<div class="plan-mirror-row${flashed.has(cid) ? ' plan-mirror-flash' : ''}" data-item="${cid}"><span>${SEGMENT_DATA.C.clubLabels[cid] || cid} <span class="plan-mirror-min">(${SEGMENT_DATA.C.clubCategories[cid] || ''})</span></span><span>${SEGMENT_DATA.C.clubBaseHours[cid] ?? 0} hrs</span></div>`).join('');
+    const roster = SEGMENT_DATA.C.segments[`segment_${currentTrial}`].roster;
+    const rows = roster.map(cid => {
+        const selected = chosen.includes(cid);
+        const cls = `plan-mirror-row${selected ? '' : ' plan-mirror-row-unplaced'}${flashed.has(cid) ? ' plan-mirror-flash' : ''}`;
+        return `<div class="${cls}" data-item="${cid}"><span>${SEGMENT_DATA.C.clubLabels[cid] || cid} <span class="plan-mirror-min">(${SEGMENT_DATA.C.clubCategories[cid] || ''})</span></span><span>${SEGMENT_DATA.C.clubBaseHours[cid] ?? 0} hrs</span></div>`;
+    }).join('');
     const totalHours = chosen.reduce((sum, cid) => sum + (SEGMENT_DATA.C.clubBaseHours[cid] ?? 0), 0);
     const categoriesCovered = new Set(chosen.map(cid => SEGMENT_DATA.C.clubCategories[cid]).filter(Boolean));
     return `
-        ${rows || '<div class="plan-mirror-row plan-mirror-empty">(nothing added yet)</div>'}
+        ${rows}
         <div class="plan-mirror-total"><span>Total this week</span><span>${totalHours} / ${cap} hrs</span></div>
         <div class="plan-mirror-total"><span>Interest categories represented</span><span>${categoriesCovered.size} / 4</span></div>`;
 }
@@ -866,7 +893,8 @@ function startSegment(segmentIndex) {
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
-            const opening = SEGMENT_OPENING_LINES[category]?.[segmentKey] || `Segment ${segmentIndex} of 4 begins.`;
+            const rawOpening = SEGMENT_OPENING_LINES[category]?.[segmentKey];
+            const opening = typeof rawOpening === 'function' ? rawOpening(loadLevel) : (rawOpening || `Segment ${segmentIndex} of 4 begins.`);
             addScriptedLine(opening);
         }, 600);
     }

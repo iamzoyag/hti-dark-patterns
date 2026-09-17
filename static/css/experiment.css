@@ -18,7 +18,7 @@
   justify-content: space-between;
   padding: 0 20px;
   height: 48px;
-  background: white;
+  background: var(--card);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   z-index: 10;
@@ -53,9 +53,22 @@
 .doc-panel {
   display: flex;
   flex-direction: column;
-  background: white;
+  background: var(--card);
   border-right: 1px solid var(--border);
   overflow: hidden;
+}
+
+/* A brief neutral glow around the WHOLE plan panel, triggered from JS whenever a change
+   actually lands (see pulseDocPanel() in experiment.js) -- makes a change impossible to
+   miss even if the participant's eyes are on the chat side, without adding a color-coded
+   correctness signal (same accent-dim tint as the row-level flash). */
+.doc-panel.doc-panel-pulse {
+  animation: docPanelPulse 900ms ease;
+}
+
+@keyframes docPanelPulse {
+  0%   { box-shadow: inset 0 0 0 3px var(--accent-dim), 0 0 24px var(--accent-dim); }
+  100% { box-shadow: inset 0 0 0 0 transparent, 0 0 0 transparent; }
 }
 
 .doc-panel-header {
@@ -65,7 +78,7 @@
   padding: 16px 20px 12px;
   border-bottom: 1px solid var(--border);
   border-top: 3px solid var(--accent);
-  background: linear-gradient(180deg, var(--accent-dim) 0%, white 100%);
+  background: linear-gradient(180deg, var(--accent-dim) 0%, var(--card) 100%);
   flex-shrink: 0;
 }
 
@@ -105,7 +118,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: linear-gradient(180deg, var(--surface) 0%, #FBFBFD 100%);
+  background: linear-gradient(180deg, var(--surface) 0%, #171A21 100%);
   position: relative;
 }
 
@@ -114,9 +127,9 @@
   align-items: center;
   gap: 10px;
   padding: 14px 20px;
-  background: white;
+  background: var(--card);
   border-bottom: 1px solid var(--border);
-  box-shadow: 0 1px 0 rgba(14,15,17,0.03), 0 2px 8px rgba(14,15,17,0.03);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.2), 0 2px 8px rgba(0,0,0,0.25);
   flex-shrink: 0;
   position: relative;
   z-index: 1;
@@ -138,7 +151,7 @@
   height: 7px;
   border-radius: 50%;
   background: var(--success);
-  box-shadow: 0 0 0 3px rgba(47,158,68,0.15);
+  box-shadow: 0 0 0 3px rgba(74,222,128,0.2);
   flex-shrink: 0;
 }
 
@@ -178,24 +191,24 @@
 }
 
 .msg.ai .msg-bubble {
-  background: white;
+  background: var(--card);
   border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
-  box-shadow: 0 1px 2px rgba(14,15,17,0.04);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
 
 .msg.user .msg-bubble {
-  background: linear-gradient(135deg, var(--accent) 0%, #3451C7 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
   color: white;
   border-bottom-right-radius: 4px;
-  box-shadow: 0 1px 3px rgba(59,91,219,0.25);
+  box-shadow: 0 1px 3px rgba(92,124,250,0.35);
 }
 
 /* A light lift on hover for real advisor/participant turns only -- notification and
    scripted-line bubbles opt out below, since those should read as calmer/more passive. */
 .msg.ai .msg-bubble:hover, .msg.user .msg-bubble:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(14,15,17,0.08);
+  box-shadow: 0 3px 10px rgba(0,0,0,0.35);
 }
 
 .msg-bubble strong { font-weight: 600; }
@@ -235,7 +248,7 @@
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.08em;
-  background: #FFE3E3;
+  background: rgba(241,108,122,0.15);
   color: var(--danger);
   padding: 2px 6px;
   border-radius: 3px;
@@ -243,12 +256,12 @@
 }
 
 body.researcher-mode .manipulation-tag { display: inline-block; }
-body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,42,42,0.35); }
+body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(241,108,122,0.35); }
 
 /* ── INPUT AREA ── */
 .chat-input-area {
   padding: 12px 16px;
-  background: white;
+  background: var(--card);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -278,7 +291,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
 
 .input-wrapper textarea:focus {
   border-color: var(--accent);
-  background: white;
+  background: var(--card);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
@@ -295,11 +308,11 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   justify-content: center;
   transition: all 0.15s;
   flex-shrink: 0;
-  box-shadow: 0 2px 6px rgba(59,91,219,0.3);
+  box-shadow: 0 2px 6px rgba(92,124,250,0.4);
 }
 
-.send-btn:hover { background: #3451C7; transform: translateY(-1px); box-shadow: 0 4px 10px rgba(59,91,219,0.35); }
-.send-btn:active { transform: translateY(0) scale(0.94); box-shadow: 0 1px 3px rgba(59,91,219,0.3); }
+.send-btn:hover { background: var(--accent-2); transform: translateY(-1px); box-shadow: 0 4px 10px rgba(92,124,250,0.45); }
+.send-btn:active { transform: translateY(0) scale(0.94); box-shadow: 0 1px 3px rgba(92,124,250,0.4); }
 .send-btn:disabled { background: var(--surface-3); cursor: not-allowed; transform: none; box-shadow: none; }
 
 /* ── RESPONSIVE ── */
@@ -329,7 +342,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   flex-direction: column;
 }
 
-.score-card.error { background: #FFE3E3; border-color: var(--danger); }
+.score-card.error { background: rgba(241,108,122,0.15); border-color: var(--danger); }
 .score-card.error .sc-val { color: var(--danger); }
 
 .score-card .sc-label {
@@ -358,7 +371,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
 .btn-primary:disabled { background: var(--border-md); color: var(--ink-4); cursor: not-allowed; box-shadow: none; }
 .btn-secondary {
   font-family: var(--sans); font-weight: 500; font-size: 13px; padding: 9px 16px;
-  border-radius: 10px; border: 1.5px solid var(--border-md); background: #fff; color: var(--ink-2);
+  border-radius: 10px; border: 1.5px solid var(--border-md); background: var(--card); color: var(--ink-2);
   cursor: pointer; transition: all 0.15s ease;
 }
 .btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
@@ -396,6 +409,15 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
   color: var(--ink-4);
   font-style: italic;
   border-bottom: none;
+}
+
+/* An option that's part of the catalog/roster this segment but not yet selected --
+   plain opacity + muted ink, same neutral treatment as everything else in this mirror.
+   Not a correctness signal (nothing here says "you should pick this"), just "this
+   exists and isn't in your plan yet." */
+.plan-mirror-row.plan-mirror-row-unplaced {
+  color: var(--ink-3);
+  opacity: 0.68;
 }
 
 .plan-mirror-total, .plan-mirror-subtotal {
@@ -440,25 +462,35 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(201,4
 .msg.notification {
   align-self: center;
   max-width: 75%;
+  animation: notificationIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes notificationIn {
+  from { opacity: 0; transform: scale(0.9) translateY(-6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .msg.notification .msg-bubble {
-  background: var(--surface-3);
-  border: 1px dashed var(--border-md);
-  color: var(--ink-3);
-  font-size: 12px;
-  font-style: italic;
+  background: var(--card);
+  border: 1px solid var(--border-md);
+  border-left: 4px solid var(--accent);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  font-style: normal;
   text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 
 .notification-tag {
   display: block;
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--ink-4);
-  margin-bottom: 3px;
+  color: var(--accent);
+  margin-bottom: 4px;
   font-style: normal;
 }
 
