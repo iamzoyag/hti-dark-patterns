@@ -445,8 +445,31 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(241,1
    Not a correctness signal (nothing here says "you should pick this"), just "this
    exists and isn't in your plan yet." */
 .plan-mirror-row.plan-mirror-row-unplaced {
-  color: var(--ink-2);
-  opacity: 0.85;
+  color: var(--ink-4);
+  opacity: 0.55;
+}
+
+/* The flip side of -unplaced: a row that IS in the plan gets a light neutral
+   highlight, so "what's selected" reads at a glance instead of only from the
+   dimmed rows around it. Same accent-dim tint used elsewhere as chrome --
+   never green/red, stays outside the no-pass/fail-signal rule. */
+.plan-mirror-row:not(.plan-mirror-row-unplaced):not(.plan-mirror-empty) {
+  background: var(--accent-dim);
+  border-radius: var(--radius-sm);
+  padding-left: 8px;
+  padding-right: 8px;
+  color: var(--ink);
+}
+
+.segment-brief-tag {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 4px;
 }
 
 .plan-mirror-total, .plan-mirror-subtotal {

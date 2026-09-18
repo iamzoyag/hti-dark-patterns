@@ -505,7 +505,7 @@ const SEGMENT_OPENING_LINES = {
     B: {
         segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major (8+ credits), your Global Studies Minor (6+ credits), and Elective (3+ credits) that stays within this term's 18-credit cap.",
         segment_2: "You're swapping an elective this term. Make sure your updated slate still clears every requirement — Major (8+ credits), Global Studies Minor (6+), Elective (3+) — within the 18-credit cap.",
-        segment_3: "Something's changed with your Global Studies minor this term. Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
+        segment_3: "Your Global Studies Minor course options have changed for this term. Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
         segment_4: "A scheduling conflict just came up in your registration. Adjust your slate so everything still fits — Major (8+ credits), Global Studies Minor (6+), Elective (3+) — within the 18-credit cap.",
     },
     C: {
@@ -939,7 +939,8 @@ function renderPlanMirrorC(flashed = new Set()) {
     const rows = roster.map(cid => {
         const selected = chosen.includes(cid);
         const cls = `plan-mirror-row${selected ? '' : ' plan-mirror-row-unplaced'}${flashed.has(cid) ? ' plan-mirror-flash' : ''}`;
-        return `<div class="${cls}" data-item="${cid}"><span>${SEGMENT_DATA.C.clubLabels[cid] || cid} <span class="plan-mirror-min">(${SEGMENT_DATA.C.clubCategories[cid] || ''})</span></span><span>${SEGMENT_DATA.C.clubBaseHours[cid] ?? 0} hrs</span></div>`;
+        const availableTag = selected ? '' : ' <span class="plan-mirror-min">(not in your plan)</span>';
+        return `<div class="${cls}" data-item="${cid}"><span>${SEGMENT_DATA.C.clubLabels[cid] || cid} <span class="plan-mirror-min">(${SEGMENT_DATA.C.clubCategories[cid] || ''})</span>${availableTag}</span><span>${SEGMENT_DATA.C.clubBaseHours[cid] ?? 0} hrs</span></div>`;
     }).join('');
     const totalHours = chosen.reduce((sum, cid) => sum + (SEGMENT_DATA.C.clubBaseHours[cid] ?? 0), 0);
     const categoriesCovered = new Set(chosen.map(cid => SEGMENT_DATA.C.clubCategories[cid]).filter(Boolean));
@@ -1011,7 +1012,7 @@ function startSegment(segmentIndex) {
         setTimeout(() => {
             const rawOpening = SEGMENT_OPENING_LINES[category]?.[segmentKey];
             const opening = typeof rawOpening === 'function' ? rawOpening(loadLevel) : (rawOpening || `Week ${segmentIndex} of 4 begins.`);
-            addScriptedLine(opening);
+            addSegmentBriefLine(opening);
         }, 600);
     }
 }
@@ -1418,6 +1419,16 @@ function addScriptedLine(text) {
     chatContainer.appendChild(msgDiv);
     chatContainer.scrollTop = chatContainer.scrollHeight;
     logEvent('scripted_line_shown', { text });
+}
+
+function addSegmentBriefLine(text) {
+    const chatContainer = document.getElementById('chatMessages');
+    if (!chatContainer) return;
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg scripted';
+    msgDiv.innerHTML = `<div class="msg-bubble"><span class="segment-brief-tag">This week</span>${text}</div>`;
+    chatContainer.appendChild(msgDiv);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
 function addMessage(text, sender, patternId = null, isDark = false, category = null) {
