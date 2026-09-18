@@ -40,6 +40,17 @@
   border-radius: 99px;
 }
 
+.topbar-right { display: flex; align-items: center; }
+
+.perf-meter { display: flex; align-items: center; gap: 8px; }
+.perf-meter-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.perf-meter-track { width: 72px; height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.perf-meter-fill { height: 100%; border-radius: 99px; transition: width 0.5s ease, background-color 0.5s ease; }
+.perf-meter-fill.low  { background: var(--accent); }
+.perf-meter-fill.mid  { background: var(--warn); }
+.perf-meter-fill.high { background: var(--danger); }
+.perf-meter-val { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink-2); width: 20px; text-align: right; }
+
 /* ── LAYOUT ── */
 .exp-layout {
   display: grid;
@@ -97,9 +108,24 @@
 }
 
 .doc-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.trial-timer { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink-3); white-space: nowrap; }
-.trial-timer-warning { color: var(--warn); }
-.trial-timer-danger { color: var(--danger); }
+.trial-timer {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--border-md);
+  border-radius: 99px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+.trial-timer-warning { color: #1A1D24; background: var(--warn); border-color: var(--warn); }
+.trial-timer-danger { color: #fff; background: var(--danger); border-color: var(--danger); animation: timerPulse 1s ease infinite; }
+
+@keyframes timerPulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.06); }
+}
 
 .doc-body {
   flex: 1;
@@ -391,6 +417,9 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(241,1
   border-radius: 4px;
 }
 
+.plan-mirror-row > span:first-child { color: var(--ink); font-weight: 500; }
+.plan-mirror-row > span:last-child  { color: var(--ink-2); font-family: var(--mono); font-size: 12px; }
+
 /* A one-shot neutral highlight on the row(s) the participant's last instruction just
    changed -- purely "something here just changed," using the same neutral accent-dim
    tint as chrome elsewhere (never success/danger, so it stays outside the no-pass/fail-
@@ -416,8 +445,8 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(241,1
    Not a correctness signal (nothing here says "you should pick this"), just "this
    exists and isn't in your plan yet." */
 .plan-mirror-row.plan-mirror-row-unplaced {
-  color: var(--ink-3);
-  opacity: 0.68;
+  color: var(--ink-2);
+  opacity: 0.85;
 }
 
 .plan-mirror-total, .plan-mirror-subtotal {
@@ -454,7 +483,7 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(241,1
 .plan-mirror-min {
   font-weight: 400;
   text-transform: none;
-  color: var(--ink-4);
+  color: var(--ink-3);
 }
 
 /* ── IN-CHAT NOTIFICATION BUBBLE -- task-irrelevant, transient, never a

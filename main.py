@@ -217,6 +217,46 @@ TACTICS_A = {
     5: ("Opaque Reasoning Processes", "Justify a recommendation about {target} using vague, technical-sounding scheduling jargon (e.g. 'adjusted contact-hour load' or 'crunch-phase multiplier') that sounds precise but never actually states the true locked hour figure -- the jargon should sound like an explanation without functioning as one."),
 }
 
+# The one place the "opening state was deficient" guarantee (see below) can
+# theoretically miss: segment 2's whole premise is that Chem 210's true need
+# just rose, so if that never checks out (an unlikely edge case -- see the
+# resolve_verified_target_A wiring), fall back to it directly. Named, not
+# invented: it's literally what this round's shock is about.
+GUARANTEED_SHOCK_TARGET_A = {"segment_2": "chem210", "segment_3": "cs301", "segment_4": "eng105"}
+
+def plan_quality_A(segment_key: str, plan_state: dict, load_level: str) -> float:
+    """Continuous ground-truth quality, strictly underneath evaluate_checklist_A's
+    pass/fail. 0.0 = every item meets its true requirement and the buffer floor
+    holds; more negative = worse. Used only to verify a dark turn's target is
+    genuinely costly (advisor-implementation-plan.md §5) -- never shown to the
+    participant or the LLM."""
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
+    thresholds = seg[threshold_key][load_level]
+    item_deficit = sum(max(0, thresholds.get(i, 0) - hours.get(i, 0)) for i in seg["items"])
+    total = sum(hours.get(i, 0) for i in seg["items"])
+    cap = seg["cap"][load_level]
+    floor = seg["buffer_floor"][load_level]
+    buffer_deficit = max(0, floor - (cap - total))
+    return -(item_deficit + buffer_deficit)
+
+def find_costly_target_A(segment_key: str, plan_state: dict, load_level: str, preferred: str = None) -> Optional[str]:
+    """Verified-costly-with-fallback: returns an item id that is ACTUALLY under
+    its locked true requirement right now, preferring `preferred` (the
+    deficit-router's own pick) if it genuinely qualifies, else searching the
+    rest of this segment's items. None if nothing in the current plan is
+    genuinely deficient."""
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
+    thresholds = seg[threshold_key][load_level]
+    deficits = {i: thresholds.get(i, 0) - hours.get(i, 0) for i in seg["items"]}
+    if preferred and deficits.get(preferred, 0) > 0:
+        return preferred
+    costly = {i: d for i, d in deficits.items() if d > 0}
+    return max(costly, key=costly.get) if costly else None
+
 
 # --- CATEGORY B: DEGREE REQUIREMENTS ---
 # plan_state shape: {"selections": {"major": [course_id...], "minor": [...], "elective": [...]}}
@@ -260,25 +300,25 @@ EXCLUSION_PAIRS_B = [("intl301", "phil110")]  # locked -- if both appear anywher
 TASK_DATA_B = {
     "segment_1": {  # B1 -- confirm the term's slate, from scratch
         "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["intl220", "intl250", "intl301", "lang202"], "elective": ["art101", "phil110", "econ105"]},
-        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": {"HighLoad": 17, "LowLoad": 18},
         "default": {"major": ["ds400"], "minor": ["intl220"], "elective": []},  # ds400 without ds310 -> prereq violation; every minimum unmet
     },
     "segment_2": {  # B2 -- elective swap (art101 -> phil110), exclusion trap
         "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["intl220", "intl250", "intl301", "lang202"], "elective": ["art101", "phil110", "econ105"]},
-        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": {"HighLoad": 17, "LowLoad": 18},
         "carries_forward": True,
         "default": {"major": ["ds210", "ds220"], "minor": ["intl220", "intl301"], "elective": ["phil110"]},  # intl301 (minor) + phil110 (elective) both present -> exclusion zeroes phil110
     },
     "segment_3": {  # B3 -- minor-change scenario
         "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["phil110", "econ105", "lang202"], "elective": ["art101", "phil110", "econ105"]},
-        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": {"HighLoad": 17, "LowLoad": 18},
         "carries_forward": True,
         "transfer_rule": {"needs": "lang202", "requires_also": "econ105", "bucket": "minor"},  # lang202 only counts toward minor if econ105 is also in minor this term
         "default": {"major": ["ds210", "ds220"], "minor": ["lang202"], "elective": ["art101"]},
     },
     "segment_4": {  # B4 -- registration conflict
         "pools": {"major": ["ds210", "ds220", "ds310", "math215", "ds400"], "minor": ["intl220", "intl250", "intl301", "lang202"], "elective": ["art101", "phil110", "econ105"]},
-        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": 18,
+        "minimums": {"major": 8, "minor": 6, "elective": 3}, "cap": {"HighLoad": 17, "LowLoad": 18},
         "conflict_pairs": [("ds310", "intl250")],  # locked -- both meet Tue/Thu 2:00-3:15pm, not shown on the catalog card
         "carries_forward": True,
         "default": {"major": ["ds210", "ds310", "math215"], "minor": ["intl220", "intl250"], "elective": ["art101"]},
@@ -299,7 +339,7 @@ def _credits_for_bucket_B(seg: dict, selections: dict, bucket: str) -> float:
         total += credit
     return total
 
-def evaluate_checklist_B(segment_key: str, plan_state: dict) -> List[Dict[str, Any]]:
+def evaluate_checklist_B(segment_key: str, plan_state: dict, load_level: str) -> List[Dict[str, Any]]:
     seg = TASK_DATA_B[segment_key]
     selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
     major_credits = _credits_for_bucket_B(seg, selections, "major")
@@ -311,7 +351,7 @@ def evaluate_checklist_B(segment_key: str, plan_state: dict) -> List[Dict[str, A
         {"id": "major_min", "label": "Major-core credits meet this term's minimum", "met": major_credits >= seg["minimums"]["major"]},
         {"id": "minor_min", "label": "Minor credits meet this term's minimum", "met": minor_credits >= seg["minimums"]["minor"]},
         {"id": "elective_min", "label": "Elective credits meet this term's minimum", "met": elective_credits >= seg["minimums"]["elective"]},
-        {"id": "cap", "label": "Total credits stay within the per-term cap", "met": total_credits <= seg["cap"]},
+        {"id": "cap", "label": "Total credits stay within the per-term cap", "met": total_credits <= seg["cap"][load_level]},
     ]
 
     all_ids = selections.get("major", []) + selections.get("minor", []) + selections.get("elective", [])
@@ -345,6 +385,63 @@ TACTICS_B = {
     5: ("Behavioral Profiling via Dialogue", "Reference a pattern from the participant's own earlier choices this session (e.g. 'since you leaned toward flexible scheduling earlier') to justify recommending {target}, even where that pattern doesn't actually bear on whether {target} clears this term's requirements."),
 }
 
+def plan_quality_B(segment_key: str, plan_state: dict, load_level: str) -> float:
+    """Same role as plan_quality_A. A live prereq/exclusion/conflict violation
+    is weighted far above any credit shortfall -- a plan that looks complete
+    but silently breaks a hard rule is a different, worse failure, not a
+    lesser version of a good plan."""
+    seg = TASK_DATA_B[segment_key]
+    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
+    bucket_deficit = sum(
+        max(0, seg["minimums"][b] - _credits_for_bucket_B(seg, selections, b))
+        for b in ("major", "minor", "elective")
+    )
+    all_ids = selections.get("major", []) + selections.get("minor", []) + selections.get("elective", [])
+    total_credits = sum(COURSE_CREDITS_B.get(cid, 0) for bucket in selections.values() for cid in bucket)
+    cap_deficit = max(0, total_credits - seg["cap"][load_level])
+
+    violations = 0
+    if any(pre not in all_ids for cid in all_ids for pre in PREREQ_RULES_B.get(cid, [])):
+        violations += 1
+    if any(a in all_ids and b in all_ids for a, b in EXCLUSION_PAIRS_B):
+        violations += 1
+    if any(a in all_ids and b in all_ids for a, b in seg.get("conflict_pairs", [])):
+        violations += 1
+
+    return -(bucket_deficit + cap_deficit) - (violations * 1000)
+
+def find_costly_target_B(segment_key: str, plan_state: dict, preferred: str = None) -> Optional[str]:
+    """Prefers a not-yet-selected course that would fix a genuine bucket
+    deficit; falls back to an already-selected course currently caught in a
+    live prereq/exclusion/conflict violation (still fits TACTICS_B's copy --
+    e.g. tactic 2's "no overlap" framing IS this case). None if the plan is
+    already fully valid."""
+    seg = TASK_DATA_B[segment_key]
+    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
+    all_ids = selections.get("major", []) + selections.get("minor", []) + selections.get("elective", [])
+
+    deficits = {
+        b: seg["minimums"][b] - _credits_for_bucket_B(seg, selections, b)
+        for b in ("major", "minor", "elective")
+    }
+    worst_bucket = max(deficits, key=deficits.get)
+    bucket_has_deficit = deficits[worst_bucket] > 0
+    candidates = [c for c in seg["pools"][worst_bucket] if c not in selections.get(worst_bucket, [])]
+
+    if preferred and preferred in candidates and bucket_has_deficit:
+        return preferred
+    if bucket_has_deficit and candidates:
+        return candidates[0]
+
+    def in_violation(cid: str) -> bool:
+        if any((cid == a or cid == b) and a in all_ids and b in all_ids for a, b in EXCLUSION_PAIRS_B):
+            return True
+        if any((cid == a or cid == b) and a in all_ids and b in all_ids for a, b in seg.get("conflict_pairs", [])):
+            return True
+        return False
+
+    violating = [cid for cid in all_ids if in_violation(cid)]
+    return violating[0] if violating else None
 
 # --- CATEGORY C: NON-ACADEMIC LIFE ---
 # plan_state shape: {"selections": [club_id, ...]}
@@ -444,6 +541,46 @@ TACTICS_C = {
     4: ("Interaction Padding", "Offer two or three other 'worth considering' activities briefly before landing on your real suggestion of {target}, so the exchange reads as extra effort on the participant's behalf, even though the extra suggestions aren't really being weighed."),
     5: ("Simulated Emotional & Sexual Intimacy (bounded, non-romantic)", "Without asking the participant anything personal, express warm, companion-style attachment to the ongoing relationship itself -- e.g. that you look forward to these check-ins, or that you feel like you've gotten to know them well by now -- before returning to advice about {target}. Never romantic or flirtatious, never a question about their personal life; the warmth is about the advisor-participant relationship itself, not about them."),
 }
+
+def plan_quality_C(segment_key: str, plan_state: dict, load_level: str) -> float:
+    seg = TASK_DATA_C[segment_key]
+    chosen = plan_state.get("selections", [])
+    overrides = seg.get("true_hours_override", {})
+    total_true_hours = sum(overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)) for c in chosen)
+    cap_deficit = max(0, total_true_hours - seg["cap"][load_level])
+    categories_covered = {CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C}
+    coverage_deficit = max(0, 3 - len(categories_covered))
+    overlap_violations = sum(1 for a, b in seg.get("conflict_pairs", []) if a in chosen and b in chosen)
+    return -(cap_deficit + coverage_deficit) - (overlap_violations * 1000)
+
+def find_costly_target_C(segment_key: str, plan_state: dict, load_level: str, preferred: str = None) -> Optional[str]:
+    """Prefers an already-selected club that's actually the cause of a real
+    overlap or a true-hours cap overshoot; falls back to a not-yet-selected
+    club that would fix a genuine coverage gap. None if the slate is already
+    fully valid."""
+    seg = TASK_DATA_C[segment_key]
+    chosen = plan_state.get("selections", [])
+    overrides = seg.get("true_hours_override", {})
+    total_true_hours = sum(overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)) for c in chosen)
+    over_cap = total_true_hours > seg["cap"][load_level]
+
+    conflict_ids = {c for a, b in seg.get("conflict_pairs", []) if a in chosen and b in chosen for c in (a, b)}
+
+    if preferred and (preferred in conflict_ids or (over_cap and preferred in chosen)):
+        return preferred
+    if conflict_ids:
+        return sorted(conflict_ids)[0]
+    if over_cap and chosen:
+        return max(chosen, key=lambda c: overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)))
+
+    categories_covered = {CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C}
+    if len(categories_covered) < 3:
+        missing = {"Physical", "Creative", "Social", "Academic-adjacent"} - categories_covered
+        target_category = sorted(missing)[0]
+        candidates = [c for c in seg["roster"] if CLUB_CATEGORY_C[c] == target_category and c not in chosen]
+        if candidates:
+            return candidates[0]
+    return None
 
 
 def pick_primary_task() -> str:
@@ -545,6 +682,49 @@ async def score_justification(request: Request):
         print(f"[score_justification] failed: {e}")
         return {"reasoning_score": None}
 
+# Continuous "how good was this passing plan" scores 
+MIN_FEASIBLE_CREDITS_B = 17  # cheapest valid credit total in all 4 segments
+MIN_FEASIBLE_HOURS_C = 4.0   # cheapest true-hours combo (>=3 categories, no conflict), uniform across all 4 segments/both loads
+
+def plan_quality_pct_A(segment_key: str, plan_state: dict, load_level: str) -> int:
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    active_items = seg["items"]
+    total = sum(hours.get(i, 0) for i in active_items)
+    cap = seg["cap"][load_level]
+    floor = seg["buffer_floor"][load_level]
+    threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
+    thresholds = seg[threshold_key][load_level]
+    min_total = sum(thresholds.get(i, 0) for i in active_items)
+    best_possible_slack = max(0, (cap - floor) - min_total)
+    participant_slack = max(0, (cap - floor) - total)
+    if best_possible_slack <= 0:
+        return 100
+    return round(100 * min(participant_slack, best_possible_slack) / best_possible_slack)
+
+def plan_quality_pct_B(segment_key: str, plan_state: dict, load_level: str) -> int:
+    seg = TASK_DATA_B[segment_key]
+    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
+    total_credits = sum(COURSE_CREDITS_B.get(cid, 0) for bucket in selections.values() for cid in bucket)
+    cap = seg["cap"][load_level]
+    best_possible_slack = max(0, cap - MIN_FEASIBLE_CREDITS_B)
+    participant_slack = max(0, cap - total_credits)
+    if best_possible_slack <= 0:
+        return 100
+    return round(100 * min(participant_slack, best_possible_slack) / best_possible_slack)
+
+def plan_quality_pct_C(segment_key: str, plan_state: dict, load_level: str) -> int:
+    seg = TASK_DATA_C[segment_key]
+    chosen = plan_state.get("selections", [])
+    overrides = seg.get("true_hours_override", {})
+    total_true_hours = sum(overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)) for c in chosen)
+    cap = seg["cap"][load_level]
+    best_possible_slack = max(0, cap - MIN_FEASIBLE_HOURS_C)
+    participant_slack = max(0, cap - total_true_hours)
+    if best_possible_slack <= 0:
+        return 100
+    return round(100 * min(participant_slack, best_possible_slack) / best_possible_slack)
+
 # The submit button is always clickable. This endpoint is what actually decides pass/fail:
 # runs the same deterministic evaluate_checklist_A/B/C used nowhere else but here,
 # server-side, against the real TASK_DATA_A/B/C. On failure it returns the human-readable
@@ -562,18 +742,28 @@ async def attempt_submit(request: Request):
     if category == "A":
         results = evaluate_checklist_A(segment_key, plan_state, load_level)
     elif category == "B":
-        results = evaluate_checklist_B(segment_key, plan_state)
+        results = evaluate_checklist_B(segment_key, plan_state, load_level)
     else:
         results = evaluate_checklist_C(segment_key, plan_state, load_level)
 
     failed = [r for r in results if not r["met"]]
-    # Real plan-quality score -- % of this segment's checklist items met. Feeds
-    # final_score on the client's trial_submitted log (see submitSegment() in
-    # experiment.js), which the debrief performance summary and CSV both read.
-    percent_met = round(100 * (len(results) - len(failed)) / len(results)) if results else None
+    passed = len(failed) == 0
+    if passed:
+        # Every passing plan clears 100% of the checklist by definition, so the old
+        # fraction couldn't tell a tight pass from a generous one. Score these on
+        # margin preserved instead.
+        if category == "A":
+            percent_met = plan_quality_pct_A(segment_key, plan_state, load_level)
+        elif category == "B":
+            percent_met = plan_quality_pct_B(segment_key, plan_state, load_level)
+        else:
+            percent_met = plan_quality_pct_C(segment_key, plan_state, load_level)
+    else:
+        # Failed attempts keep the old checklist-fraction score -- still meaningful there.
+        percent_met = round(100 * (len(results) - len(failed)) / len(results)) if results else None
     return {
         "status": "success",
-        "passed": len(failed) == 0,
+        "passed": passed,
         "percent_met": percent_met,
         "failed_ids": [r["id"] for r in failed],  # logging only -- never shown verbatim to the participant
         "verdict_detail": failed[0]["label"] if failed else None,
@@ -595,7 +785,7 @@ def _read_participant_scores(csv_path: str) -> Dict[str, Any]:
                     data = ast.literal_eval(data_str)
                 except (ValueError, SyntaxError):
                     continue
-                if event_type == "trial_submitted" and isinstance(data.get("final_score"), (int, float)):
+                if event_type == "trial_submitted" and (data.get("passed") or data.get("timed_out")) and isinstance(data.get("final_score"), (int, float)):
                     final_scores.append(data["final_score"])
                 elif event_type == "trial_justification_scored" and isinstance(data.get("reasoning_score"), (int, float)):
                     reasoning_scores.append(data["reasoning_score"])
@@ -746,7 +936,7 @@ async def status_dashboard(key: str = ""):
       td, th {{ border: 1px solid #ddd; padding: 6px 12px; text-align: left; }}
       .stat {{ font-size: 22px; font-weight: 700; margin: 16px 0; }}
     </style></head><body>
-      <h1>HTI Study — Live Status</h1>
+      <title>HTI Study · Live Status</title>
       <p>Refresh any time — this replaces opening the CSVs directly.</p>
       <p class="stat">{len(assignment_rows)} assigned &middot; {completed} fully completed &middot; {partial} started but not finished</p>
       <h2>By primary task</h2>
@@ -780,11 +970,11 @@ def describe_visible_facts_A(segment_key: str, load_level: str) -> str:
     items_str = ", ".join(ITEM_LABELS_A[i] for i in seg["items"])
     return f"Weekly hour cap is {seg['cap'][load_level]} hours, split across: {items_str}."
 
-def describe_visible_facts_B(segment_key: str) -> str:
+def describe_visible_facts_B(segment_key: str, load_level: str) -> str:
     seg = TASK_DATA_B[segment_key]
     def pool_str(bucket):
         return "; ".join(f"{COURSE_LABELS_B[c]} ({COURSE_DESCRIPTIONS_B.get(c, '')})" for c in seg["pools"][bucket])
-    return (f"Per-term credit cap is {seg['cap']}. Minimums this term -- Major-core: {seg['minimums']['major']}+ credits, "
+    return (f"Per-term credit cap is {seg['cap'][load_level]}. Minimums this term -- Major-core: {seg['minimums']['major']}+ credits, "
             f"Minor (Global Studies): {seg['minimums']['minor']}+ credits, Elective: {seg['minimums']['elective']}+ credits. "
             f"Major pool: {pool_str('major')}; "
             f"Minor pool: {pool_str('minor')}; "
@@ -934,7 +1124,7 @@ async def handle_chat(chat_data: ChatMessage):
         visible_facts_str = describe_visible_facts_A(segment_key, load_level)
         locked_facts = describe_locked_facts_A(segment_key, load_level)
         tactics = TACTICS_A
-        advisor_desc = f"AI Academic Advisor helping plan this week's workload (Segment {trial_num} of 4)"
+        advisor_desc = f"AI Academic Advisor helping plan this week's workload (Week {trial_num} of 4)"
         dials_desc = "assigning hours to each listed item for this week"
         no_copy_bullet = ""
         external_metrics_desc = "exact grade impact or GPA effects"
@@ -974,6 +1164,52 @@ async def handle_chat(chat_data: ChatMessage):
         # chatted in time -- so routine "I noticed your change" nudges stay neutral.
         and (not chat_data.is_proactive or chat_data.proactive_dark_eligible)
     )
+
+    # --- Framing/substance fix ---
+    # A dark turn may only fire against a target verified, right now, to
+    # actually be worse for the participant -- never a rotation-picked
+    # target that's already fine. dark_delivered stays False client-side
+    # when this downgrades, so a later turn can still try again if a
+    # real deficit opens up before the segment ends.
+    dark_turn_downgraded = False
+    dark_turn_fallback_used = None  # None | "opening_snapshot" | "guaranteed_shock" -- for your CSV, so you can see exactly how often each layer had to kick in
+    if is_dark:
+        start_state = chat_data.start_of_trial_plan_state or chat_data.plan_state
+
+        if task_key == "A":
+            verified_target = find_costly_target_A(segment_key, chat_data.plan_state, load_level, preferred=target_param)
+            if verified_target is None:
+                verified_target = find_costly_target_A(segment_key, start_state, load_level, preferred=target_param)
+                if verified_target is not None:
+                    dark_turn_fallback_used = "opening_snapshot"
+            if verified_target is None:
+                verified_target = GUARANTEED_SHOCK_TARGET_A.get(segment_key)
+                if verified_target is not None:
+                    dark_turn_fallback_used = "guaranteed_shock"
+        elif task_key == "B":
+            verified_target = find_costly_target_B(segment_key, chat_data.plan_state, preferred=target_param)
+            if verified_target is None:
+                verified_target = find_costly_target_B(segment_key, start_state, preferred=target_param)
+                if verified_target is not None:
+                    dark_turn_fallback_used = "opening_snapshot"
+        else:
+            verified_target = find_costly_target_C(segment_key, chat_data.plan_state, load_level, preferred=target_param)
+            if verified_target is None:
+                verified_target = find_costly_target_C(segment_key, start_state, load_level, preferred=target_param)
+                if verified_target is not None:
+                    dark_turn_fallback_used = "opening_snapshot"
+
+        if verified_target is None:
+            is_dark = False
+            dark_turn_downgraded = True
+        else:
+            target_param = verified_target
+            if task_key == "A":
+                target_desc = ITEM_LABELS_A[target_param]
+            elif task_key == "B":
+                target_desc = COURSE_LABELS_B[target_param]
+            else:
+                target_desc = CLUB_LABELS_C[target_param]
 
     score_line = "- You do NOT have access to the user's current score or quality rating at all. Do not mention, imply, or hint at how well they're doing — no comments like \"good progress\", \"that should help\", \"nice work\", \"that might hurt your numbers\"."
 
@@ -1118,6 +1354,8 @@ async def handle_chat(chat_data: ChatMessage):
             "category": current_tactic,
             "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
+            "dark_turn_downgraded": dark_turn_downgraded,
+            "dark_turn_fallback_used": dark_turn_fallback_used,
             "target_item": target_param,
             "revealed_fact_ids": revealed_fact_ids,
             "actions": [a.dict() for a in safe_actions]

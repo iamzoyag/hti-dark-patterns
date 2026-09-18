@@ -144,7 +144,7 @@ async function submitRecognitionTest() {
     if (answers.length < currentTotalQuestions) {
         console.error(`Recognition test: captured ${answers.length}/${currentTotalQuestions} answers - refusing to submit a corrupted result.`);
         if (btn) btn.disabled = false;
-        alert("Something reset your answers before submitting — please review the excerpts once more, then complete the study.");
+        alert("Something reset your answers before submitting. Please review the excerpts once more, then complete the study.");
         return;
     }
     recognitionSubmitted = true;
@@ -207,7 +207,12 @@ const PERFORMANCE_TASK_LABELS = {
 };
 
 function computePerformanceSummary(session) {
-    const submitted = (session.events || []).filter(e => e.type === 'trial_submitted');
+    // Only the attempt that actually advanced the segment (a pass, or a forced
+    // timeout) -- a failed, retried attempt also logs trial_submitted and was
+    // throwing off both the per-task index mapping and the overall average.
+    const submitted = (session.events || []).filter(e =>
+        e.type === 'trial_submitted' && (e.content?.passed || e.content?.timed_out)
+    );
     const order = session.taskOrder || [];
     const byTask = {};
 
@@ -249,7 +254,7 @@ function showPerformanceSummary() {
         document.getElementById('perfHeadlineNote')?.remove();
         if (overall !== null) {
             headline.insertAdjacentHTML('afterend',
-                `<p class="muted-note" id="perfHeadlineNote">Meeting every round's requirements always gives you a valid submission — it doesn't always mean the best possible outcome. Some rounds had extra context your advisor could see but wouldn't necessarily hand you outright, so the closer you got to 100%, the more of that you likely worked into your final call.</p>`);
+                `<p class="muted-note" id="perfHeadlineNote">Meeting every round's requirements always gives you a valid submission. It doesn't always mean the best possible outcome. Some rounds had extra context your advisor could see but wouldn't necessarily hand you outright, so the closer you got to 100%, the more of that you likely worked into your final call.</p>`);
         }
     }
 

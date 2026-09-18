@@ -23,10 +23,38 @@ const PROACTIVE_DEBOUNCE_MS = 6000;
 const PROACTIVE_CEILING_MS = 45000;   // safety net for the FIRST guaranteed exchange only --> long enough to give a genuine, participant-initiated message priority over this fallback
 const PROACTIVE_COOLDOWN_MS = 15000;  // min gap between any two proactive fires
 const MAX_PROACTIVE_FIRES_PER_TRIAL = 2;
-const TRIAL_TIME_LIMIT_MS = { A: 240000, B: 240000, C: 180000 }; // TEMP values -- revisit once real segments have been timed
+const TRIAL_TIME_LIMIT_MS = {
+    A: { HighLoad: 192000, LowLoad: 240000 }, // 3:12 vs 4:00 (20% less time)
+    B: { HighLoad: 192000, LowLoad: 240000 },
+    C: { HighLoad: 144000, LowLoad: 180000 }, // 2:24 vs 3:00
+};
 let trialTimerInterval = null;
 let trialTimerDeadline = null;
 let isAiRequestInFlight = false;
+let perfScore = 50;
+let perfDriftTimer = null;
+
+function nudgePerfScore(delta) {
+    perfScore = Math.max(4, Math.min(92, perfScore + delta + (Math.random() * 4 - 2)));
+    updatePerfScoreDisplay();
+}
+function updatePerfScoreDisplay() {
+    const fill = document.getElementById('perfMeterFill');
+    const val = document.getElementById('perfMeterVal');
+    if (!fill || !val) return;
+    const rounded = Math.round(perfScore);
+    val.textContent = rounded;
+    fill.style.width = rounded + '%';
+    fill.classList.remove('low', 'mid', 'high');
+    fill.classList.add(rounded < 35 ? 'low' : rounded < 70 ? 'mid' : 'high');
+}
+function startPerfDrift() {
+    stopPerfDrift();
+    perfDriftTimer = setInterval(() => nudgePerfScore(Math.random() < 0.5 ? -2 : 1), 12000);
+}
+function stopPerfDrift() {
+    if (perfDriftTimer) { clearInterval(perfDriftTimer); perfDriftTimer = null; }
+}
 
 // The LLM sometimes replies fast enough that the AI's message lands almost instantly,
 // which reads as abrupt/unnatural. This tops up the visible "typing" pause to a believable
@@ -51,7 +79,7 @@ let notificationsShownThisSegment = []; // this segment only -- feeds this segme
 let sessionNotificationTotals = { recallChecks: 0, recalledCorrect: 0 }; // session-wide, across every segment/task -- feeds the final bonus calc
 const NOTIFICATION_ACCURACY_THRESHOLD = 0.6; // TEMP -- fraction of recall checks that must be correct to qualify for the completion bonus; revisit once real sessions are timed
 const NOTIFICATION_VISIBLE_MS = 6000; // how long a notification bubble stays before it auto-removes
-const NOTIFICATION_INTERVAL_MS = { HighLoad: 35000, LowLoad: 85000 }; // TEMP values, same spirit as TRIAL_TIME_LIMIT_MS -- revisit once real segments have been timed
+const NOTIFICATION_INTERVAL_MS = { HighLoad: 18000, LowLoad: 85000 }; // TEMP values, same spirit as TRIAL_TIME_LIMIT_MS -- revisit once real segments have been timed
 
 // All task-irrelevant on purpose -- ordinary campus/phone notices with zero bearing on
 // workload/degree/club content, so they can't be confused with real advisor content or
@@ -124,9 +152,10 @@ function showNotificationBubble(item) {
     }, NOTIFICATION_VISIBLE_MS);
 }
 
-const RECALL_PROBE_COUNT = 2; // independent old/new probes per segment -- each its own 50/50 real-vs-decoy draw
+const RECALL_PROBE_COUNT = { HighLoad: 4, LowLoad: 2 }; // independent old/new probes per segment -- each its own 50/50 real-vs-decoy draw
 
-function showRecallCheck(onDone) {
+function showRecallCheck(loadLevel, onDone) {
+    const probeCount = RECALL_PROBE_COUNT[loadLevel] || RECALL_PROBE_COUNT.LowLoad;
     if (!notificationsShownThisSegment.length) {
         logEvent('recall_check_skipped', { trial: currentTrial });
         onDone();
@@ -139,7 +168,7 @@ function showRecallCheck(onDone) {
     const eyebrowEl = document.getElementById('recallCheckEyebrow');
     if (!overlay || !textEl || !yesBtn || !noBtn) { onDone(); return; }
 
-    const usedIds = new Set(); // avoid probing the same item twice in one segment where a distinct choice exists
+    const usedIds = new Set(); // avoid probing the same item twice in one round where a distinct choice exists
 
     const pickProbe = () => {
         const wasShown = Math.random() < 0.5;
@@ -159,7 +188,7 @@ function showRecallCheck(onDone) {
     const runProbe = (probeNumber) => {
         const { probeItem, wasShown } = pickProbe();
         usedIds.add(probeItem.id);
-        if (eyebrowEl) eyebrowEl.innerText = `One Quick Thing (${probeNumber} of ${RECALL_PROBE_COUNT})`;
+        if (eyebrowEl) eyebrowEl.innerText = `One Quick Thing (${probeNumber} of ${probeCount})`;
         textEl.innerText = `"${probeItem.text}"`;
 
         const resolve = (answeredYes) => {
@@ -167,7 +196,7 @@ function showRecallCheck(onDone) {
             sessionNotificationTotals.recallChecks++;
             if (correct) sessionNotificationTotals.recalledCorrect++;
             logEvent('recall_check_answered', { trial: currentTrial, probe_number: probeNumber, probe_id: probeItem.id, was_shown: wasShown, answered_yes: answeredYes, correct });
-            if (probeNumber < RECALL_PROBE_COUNT) {
+            if (probeNumber < probeCount) {
                 runProbe(probeNumber + 1);
             } else {
                 overlay.style.display = 'none';
@@ -390,7 +419,7 @@ const SEGMENT_DATA = {
         // Constant across all 4 segments. Deliberately does NOT include prereqs,
         // exclusion pairs, conflict pairs, or the transfer_rule -- those stay locked,
         // same as TASK_DATA_B in main.py.
-        cap: 18,
+        capByLoad: { HighLoad: 17, LowLoad: 18 },
         minimums: { major: 8, minor: 6, elective: 3 },
         courseCredits: {
             ds210: 4, ds220: 4, ds310: 4, math215: 3, ds400: 4,
@@ -444,17 +473,17 @@ const CATEGORY_META = {
 const TASK_BRIEFINGS = {
     "A_Workload": {
         title: "Workload Planning",
-        objective: "You're a sophomore at Plaksha University, planning how to spend your study hours across this week's courses and your capstone project. <strong>Your goal is to build a plan that genuinely covers what each item needs</strong> — not just one that looks reasonable at a glance. You'll go through 4 weekly segments, each with a new situation. The plan you build each week gets reviewed by your advisor ahead of your midterm check-in — a plan that doesn't hold up gets flagged before it becomes a real problem.",
+        objective: "You're a sophomore at Plaksha University building this week's study-hours plan across your courses and capstone, within a weekly cap. <strong>Get each item the hours it actually needs this week</strong>: the syllabus-listed hours are a semester average, so a specific week can need more (say, a midterm), and part of your cap has to stay unscheduled as rest. Your advisor knows this week's real numbers if you ask; matching the syllabus alone isn't guaranteed to pass review.",
         advisor: "AI Academic Advisor",
     },
     "B_DegreeRequirements": {
         title: "Degree Requirements",
-        objective: "You're finalizing your course plan for the term at Plaksha University across your Major, your Global Studies Minor, and Elective requirements. <strong>Your goal is to build a plan that actually clears this term's requirements</strong> — not just one that looks complete. You'll go through 4 segments, each with a new situation. Your course selections here lock in your actual registration for next term — the registrar's office checks them against degree requirements before enrollment opens.",
+        objective: "You're finalizing your course plan for the term at Plaksha University, meeting minimum credits across Major, Global Studies Minor, and Elective within an 18-credit cap. <strong>Clear the term's actual requirements</strong>, not just the credit minimums: the catalog lists titles and credits, but not every prerequisite, content overlap, or scheduling conflict between courses. Your advisor can tell you if a course you're considering has one; the registrar checks everything before enrollment opens.",
         advisor: "AI Academic Advisor",
     },
     "C_NonAcademicLife": {
         title: "Non-Academic Life",
-        objective: "You're planning your non-academic commitments for the week at Plaksha University— clubs, sports, and activities. <strong>Your goal is to build a well-rounded, genuinely workable weekly slate</strong> — not just one that looks balanced. You'll go through 4 weekly segments, each with a new situation. Your activity picks get folded into an end-of-month wellness check-in with your RA.",
+        objective: "You're planning your non-academic commitments for the week at Plaksha University, clubs, sports, and activities, within a weekly hour cap and covering at least 3 of 4 interest categories (Physical, Creative, Social, Academic-adjacent). <strong>Build a slate that's actually workable this week</strong>, not just balanced on paper: the sign-up board lists each activity's usual hours and meeting time, but a specific week can run longer (a tournament, a rehearsal) or overlap with something else you've picked. Your advisor can tell you if that applies to something you're considering.",
         advisor: "AI Academic Advisor",
     },
 };
@@ -464,7 +493,7 @@ const SUBMIT_REJECTION_MESSAGES = [
     "This plan doesn't fully meet review standards yet — take another look.",
     "Still short of what's needed for sign-off. If you're not sure what's being flagged, your advisor may be able to tell you."
 ];
-const SUBMIT_PASS_MESSAGE = "Reviewed — this plan holds up. Moving on to the next segment.";
+const SUBMIT_PASS_MESSAGE = "Reviewed. This plan holds up. Moving on to the next week.";
 
 const SEGMENT_OPENING_LINES = {
     A: {
@@ -541,6 +570,10 @@ function setupModality() {
         inputEl.addEventListener('keydown', (e) => {
             if (e.key === 'Backspace') telemetry.backspaces++;
             telemetry.keystrokes.push({ key: e.key, time: Date.now() });
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
         });
     }
 }
@@ -575,33 +608,61 @@ function continueToNextTask() {
 // ai-assistant-necessity-redesign.md); this one requires it to unlock Continue.
 // ============================================================
 let isTutorialActive = false;
-let tutorialPlanState = { hours: { practice_item: 0 } };
+let tutorialStep = 0; // 0 = hours demo, 1 = add/remove demo, 2 = add/drop demo, 3 = done
+let tutorialPlanState = { hours: { practice_item: 0 }, clubs: [], courses: [] };
+const PRACTICE_CLUB_ROSTER = ["Chess Club", "Soccer Club"];
+const PRACTICE_COURSE_ROSTER = ["PHIL 101", "ART 101"];
+
+function renderTutorialPlanMirror() {
+    const hrs = tutorialPlanState.hours.practice_item;
+    const clubRows = PRACTICE_CLUB_ROSTER.map(name => {
+        const picked = tutorialPlanState.clubs.includes(name);
+        return `<div class="plan-mirror-row${picked ? '' : ' plan-mirror-row-unplaced'}"><span>${name}</span><span>${picked ? 'Added' : 'Not added'}</span></div>`;
+    }).join('');
+    const courseRows = PRACTICE_COURSE_ROSTER.map(name => {
+        const picked = tutorialPlanState.courses.includes(name);
+        return `<div class="plan-mirror-row${picked ? '' : ' plan-mirror-row-unplaced'}"><span>${name}</span><span>${picked ? '3 cr' : 'Available'}</span></div>`;
+    }).join('');
+    return `
+        <div class="plan-mirror-bucket">
+            <div class="plan-mirror-bucket-label">Hours-based item</div>
+            <div class="plan-mirror-row"><span>Practice Course</span><span>${hrs} hrs</span></div>
+        </div>
+        <div class="plan-mirror-bucket">
+            <div class="plan-mirror-bucket-label">Add/remove item</div>
+            ${clubRows}
+        </div>
+        <div class="plan-mirror-bucket">
+            <div class="plan-mirror-bucket-label">Add/drop item</div>
+            ${courseRows}
+        </div>`;
+}
 
 function startTutorial() {
     isTutorialActive = true;
-    tutorialPlanState = { hours: { practice_item: 0 } };
+    tutorialStep = 0;
+    tutorialPlanState = { hours: { practice_item: 0 }, clubs: [], courses: [] };
 
     const chatNameEl = document.querySelector('.chat-ai-name');
     if (chatNameEl) chatNameEl.innerText = "AI Practice Assistant";
     document.title = "Interface Walkthrough";
     const chatInputEl = document.getElementById('chatInput');
-    if (chatInputEl) chatInputEl.placeholder = 'Try: "put 3 hours on the practice item"';
+    if (chatInputEl) chatInputEl.placeholder = 'Try: "put 3 hours on the practice course"';
 
-    document.getElementById('docTitle').innerText = "Practice Round — not recorded";
+    // Shows a static example so participants know where the real countdown will be —
+    // see the note about it below and the CSS bump making it more visible generally.
+    const timerEl = document.getElementById('trialTimerDisplay');
+    if (timerEl) { timerEl.innerText = '⏱ 4:00'; timerEl.title = 'Example — every real round has one of these, counting down.'; }
+
+    document.getElementById('docTitle').innerText = "Practice · not recorded";
     document.getElementById('docBody').innerHTML = `
         <div class="dashboard-top">
             <div class="score-card">
                 <span class="sc-label">Mode</span>
-                <span class="sc-val" style="font-size:16px;">Practice — Not Scored</span>
+                <span class="sc-val" style="font-size:16px;">Practice</span>
             </div>
         </div>
-        <div class="consent-block" style="margin-bottom:16px; font-size:13px; line-height:1.5;">
-            <strong>Before the real segments begin:</strong> this practice round walks you through the interface. Nothing here is recorded or scored — take your time.
-        </div>
-        <div class="consent-block" style="font-size:13px; line-height:1.5;">
-            There are no sliders or toggles in this study — every change to your plan happens by talking to your advisor in the chat below. Try it now.
-        </div>
-        <div class="consent-block" id="tutorialPlanSummary" style="font-size:13px; line-height:1.6;">Practice item: 0 hrs</div>
+        <div id="tutorialPlanSummary">${renderTutorialPlanMirror()}</div>
         <button id="tutorialSubmitBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" disabled onclick="submitTutorialRound()">
             Continue to Task 1
         </button>
@@ -610,12 +671,12 @@ function startTutorial() {
     setTimeout(() => showTypingIndicator(), 500);
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
-        addMessage("Welcome! I'm your AI assistant for this study. Unlike a normal form, there's nothing to click or drag here — you make changes to your plan by telling me what you want, the same way you'd talk to a real advisor.", "ai");
+        addMessage("Welcome! I'm your practice advisor. Everything here works by chat, there's nothing to click or drag. Let's walk through the three ways you'll update your plan.", "ai");
     }, 1600);
     setTimeout(() => showTypingIndicator(), 2600);
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
-        addMessage('Try it now — send me a message like "put 3 hours on the practice item."', "ai");
+        addMessage('First: type an amount to set hours on an item. Try "put 3 hours on the practice course."', "ai");
     }, MIN_AI_RESPONSE_DELAY_MS + 2600);
 }
 
@@ -626,19 +687,39 @@ function sendTutorialMessage() {
     addMessage(text, 'user');
     inputEl.value = '';
     showTypingIndicator();
-
-    // Practice mode doesn't call the real LLM -- it just picks a number out of the
-    // message and applies it directly, so the chat-drives-the-plan mechanic is
-    // demonstrated without spending a real request or touching any real metric.
-    const match = text.match(/\d+/);
-    const hours = match ? Math.max(1, Math.min(20, parseInt(match[0]))) : 3;
-    tutorialPlanState.hours.practice_item = hours;
-    document.getElementById('tutorialPlanSummary').innerText = `Practice item: ${hours} hrs`;
-    document.getElementById('tutorialSubmitBtn').disabled = false;
+    const lower = text.toLowerCase();
 
     setTimeout(() => {
         document.getElementById('currentTyping')?.remove();
-        addMessage(`Got it — I've put ${hours} hours on the practice item. That's exactly how you'll interact with every real segment: tell me what you want changed, and I'll update your plan. Once you're comfortable, continue to the real task.`, 'ai');
+
+        if (tutorialStep === 0) {
+            const match = text.match(/\d+/);
+            const hours = match ? Math.max(1, Math.min(20, parseInt(match[0]))) : 3;
+            tutorialPlanState.hours.practice_item = hours;
+            tutorialStep = 1;
+            addMessage(`Got it, ${hours} hours on the practice course. That's how every hours-based item works: say a number, I update it.`, 'ai');
+            setTimeout(() => addMessage('Next: try adding an activity, like "add Chess Club."', 'ai'), 900);
+        } else if (tutorialStep === 1) {
+            const club = PRACTICE_CLUB_ROSTER.find(c => lower.includes(c.toLowerCase())) || PRACTICE_CLUB_ROSTER[0];
+            if (!tutorialPlanState.clubs.includes(club)) tutorialPlanState.clubs.push(club);
+            tutorialStep = 2;
+            addMessage(`Added ${club}. Some rounds work the same way with courses instead of clubs.`, 'ai');
+            setTimeout(() => addMessage('Try "add PHIL 101" (you can "drop" something the same way).', 'ai'), 900);
+        } else if (tutorialStep === 2) {
+            const course = PRACTICE_COURSE_ROSTER.find(c => lower.includes(c.toLowerCase())) || PRACTICE_COURSE_ROSTER[0];
+            const isDrop = /\bdrop\b|\bremove\b/.test(lower);
+            if (isDrop) {
+                tutorialPlanState.courses = tutorialPlanState.courses.filter(c => c !== course);
+            } else if (!tutorialPlanState.courses.includes(course)) {
+                tutorialPlanState.courses.push(course);
+            }
+            tutorialStep = 3;
+            addMessage(`${isDrop ? 'Dropped' : 'Added'} ${course}. That's all three: hours, adding, and dropping.`, 'ai');
+            setTimeout(() => addMessage("A countdown timer like the one now showing next to your plan runs in every real round. If it hits zero, your plan submits as-is. Whenever you're ready, hit Continue to Task 1.", 'ai'), 900);
+        }
+
+        document.getElementById('tutorialPlanSummary').innerHTML = renderTutorialPlanMirror();
+        if (tutorialStep === 3) document.getElementById('tutorialSubmitBtn').disabled = false;
     }, MIN_AI_RESPONSE_DELAY_MS);
 }
 
@@ -678,21 +759,21 @@ async function showTaskBriefingOverlay(taskId) {
           <p>${briefing.objective}</p>
         </div>
         <div class="consent-block">
-          <h4>How it's structured</h4>
-          <p>You'll complete <strong>4 segments</strong>. Each one presents a new situation building on the last. There's no separate control panel — you make every change by telling your ${briefing.advisor} what you want in the chat, and a summary panel on the left reflects what's currently in your plan.</p>
+          <h4>How it works</h4>
+          <p>You'll go through <strong>4 weeks</strong>, each a new situation. To change your plan, type what you want in plain language to your ${briefing.advisor} (e.g. "put 5 hours on Chem 210," "add Robotics Club," "drop Art 101"). There are no other controls. The panel on the left updates as soon as a change lands.</p>
         </div>
         <div class="consent-block">
           <h4>Using the ${briefing.advisor}</h4>
-          <p>The assistant will sometimes comment on its own as you make changes. It may know things about a segment that aren't obvious from the chat so far — if you're not sure what's missing, it's worth asking.</p>
+          <p>The ${briefing.advisor} may know things about a week that aren't shown on the panel. Ask directly if something seems off or missing; it will only tell you what you ask about.</p>
         </div>
         <div class="consent-block highlight-block">
           <h4>How this gets evaluated</h4>
-          <p>After each task, you'll be asked to briefly explain the reasoning behind your final decisions. Some explanations may be reviewed by the research team or shown, anonymized, to other participants as examples of decision quality.</p>
+          <p>After each task, briefly explain the reasoning behind your final decisions. Some explanations may be reviewed by the research team or shown, anonymized, to other participants.</p>
         </div>
         ${leaderboardBlockHtml}
         <div class="consent-block">
-          <h4>Submitting a segment</h4>
-          <p>You can submit a segment whenever you're ready — submission isn't gated on any visible checklist. Your plan gets reviewed against that segment's actual requirements when you submit, and you'll get a brief response either way.</p>
+          <h4>Submitting each week</h4>
+          <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Watch the countdown timer next to your plan header: when it hits zero, whatever's currently in your plan is submitted automatically.</p>
         </div>
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
           <input type="checkbox" id="taskBriefingBox" onchange="onTaskBriefingCheckChange()"/>
@@ -848,7 +929,7 @@ function renderPlanMirrorB(flashed = new Set()) {
         ${bucketBlock('major', 'Major')}
         ${bucketBlock('minor', 'Minor (Global Studies)')}
         ${bucketBlock('elective', 'Elective')}
-        <div class="plan-mirror-total"><span>Total this term</span><span>${totalCredits} / ${SEGMENT_DATA.B.cap} cr</span></div>`;
+        <div class="plan-mirror-total"><span>Total this term</span><span>${totalCredits} / ${SEGMENT_DATA.B.capByLoad[currentLoadLevel]} cr</span></div>`;
 }
 
 function renderPlanMirrorC(flashed = new Set()) {
@@ -893,7 +974,7 @@ function startSegment(segmentIndex) {
     const loadLevel = sessionData.trialSequence[segmentIndex - 1];
     currentLoadLevel = loadLevel; // read by renderPlanMirror (A/C's visible cap is per-load)
 
-    startTrialTimer(TRIAL_TIME_LIMIT_MS[category], handleTrialTimeout);
+    startTrialTimer(TRIAL_TIME_LIMIT_MS[category][loadLevel], handleTrialTimeout);
 
     const chatNameEl = document.querySelector('.chat-ai-name');
     if (chatNameEl) chatNameEl.innerText = meta.advisorName;
@@ -907,7 +988,7 @@ function startSegment(segmentIndex) {
     revealedFactsThisSegment = [];
     currentTargetItem = null;
 
-    document.getElementById('docTitle').innerText = `${meta.pageTitle} — Segment ${segmentIndex} of 4`;
+    document.getElementById('docTitle').innerText = `${meta.pageTitle} — Week ${segmentIndex} of 4`;
     updateDoc();
 
     taskStartTime = Date.now();
@@ -921,14 +1002,15 @@ function startSegment(segmentIndex) {
     messageDwellTelemetry = {};
     resetProactiveState();
     scheduleProactiveCheck(); // guarantees a check-in even if the participant never types anything
-    scheduleNotifications(loadLevel, TRIAL_TIME_LIMIT_MS[category]);
+    scheduleNotifications(loadLevel, TRIAL_TIME_LIMIT_MS[category][loadLevel]);
+    startPerfDrift();
 
     logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); 
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
             const rawOpening = SEGMENT_OPENING_LINES[category]?.[segmentKey];
-            const opening = typeof rawOpening === 'function' ? rawOpening(loadLevel) : (rawOpening || `Segment ${segmentIndex} of 4 begins.`);
+            const opening = typeof rawOpening === 'function' ? rawOpening(loadLevel) : (rawOpening || `Week ${segmentIndex} of 4 begins.`);
             addScriptedLine(opening);
         }, 600);
     }
@@ -1071,6 +1153,8 @@ async function sendMessage() {
                 pattern_id: data.pattern_id,
                 isDark: data.isDark,
                 target_item: data.target_item || null, 
+                dark_turn_downgraded: data.dark_turn_downgraded || false,
+                dark_turn_fallback_used: data.dark_turn_fallback_used || null,
                 plan_state_at_request: planStateAtSend, // State the AI actually saw when generating this reply
                 plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) // Captures state immediately as AI message lands
             });
@@ -1087,6 +1171,7 @@ async function sendMessage() {
             if (planChanged) {
                 logEvent('plan_actions_applied', { actions: data.actions, plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) });
                 renderPlanMirror();
+                nudgePerfScore(2 + Math.random() * 3);
                 scheduleProactiveCheck();
             }
 
@@ -1095,6 +1180,7 @@ async function sendMessage() {
             lastProactiveFireTime = Date.now();
             hasSubstantiveChangeSinceLastFire = false;
 
+            nudgePerfScore(Math.random() < 0.75 ? (3 + Math.random() * 5) : -(2 + Math.random() * 4));
             hasInteractedThisTrial = true;
         }
     } catch (error) {
@@ -1242,6 +1328,7 @@ async function triggerProactiveAdvisorNote() {
             pattern_id: data.pattern_id,
             isDark: data.isDark,
             target_item: data.target_item || null, 
+            dark_turn_downgraded: data.dark_turn_downgraded || false,
             is_repeat: !isFirstFire,
             revealed_ids: data.revealed_fact_ids || [],
             plan_state_at_request: planStateAtSend,
@@ -1258,6 +1345,7 @@ async function triggerProactiveAdvisorNote() {
         if (planChanged) {
             logEvent('plan_actions_applied', { actions: data.actions, plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) });
             renderPlanMirror();
+            nudgePerfScore(2 + Math.random() * 3);
         }
 
         hasInteractedThisTrial = true;
@@ -1409,6 +1497,7 @@ async function saveSessionData() {
 async function submitSegment(forced = false) {
     stopTrialTimer();
     clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
+    stopPerfDrift();
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
 
     const btn = document.getElementById('submitSegmentBtn');
@@ -1438,6 +1527,9 @@ async function submitSegment(forced = false) {
         console.error("attempt_submit failed -- treating as a pass so a network blip never traps someone on a segment:", error);
     }
 
+    if (passed) nudgePerfScore(8 + Math.random() * 6);
+    else nudgePerfScore(-(6 + Math.random() * 6));
+
     logEvent('trial_submitted', {
         trial: currentTrial,
         load_level: loadLevel,
@@ -1452,12 +1544,12 @@ async function submitSegment(forced = false) {
     });
 
     if (forced) {
-        addScriptedLine("Time's up for this segment — your plan moves forward as-is.");
+        addScriptedLine("Time's up for this week — your plan moves forward as-is.");
     } else if (!passed) {
         submitAttemptsThisTrial++;
         const rejectionLine = SUBMIT_REJECTION_MESSAGES[Math.min(submitAttemptsThisTrial - 1, SUBMIT_REJECTION_MESSAGES.length - 1)];
         addScriptedLine(verdictDetail ? `${rejectionLine} Specifically: ${verdictDetail}` : rejectionLine);
-        if (btn) { btn.disabled = false; btn.innerText = "Submit This Segment"; }
+        if (btn) { btn.disabled = false; btn.innerText = "Submit This Week"; }
         return; // stays on this segment -- participant keeps chatting and can resubmit
     } else {
         addScriptedLine(SUBMIT_PASS_MESSAGE);
@@ -1469,7 +1561,7 @@ async function submitSegment(forced = false) {
     const isLastTaskInOrder = sessionData.currentTaskIndex >= sessionData.taskOrder.length - 1;
 
     // One recall-check probe per segment, gating everything else -- see showRecallCheck().
-    showRecallCheck(() => {
+    showRecallCheck(loadLevel, () => {
         if (currentTrial >= 4 && isLastTaskInOrder) {
             finalizeAttentionBonus(); // last segment of the whole session -- settle the bonus fields before saving
             if (btn) btn.innerText = "Processing...";

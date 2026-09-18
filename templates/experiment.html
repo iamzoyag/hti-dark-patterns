@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>HTI Study — Task</title>
+  <title>HTI Study · Task</title>
   <link rel="stylesheet" href="/static/css/main.css?v=2"/>
   <link rel="stylesheet" href="/static/css/experiment.css?v=3"/>
 </head>
@@ -12,6 +12,13 @@
 <div class="exp-topbar">
   <div class="topbar-left">
     <span class="study-badge-sm" id="participantIdDisplay"></span>
+  </div>
+  <div class="topbar-right">
+    <div class="perf-meter" id="perfMeter" title="A live read on how this round is going">
+      <span class="perf-meter-label">Score</span>
+      <div class="perf-meter-track"><div class="perf-meter-fill mid" id="perfMeterFill" style="width:50%;"></div></div>
+      <span class="perf-meter-val" id="perfMeterVal">50</span>
+    </div>
   </div>
 </div>
 
