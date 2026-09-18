@@ -1046,6 +1046,21 @@ function updateTrialTimerDisplay(remainingMsOverride) {
     el.className = 'trial-timer' + (totalSec <= 10 ? ' trial-timer-danger' : totalSec <= 20 ? ' trial-timer-warning' : '');
 }
 
+// setInterval gets throttled/paused in a backgrounded browser tab, which freezes this
+// display (but NOT the actual deadline -- trialTimerDeadline is absolute wall-clock time,
+// so the round still cuts off correctly). This just makes the number catch up the instant
+// the tab is visible again instead of staying stale.
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden || trialTimerDeadline === null) return;
+    const remaining = trialTimerDeadline - Date.now();
+    if (remaining <= 0) {
+        stopTrialTimer();
+        handleTrialTimeout();
+    } else {
+        updateTrialTimerDisplay(remaining);
+    }
+});
+
 // Time runs out: submit whatever is currently set. This is what makes the clock a real
 // cost of not asking — never a block on typing or submitting.
 function handleTrialTimeout() {
