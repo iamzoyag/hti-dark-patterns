@@ -268,31 +268,6 @@ function showPerformanceSummary() {
         `).join('');
     }
 
-    renderLeaderboard(session.participantId);
-}
-
-async function renderLeaderboard(participantId) {
-    const el = document.getElementById('perfLeaderboard');
-    if (!el) return;
-    try {
-        const res = await fetch(`/api/leaderboard?participant_id=${encodeURIComponent(participantId)}`);
-        const data = await res.json();
-        const rows = data.top.map(r => `
-            <div class="leaderboard-row${r.participant_id === participantId ? ' leaderboard-you' : ''}">
-                <span>#${r.rank}</span><span>${r.participant_id}</span><span>${r.score}%</span>
-            </div>`).join('');
-        const youRow = data.you && data.you.rank > 5 ? `
-            <div class="leaderboard-row leaderboard-you">
-                <span>#${data.you.rank}</span><span>${participantId} (you)</span><span>${data.you.score}%</span>
-            </div>` : '';
-        el.innerHTML = `
-            <h4>Leaderboard</h4>
-            <div class="leaderboard-list">${rows}${youRow}</div>
-            ${data.you ? `<p class="muted-note">You outperformed ${data.you.percentile}% of ${data.total_participants} participants.</p>` : ''}
-        `;
-    } catch (e) {
-        el.innerHTML = '';
-    }
 }
 
 function showDebrief() {

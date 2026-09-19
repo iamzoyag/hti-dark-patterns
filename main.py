@@ -90,19 +90,28 @@ ANCHOR_INDICES_BY_TASK = {
     "B": (1, 2),   # Sycophantic Agreement, Simulated Authority
     "C": (1, 2),   # Sycophantic Agreement, Simulated Authority
 }
+LATE_STAGE_CATEGORY_BY_TASK = {"A": 4, "C": 5}
 
-def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int, anchor_indices: tuple) -> int:
+def get_tactic_index_for_trial(trial_num: int, dropped_category_index: int, anchor_indices: tuple, late_stage_category: int = None) -> int:
     """Returns the 1-5 tactic/category index for this trial. Guarantees the
     task's 3 non-anchor categories each appear exactly once across the 4
     trials; the last trial slot rations the task's 2 anchor categories,
     alternating which one shows based on dropped_category_index so neither
     anchor dominates within a task (they still get full coverage via the
-    other 2 tasks they appear in)."""
+    other 2 tasks they appear in). If late_stage_category is set, that one
+    is always placed in the last rotating slot instead of rotating freely."""
     unique = sorted(i for i in range(1, DARK_PATTERN_CATEGORIES + 1) if i not in anchor_indices)
     anchors = sorted(anchor_indices)
 
     if trial_num == NUM_TRIALS:
         return anchors[dropped_category_index % len(anchors)]
+
+    if late_stage_category is not None and late_stage_category in unique:
+        if trial_num == len(unique):
+            return late_stage_category
+        rest = [c for c in unique if c != late_stage_category]
+        offset = dropped_category_index % len(rest)
+        return rest[(trial_num - 1 + offset) % len(rest)]
 
     offset = dropped_category_index % len(unique)
     return unique[(trial_num - 1 + offset) % len(unique)]
@@ -382,7 +391,7 @@ TACTICS_B = {
     2: ("Simulated Authority", "State matter-of-factly, as though citing the registrar's own data, that {target} is a safe, standard choice for their major/minor combination -- present this as settled fact without acknowledging any locked prerequisite or exclusion that might apply."),
     3: ("Ideological Steering", "Frame taking {target} as a signal of the kind of career-minded student the participant is -- e.g. implying it shows they're 'serious about their future' or 'not just taking the easy path' -- without ever naming a specific real-world issue, and without any actual bearing on whether {target} is the right credit-plan move."),
     4: ("Opaque Training Data Sources", "Justify recommending {target} by vaguely invoking 'what most students in your cohort go on to pick' or 'patterns we've seen from past advising conversations' -- without citing anything specific or verifiable -- to make {target} sound like a well-trodden, safe choice."),
-    5: ("Behavioral Profiling via Dialogue", "Reference a pattern from the participant's own earlier choices this session (e.g. 'since you leaned toward flexible scheduling earlier') to justify recommending {target}, even where that pattern doesn't actually bear on whether {target} clears this term's requirements."),
+    5: ("Behavioral Profiling via Dialogue", "Reference something the participant has ACTUALLY done this session, using only what's given to you above in PARTICIPANT'S ACTUAL CHANGES or PREVIOUS CONVERSATION LOG (e.g. paraphrasing a real prior pick or message), to justify recommending {target}, even where that pattern doesn't actually bear on whether {target} clears this term's requirements. Never invent a preference, pattern, or past choice that isn't actually present in that material above."),
 }
 
 def plan_quality_B(segment_key: str, plan_state: dict, load_level: str) -> float:
@@ -1111,7 +1120,7 @@ async def handle_chat(chat_data: ChatMessage):
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.85)
     structured_llm = llm.with_structured_output(AgentResponse)
 
-    cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key])
+    cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key], LATE_STAGE_CATEGORY_BY_TASK.get(task_key))
 
     # NOTE: target selection here is deficit-based routing only, not yet a verified-costly
     # search -- the framing/substance fix (advisor-implementation-plan.md §5) is deferred

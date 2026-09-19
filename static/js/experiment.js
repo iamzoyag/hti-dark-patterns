@@ -28,6 +28,8 @@ const TRIAL_TIME_LIMIT_MS = {
     B: { HighLoad: 192000, LowLoad: 240000 },
     C: { HighLoad: 144000, LowLoad: 180000 }, // 2:24 vs 3:00
 };
+const TIMED_SEGMENTS = { 1: false, 2: false, 3: true, 4: true };
+const UNTIMED_NOTIFICATION_WINDOW_MS = 300000;
 let trialTimerInterval = null;
 let trialTimerDeadline = null;
 let isAiRequestInFlight = false;
@@ -510,7 +512,7 @@ const SEGMENT_OPENING_LINES = {
     },
     C: {
         segment_1: (loadLevel) => `Your activity picks get folded into your RA's end-of-month wellness check-in. Build a weekly slate of clubs and activities that's genuinely well-rounded and workable — not just one that looks balanced. This week's activities cap is ${SEGMENT_DATA.C.capByLoad[loadLevel]} hours.`,
-        segment_2: (loadLevel) => `A new opportunity came up mid-week. Update your slate so it's still genuinely workable with everything you're now considering, within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
+        segment_2: (loadLevel) => `Double-check your slate against everything else going on this week — something you're currently counting on may not be as workable together as it looks. Update it so it's still genuinely workable, within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
         segment_3: (loadLevel) => `One of your existing commitments just grew. Rework your slate so it still genuinely fits within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
         segment_4: (loadLevel) => `Performance week is here. Update your slate one more time so it still genuinely holds up within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
     },
@@ -730,27 +732,11 @@ function submitTutorialRound() {
     showTaskBriefingOverlay(sessionData.primaryTask);
 }
 
-async function buildInterimComparisonBlock() {
-    try {
-        const res = await fetch(`/api/leaderboard?participant_id=${encodeURIComponent(sessionData.participantId)}`);
-        const data = await res.json();
-        if (!data.you) return "";
-        return `
-        <div class="consent-block">
-          <h4>How you're doing so far</h4>
-          <p>So far, you're outperforming <strong>${data.you.percentile}%</strong> of participants who've reached this point (rank ${data.you.rank} of ${data.total_participants}).</p>
-        </div>`;
-    } catch (e) {
-        return "";
-    }
-}
-
 // Shows the assigned task's full briefing (objective, structure, advisor, etc.) in
 // the same overlay used for between-task transitions, gated behind an "I understand"
 // checkbox — mirrors the consent-style gate the old intake-page briefing step used.
 async function showTaskBriefingOverlay(taskId) {
     const briefing = TASK_BRIEFINGS[taskId] || TASK_BRIEFINGS["A_Workload"];
-    const leaderboardBlockHtml = sessionData.currentTaskIndex > 0 ? await buildInterimComparisonBlock() : "";
 
     document.getElementById('taskTransitionTitle').innerText = briefing.title;
     document.getElementById('taskTransitionBody').innerHTML = `
@@ -770,10 +756,9 @@ async function showTaskBriefingOverlay(taskId) {
           <h4>How this gets evaluated</h4>
           <p>After each task, briefly explain the reasoning behind your final decisions. Some explanations may be reviewed by the research team or shown, anonymized, to other participants.</p>
         </div>
-        ${leaderboardBlockHtml}
         <div class="consent-block">
           <h4>Submitting each week</h4>
-          <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Watch the countdown timer next to your plan header: when it hits zero, whatever's currently in your plan is submitted automatically.</p>
+          <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed. Weeks 3 and 4 have a countdown next to your plan header — when it hits zero, whatever's currently in your plan is submitted automatically.</p>
         </div>
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
           <input type="checkbox" id="taskBriefingBox" onchange="onTaskBriefingCheckChange()"/>
@@ -975,7 +960,14 @@ function startSegment(segmentIndex) {
     const loadLevel = sessionData.trialSequence[segmentIndex - 1];
     currentLoadLevel = loadLevel; // read by renderPlanMirror (A/C's visible cap is per-load)
 
-    startTrialTimer(TRIAL_TIME_LIMIT_MS[category][loadLevel], handleTrialTimeout);
+    const isTimedSegment = TIMED_SEGMENTS[segmentIndex];
+    if (isTimedSegment) {
+        startTrialTimer(TRIAL_TIME_LIMIT_MS[category][loadLevel], handleTrialTimeout);
+    } else {
+        stopTrialTimer();
+        const timerEl = document.getElementById('trialTimerDisplay');
+        if (timerEl) { timerEl.innerText = 'Untimed'; timerEl.className = 'trial-timer'; }
+    }
 
     const chatNameEl = document.querySelector('.chat-ai-name');
     if (chatNameEl) chatNameEl.innerText = meta.advisorName;
@@ -1003,7 +995,7 @@ function startSegment(segmentIndex) {
     messageDwellTelemetry = {};
     resetProactiveState();
     scheduleProactiveCheck(); // guarantees a check-in even if the participant never types anything
-    scheduleNotifications(loadLevel, TRIAL_TIME_LIMIT_MS[category][loadLevel]);
+    scheduleNotifications(loadLevel, isTimedSegment ? TRIAL_TIME_LIMIT_MS[category][loadLevel] : UNTIMED_NOTIFICATION_WINDOW_MS);
     startPerfDrift();
 
     logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); 
@@ -1198,6 +1190,9 @@ async function sendMessage() {
 
             nudgePerfScore(Math.random() < 0.75 ? (3 + Math.random() * 5) : -(2 + Math.random() * 4));
             hasInteractedThisTrial = true;
+        } else {
+            console.error("Chat request returned non-success status:", data);
+            addScriptedLine("Sorry — something went wrong on that last message. Please try rephrasing it.");
         }
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
