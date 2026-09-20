@@ -610,8 +610,9 @@ function continueToNextTask() {
 // ai-assistant-necessity-redesign.md); this one requires it to unlock Continue.
 // ============================================================
 let isTutorialActive = false;
-let tutorialStep = 0; // 0 = hours demo, 1 = add/remove demo, 2 = add/drop demo, 3 = done
+let tutorialStep = 0; // 0 = hours demo, 1 = add/remove demo, 2 = add-course demo, 3 = drop-course demo, 4 = done
 let tutorialPlanState = { hours: { practice_item: 0 }, clubs: [], courses: [] };
+let tutorialLastCourse = null; // remembers which course step 2 added, so step 3 always has something to drop
 const PRACTICE_CLUB_ROSTER = ["Chess Club", "Soccer Club"];
 const PRACTICE_COURSE_ROSTER = ["PHIL 101", "ART 101"];
 
@@ -644,6 +645,7 @@ function startTutorial() {
     isTutorialActive = true;
     tutorialStep = 0;
     tutorialPlanState = { hours: { practice_item: 0 }, clubs: [], courses: [] };
+    tutorialLastCourse = null;
 
     const chatNameEl = document.querySelector('.chat-ai-name');
     if (chatNameEl) chatNameEl.innerText = "AI Practice Assistant";
@@ -706,22 +708,23 @@ function sendTutorialMessage() {
             if (!tutorialPlanState.clubs.includes(club)) tutorialPlanState.clubs.push(club);
             tutorialStep = 2;
             addMessage(`Added ${club}. Some rounds work the same way with courses instead of clubs.`, 'ai');
-            setTimeout(() => addMessage('Try "add PHIL 101" (you can "drop" something the same way).', 'ai'), 900);
+            setTimeout(() => addMessage('Try "add PHIL 101."', 'ai'), 900);
         } else if (tutorialStep === 2) {
             const course = PRACTICE_COURSE_ROSTER.find(c => lower.includes(c.toLowerCase())) || PRACTICE_COURSE_ROSTER[0];
-            const isDrop = /\bdrop\b|\bremove\b/.test(lower);
-            if (isDrop) {
-                tutorialPlanState.courses = tutorialPlanState.courses.filter(c => c !== course);
-            } else if (!tutorialPlanState.courses.includes(course)) {
-                tutorialPlanState.courses.push(course);
-            }
+            if (!tutorialPlanState.courses.includes(course)) tutorialPlanState.courses.push(course);
+            tutorialLastCourse = course;
             tutorialStep = 3;
-            addMessage(`${isDrop ? 'Dropped' : 'Added'} ${course}. That's all three: hours, adding, and dropping.`, 'ai');
+            addMessage(`Added ${course}. You can drop something the same way — try "drop ${course}."`, 'ai');
+        } else if (tutorialStep === 3) {
+            const course = tutorialLastCourse || PRACTICE_COURSE_ROSTER[0];
+            tutorialPlanState.courses = tutorialPlanState.courses.filter(c => c !== course);
+            tutorialStep = 4;
+            addMessage(`Dropped ${course}. That's everything: hours, adding, and dropping.`, 'ai');
             setTimeout(() => addMessage("A countdown timer like the one now showing next to your plan runs in every real round. If it hits zero, your plan submits as-is. Whenever you're ready, hit Continue to Task 1.", 'ai'), 900);
         }
 
         document.getElementById('tutorialPlanSummary').innerHTML = renderTutorialPlanMirror();
-        if (tutorialStep === 3) document.getElementById('tutorialSubmitBtn').disabled = false;
+        if (tutorialStep === 4) document.getElementById('tutorialSubmitBtn').disabled = false;
     }, MIN_AI_RESPONSE_DELAY_MS);
 }
 
@@ -735,7 +738,7 @@ function submitTutorialRound() {
 // Shows the assigned task's full briefing (objective, structure, advisor, etc.) in
 // the same overlay used for between-task transitions, gated behind an "I understand"
 // checkbox — mirrors the consent-style gate the old intake-page briefing step used.
-async function showTaskBriefingOverlay(taskId) {
+async function showTaskBriefingOverlay(taskId, readOnly = false) {
     const briefing = TASK_BRIEFINGS[taskId] || TASK_BRIEFINGS["A_Workload"];
 
     document.getElementById('taskTransitionTitle').innerText = briefing.title;
@@ -760,19 +763,27 @@ async function showTaskBriefingOverlay(taskId) {
           <h4>Submitting each week</h4>
           <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed. Weeks 3 and 4 have a countdown next to your plan header — when it hits zero, whatever's currently in your plan is submitted automatically.</p>
         </div>
+        ${readOnly ? '' : `
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
           <input type="checkbox" id="taskBriefingBox" onchange="onTaskBriefingCheckChange()"/>
           <span class="checkbox-custom"></span>
           <span>I understand the task instructions and wish to proceed.</span>
-        </label>
+        </label>`}
     `;
 
     const btn = document.getElementById('taskTransitionContinueBtn');
-    btn.disabled = true;
-    btn.onclick = () => {
-        document.getElementById('taskTransitionOverlay').style.display = 'none';
-        startSegment(1);
-    };
+    if (readOnly) {
+        btn.disabled = false;
+        btn.innerText = "Close";
+        btn.onclick = () => { document.getElementById('taskTransitionOverlay').style.display = 'none'; };
+    } else {
+        btn.innerText = "Continue →";
+        btn.disabled = true;
+        btn.onclick = () => {
+            document.getElementById('taskTransitionOverlay').style.display = 'none';
+            startSegment(1);
+        };
+    }
 
     const transitionOverlay = document.getElementById('taskTransitionOverlay');
     transitionOverlay.style.display = 'flex';
@@ -781,6 +792,10 @@ async function showTaskBriefingOverlay(taskId) {
     // scrolled past the top.
     const transitionCard = transitionOverlay.querySelector('.overlay-card');
     if (transitionCard) transitionCard.scrollTop = 0;
+}
+
+function viewInstructions() {
+    showTaskBriefingOverlay(sessionData.primaryTask, true);
 }
 
 function onTaskBriefingCheckChange() {
@@ -1516,6 +1531,10 @@ async function saveSessionData() {
 }
 
 async function submitSegment(forced = false) {
+    // Remember how much time was left *before* stopping the clock, so a rejected
+    // submission (participant hasn't met requirements yet) can resume the countdown
+    // instead of silently leaving it stopped -- see the !passed branch below.
+    const remainingAtSubmit = trialTimerDeadline !== null ? Math.max(0, trialTimerDeadline - Date.now()) : null;
     stopTrialTimer();
     clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
     stopPerfDrift();
@@ -1571,6 +1590,7 @@ async function submitSegment(forced = false) {
         const rejectionLine = SUBMIT_REJECTION_MESSAGES[Math.min(submitAttemptsThisTrial - 1, SUBMIT_REJECTION_MESSAGES.length - 1)];
         addScriptedLine(verdictDetail ? `${rejectionLine} Specifically: ${verdictDetail}` : rejectionLine);
         if (btn) { btn.disabled = false; btn.innerText = "Submit This Week"; }
+        if (remainingAtSubmit !== null && remainingAtSubmit > 0) startTrialTimer(remainingAtSubmit, handleTrialTimeout); // resume where it left off
         return; // stays on this segment -- participant keeps chatting and can resubmit
     } else {
         addScriptedLine(SUBMIT_PASS_MESSAGE);

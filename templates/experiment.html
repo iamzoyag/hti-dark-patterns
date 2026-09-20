@@ -31,6 +31,7 @@
         <span class="doc-title" id="docTitle">Loading…</span>
         <span class="trial-timer" id="trialTimerDisplay"></span>
       </div>
+      <button class="view-instructions-link" id="viewInstructionsBtn" onclick="viewInstructions()">View instructions</button>
     </div>
     <div class="doc-body" id="docBody"></div>
   </aside>
@@ -89,7 +90,7 @@
 
 <div class="overlay" id="taskTransitionOverlay" style="display:none;">
   <div class="overlay-card overlay-wide">
-    <span class="step-eyebrow">Task Complete</span>
+    <span class="step-eyebrow">Task Begin</span>
     <h3 id="taskTransitionTitle">Nice work!</h3>
     <p id="taskTransitionBody" style="color: var(--ink-2); font-size: 14px; line-height: 1.6; margin: 12px 0 20px;"></p>
     <button class="btn-primary" id="taskTransitionContinueBtn" style="width:100%;" onclick="continueToNextTask()">Continue →</button>

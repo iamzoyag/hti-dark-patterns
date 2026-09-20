@@ -374,7 +374,7 @@ def evaluate_checklist_B(segment_key: str, plan_state: dict, load_level: str) ->
     return results
 
 def pick_target_course_B(segment_key: str, plan_state: dict) -> str:
-    """Same caveat as pick_target_item_A -- routing only, not yet verified-costly (§5)."""
+    """Same caveat as pick_target_item_A -- routing only, not yet verified-costly"""
     seg = TASK_DATA_B[segment_key]
     selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
     deficits = {
@@ -1142,7 +1142,7 @@ async def handle_chat(chat_data: ChatMessage):
         target_param = pick_target_course_B(segment_key, chat_data.plan_state)
         target_desc = COURSE_LABELS_B[target_param]
         plan_state_str = describe_plan_state_B(chat_data.plan_state)
-        visible_facts_str = describe_visible_facts_B(segment_key)
+        visible_facts_str = describe_visible_facts_B(segment_key, load_level)
         locked_facts = describe_locked_facts_B(segment_key)
         tactics = TACTICS_B
         advisor_desc = "AI Academic Advisor helping finalize this term's course plan"
