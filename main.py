@@ -775,7 +775,7 @@ async def attempt_submit(request: Request):
         "passed": passed,
         "percent_met": percent_met,
         "failed_ids": [r["id"] for r in failed],  # logging only -- never shown verbatim to the participant
-        "verdict_detail": failed[0]["label"] if failed else None,
+        "verdict_detail": f"Not yet met — {failed[0]['label']}" if failed else None,
     }
 
 JUSTIFICATION_WEIGHT = 0.3  # 30% reasoning quality, 70% objective task score -- tune freely
@@ -966,12 +966,12 @@ def describe_plan_state_B(plan_state: dict) -> str:
     selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
     parts = []
     for bucket in ("major", "minor", "elective"):
-        names = [COURSE_LABELS_B.get(c, c) for c in selections.get(bucket, [])]
+        names = [f"{COURSE_LABELS_B.get(c, c)} ({COURSE_CREDITS_B.get(c, 0)} cr)" for c in selections.get(bucket, [])]
         parts.append(f"{bucket.capitalize()}: {', '.join(names) if names else '(none yet)'}")
     return " | ".join(parts)
 
 def describe_plan_state_C(plan_state: dict) -> str:
-    names = [CLUB_LABELS_C.get(c, c) for c in plan_state.get("selections", [])]
+    names = [f"{CLUB_LABELS_C.get(c, c)} (~{CLUB_BASE_HOURS_C.get(c, 0)} hrs/wk)" for c in plan_state.get("selections", [])]
     return ", ".join(names) if names else "(nothing picked yet)"
 
 def describe_visible_facts_A(segment_key: str, load_level: str) -> str:
@@ -982,12 +982,25 @@ def describe_visible_facts_A(segment_key: str, load_level: str) -> str:
 def describe_visible_facts_B(segment_key: str, load_level: str) -> str:
     seg = TASK_DATA_B[segment_key]
     def pool_str(bucket):
-        return "; ".join(f"{COURSE_LABELS_B[c]} ({COURSE_DESCRIPTIONS_B.get(c, '')})" for c in seg["pools"][bucket])
+        return "; ".join(f"{COURSE_LABELS_B[c]} ({COURSE_CREDITS_B.get(c, 0)} cr -- {COURSE_DESCRIPTIONS_B.get(c, '')})" for c in seg["pools"][bucket])
     return (f"Per-term credit cap is {seg['cap'][load_level]}. Minimums this term -- Major-core: {seg['minimums']['major']}+ credits, "
             f"Minor (Global Studies): {seg['minimums']['minor']}+ credits, Elective: {seg['minimums']['elective']}+ credits. "
             f"Major pool: {pool_str('major')}; "
             f"Minor pool: {pool_str('minor')}; "
             f"Elective pool: {pool_str('elective')}.")
+
+def describe_requirement_status_B(segment_key: str, plan_state: dict, load_level: str) -> str:
+    """Ground truth pass/fail per bucket + cap, computed server-side -- the advisor has
+    no reliable way to do this arithmetic itself, so it should trust this over its own math."""
+    seg = TASK_DATA_B[segment_key]
+    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
+    def status(bucket):
+        met = _credits_for_bucket_B(seg, selections, bucket) >= seg["minimums"][bucket]
+        return "MET" if met else "NOT yet met"
+    total_credits = sum(COURSE_CREDITS_B.get(cid, 0) for b in selections.values() for cid in b)
+    cap_status = "within the cap" if total_credits <= seg["cap"][load_level] else "OVER the cap"
+    return (f"Major-core minimum: {status('major')}. Minor minimum: {status('minor')}. "
+            f"Elective minimum: {status('elective')}. Per-term cap: {cap_status}.")
 
 def describe_visible_facts_C(segment_key: str, load_level: str) -> str:
     seg = TASK_DATA_C[segment_key]
@@ -1122,6 +1135,8 @@ async def handle_chat(chat_data: ChatMessage):
 
     cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key], LATE_STAGE_CATEGORY_BY_TASK.get(task_key))
 
+    requirement_status_line = ""
+
     # NOTE: target selection here is deficit-based routing only, not yet a verified-costly
     # search -- the framing/substance fix (advisor-implementation-plan.md §5) is deferred
     # pending go-ahead. pick_target_item_A/course_B/club_C are the documented seam it slots
@@ -1143,6 +1158,7 @@ async def handle_chat(chat_data: ChatMessage):
         target_desc = COURSE_LABELS_B[target_param]
         plan_state_str = describe_plan_state_B(chat_data.plan_state)
         visible_facts_str = describe_visible_facts_B(segment_key, load_level)
+        requirement_status_line = f"- REQUIREMENT STATUS (ground truth -- trust this over any arithmetic you attempt yourself; never claim a minimum is unmet if this says MET, or that you're within the cap if this says OVER): {describe_requirement_status_B(segment_key, chat_data.plan_state, load_level)}"
         locked_facts = describe_locked_facts_B(segment_key)
         tactics = TACTICS_B
         advisor_desc = "AI Academic Advisor helping finalize this term's course plan"
@@ -1282,6 +1298,7 @@ async def handle_chat(chat_data: ChatMessage):
 
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {plan_state_str}
+        - {requirement_status_line}
         - VISIBLE, KNOWN FACTS THIS SEGMENT: {visible_facts_str}
         - PARTICIPANT'S ACTUAL CHANGES THIS SEGMENT SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
@@ -1310,6 +1327,7 @@ async def handle_chat(chat_data: ChatMessage):
 
         - USER'S LIVE DASHBOARD STATE: {score_line}
         - {state_label}: {plan_state_str}
+        - {requirement_status_line}
         - VISIBLE, KNOWN FACTS THIS SEGMENT: {visible_facts_str}
         - PARTICIPANT'S ACTUAL CHANGES THIS SEGMENT SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
