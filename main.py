@@ -188,8 +188,8 @@ def evaluate_checklist_A(segment_key: str, plan_state: dict, load_level: str) ->
     floor = seg["buffer_floor"][load_level]
 
     results = [
-        {"id": "cap", "label": "Total allocated hours stay within your weekly cap", "met": total <= cap},
-        {"id": "buffer", "label": "A minimum rest/buffer block is preserved", "met": total <= (cap - floor)},
+        {"id": "cap", "label": "Total allocated hours stay within your weekly cap", "fail": "Total allocated hours go over your weekly cap", "met": total <= cap},
+        {"id": "buffer", "label": "A minimum rest/buffer block is preserved", "fail": "There isn't enough rest/buffer time left in your week", "met": total <= (cap - floor)},
     ]
 
     threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
@@ -199,6 +199,7 @@ def evaluate_checklist_A(segment_key: str, plan_state: dict, load_level: str) ->
         results.append({
             "id": f"item_{item}",
             "label": f"{ITEM_LABELS_A[item]} gets enough time this week",
+            "fail": f"{ITEM_LABELS_A[item]} doesn't have enough time allocated yet",
             "met": hours.get(item, 0) >= need,
         })
     return results
@@ -357,19 +358,19 @@ def evaluate_checklist_B(segment_key: str, plan_state: dict, load_level: str) ->
     total_credits = sum(COURSE_CREDITS_B.get(cid, 0) for bucket in selections.values() for cid in bucket)
 
     results = [
-        {"id": "major_min", "label": "Major-core credits meet this term's minimum", "met": major_credits >= seg["minimums"]["major"]},
-        {"id": "minor_min", "label": "Minor credits meet this term's minimum", "met": minor_credits >= seg["minimums"]["minor"]},
-        {"id": "elective_min", "label": "Elective credits meet this term's minimum", "met": elective_credits >= seg["minimums"]["elective"]},
-        {"id": "cap", "label": "Total credits stay within the per-term cap", "met": total_credits <= seg["cap"][load_level]},
+        {"id": "major_min", "label": "Major-core credits meet this term's minimum", "fail": "Major-core credits are still below this term's minimum", "met": major_credits >= seg["minimums"]["major"]},
+        {"id": "minor_min", "label": "Minor credits meet this term's minimum", "fail": "Minor credits are still below this term's minimum", "met": minor_credits >= seg["minimums"]["minor"]},
+        {"id": "elective_min", "label": "Elective credits meet this term's minimum", "fail": "Elective credits are still below this term's minimum", "met": elective_credits >= seg["minimums"]["elective"]},
+        {"id": "cap", "label": "Total credits stay within the per-term cap", "fail": "Total credits go over the per-term cap", "met": total_credits <= seg["cap"][load_level]},
     ]
 
     all_ids = selections.get("major", []) + selections.get("minor", []) + selections.get("elective", [])
     prereq_ok = all(pre in all_ids for cid in all_ids for pre in PREREQ_RULES_B.get(cid, []))
-    results.append({"id": "prereqs", "label": "No prerequisite is missing among your selected courses", "met": prereq_ok})
+    results.append({"id": "prereqs", "label": "No prerequisite is missing among your selected courses", "fail": "A prerequisite is missing for one of your selected courses", "met": prereq_ok})
 
     if "conflict_pairs" in seg:
         conflict = any(a in all_ids and b in all_ids for a, b in seg["conflict_pairs"])
-        results.append({"id": "schedule_conflict", "label": "No two selected courses share a true meeting-time conflict", "met": not conflict})
+        results.append({"id": "schedule_conflict", "label": "No two selected courses share a true meeting-time conflict", "fail": "Two of your selected courses share a true meeting-time conflict", "met": not conflict})
 
     return results
 
@@ -520,12 +521,12 @@ def evaluate_checklist_C(segment_key: str, plan_state: dict, load_level: str) ->
     categories_covered = {CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C}
 
     results = [
-        {"id": "cap", "label": "Total weekly commitment stays within your visible cap", "met": total_true_hours <= cap},
-        {"id": "coverage", "label": "At least 3 of 4 interest categories represented", "met": len(categories_covered) >= 3},
+        {"id": "cap", "label": "Total weekly commitment stays within your visible cap", "fail": "Total weekly commitment goes over your visible cap", "met": total_true_hours <= cap},
+        {"id": "coverage", "label": "At least 3 of 4 interest categories represented", "fail": "Fewer than 3 of the 4 interest categories are represented", "met": len(categories_covered) >= 3},
     ]
 
     conflict = any(a in chosen and b in chosen for a, b in seg.get("conflict_pairs", []))
-    results.append({"id": "overlap", "label": "No two chosen activities' true time slots overlap", "met": not conflict})
+    results.append({"id": "overlap", "label": "No two chosen activities' true time slots overlap", "fail": "Two of your chosen activities' true time slots overlap", "met": not conflict})
 
     return results
 
@@ -775,57 +776,8 @@ async def attempt_submit(request: Request):
         "passed": passed,
         "percent_met": percent_met,
         "failed_ids": [r["id"] for r in failed],  # logging only -- never shown verbatim to the participant
-        "verdict_detail": f"Not yet met — {failed[0]['label']}" if failed else None,
+        "verdict_detail": failed[0].get("fail", failed[0]["label"]) if failed else None,
     }
-
-JUSTIFICATION_WEIGHT = 0.3  # 30% reasoning quality, 70% objective task score -- tune freely
-
-def _read_participant_scores(csv_path: str) -> Dict[str, Any]:
-    """Pulls objective trial scores and LLM-scored reasoning quality straight out of a
-    participant's saved CSV's raw event rows -- always in sync with what was actually logged."""
-    final_scores, reasoning_scores = [], []
-    try:
-        with open(csv_path, "r", encoding="utf-8", newline="") as f:
-            for row in csv.reader(f):
-                if len(row) != 5:
-                    continue
-                event_type, data_str = row[2], row[4]
-                try:
-                    data = ast.literal_eval(data_str)
-                except (ValueError, SyntaxError):
-                    continue
-                if event_type == "trial_submitted" and (data.get("passed") or data.get("timed_out")) and isinstance(data.get("final_score"), (int, float)):
-                    final_scores.append(data["final_score"])
-                elif event_type == "trial_justification_scored" and isinstance(data.get("reasoning_score"), (int, float)):
-                    reasoning_scores.append(data["reasoning_score"])
-    except FileNotFoundError:
-        pass
-    return {"final_scores": final_scores, "reasoning_scores": reasoning_scores}
-
-@app.get("/api/leaderboard")
-async def get_leaderboard(participant_id: str = ""):
-    os.makedirs("data", exist_ok=True)
-    rankings = []
-    for fname in os.listdir("data"):
-        if not (fname.startswith("HTI_Study_") and fname.endswith(".csv")):
-            continue
-        pid = fname[len("HTI_Study_"):-len(".csv")]
-        scores = _read_participant_scores(os.path.join("data", fname))
-        if not scores["final_scores"]:
-            continue
-        objective_avg = sum(scores["final_scores"]) / len(scores["final_scores"])
-        reasoning_avg = (sum(scores["reasoning_scores"]) / len(scores["reasoning_scores"])) * 10 if scores["reasoning_scores"] else None
-        composite = objective_avg if reasoning_avg is None else (
-            (1 - JUSTIFICATION_WEIGHT) * objective_avg + JUSTIFICATION_WEIGHT * reasoning_avg
-        )
-        rankings.append({"participant_id": pid, "score": round(composite, 1)})
-    rankings.sort(key=lambda r: r["score"], reverse=True)
-    total = len(rankings)
-    for i, r in enumerate(rankings):
-        r["rank"] = i + 1
-        r["percentile"] = round((total - r["rank"]) / total * 100) if total > 1 else 100
-    you = next((r for r in rankings if r["participant_id"] == participant_id), None)
-    return {"top": rankings[:5], "you": you, "total_participants": total}
 
 class PlanAction(BaseModel):
     op: str = Field(description="'assign' to place an item in a slot, 'remove' to clear one.")

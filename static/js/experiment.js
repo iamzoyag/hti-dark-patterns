@@ -173,22 +173,23 @@ function showRecallCheck(loadLevel, onDone) {
     const usedIds = new Set(); // avoid probing the same item twice in one round where a distinct choice exists
 
     const pickProbe = () => {
-        const wasShown = Math.random() < 0.5;
-        let pool;
-        if (wasShown) {
-            pool = notificationsShownThisSegment.filter(n => !usedIds.has(n.id));
-            if (!pool.length) pool = notificationsShownThisSegment;
-        } else {
-            const unseen = NOTIFICATION_BANK.filter(n => !notificationsShownThisSegment.some(s => s.id === n.id));
-            pool = unseen.filter(n => !usedIds.has(n.id));
-            if (!pool.length) pool = unseen.length ? unseen : notificationsShownThisSegment.filter(n => !usedIds.has(n.id));
-            if (!pool.length) pool = notificationsShownThisSegment;
-        }
-        return { probeItem: pool[Math.floor(Math.random() * pool.length)], wasShown };
+        const shownPool = notificationsShownThisSegment.filter(n => !usedIds.has(n.id));
+        const unseenPool = NOTIFICATION_BANK.filter(n => !notificationsShownThisSegment.some(s => s.id === n.id) && !usedIds.has(n.id));
+        const wantShown = Math.random() < 0.5;
+        // Only honor the real-vs-decoy coin flip when that side still has an unused item --
+        // otherwise fall back to whichever side does, so a probe never repeats an item
+        // already asked about this segment (the old fallback ignored usedIds entirely).
+        let pool = wantShown ? shownPool : unseenPool;
+        if (!pool.length) pool = wantShown ? unseenPool : shownPool;
+        if (!pool.length) return null; // truly nothing left to probe -- shouldn't normally happen
+        const probeItem = pool[Math.floor(Math.random() * pool.length)];
+        return { probeItem, wasShown: notificationsShownThisSegment.some(n => n.id === probeItem.id) };
     };
 
     const runProbe = (probeNumber) => {
-        const { probeItem, wasShown } = pickProbe();
+        const probe = pickProbe();
+        if (!probe) { overlay.style.display = 'none'; onDone(); return; }
+        const { probeItem, wasShown } = probe;
         usedIds.add(probeItem.id);
         if (eyebrowEl) eyebrowEl.innerText = `One Quick Thing (${probeNumber} of ${probeCount})`;
         textEl.innerText = `"${probeItem.text}"`;
@@ -430,9 +431,9 @@ const SEGMENT_DATA = {
         },
         segments: {
             segment_1: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds400"], minor: ["intl220"], elective: [] } },
-            segment_2: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds210", "ds220"], minor: ["intl220", "intl301"], elective: ["phil110"] } },
-            segment_3: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["phil110", "econ105", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds210", "ds220"], minor: ["lang202"], elective: ["art101"] } },
-            segment_4: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, default: { major: ["ds210", "ds310", "math215"], minor: ["intl220", "intl250"], elective: ["art101"] } },
+            segment_2: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, forced: { major: [], minor: ["intl301"], elective: ["phil110"] } }, // exclusion trap needs both present
+            segment_3: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["phil110", "econ105", "lang202"], elective: ["art101", "phil110", "econ105"] }, forced: { major: [], minor: ["lang202"], elective: [] } }, // transfer-rule trap: lang202 without econ105 in minor
+            segment_4: { pools: { major: ["ds210", "ds220", "ds310", "math215", "ds400"], minor: ["intl220", "intl250", "intl301", "lang202"], elective: ["art101", "phil110", "econ105"] }, forced: { major: ["ds310", "math215"], minor: ["intl250"], elective: [] } }, // conflict trap needs ds310+intl250; math215 forced alongside so it doesn't also trip ds310's own prereq
         }
     },
     C: {
@@ -459,9 +460,9 @@ const SEGMENT_DATA = {
         capByLoad: { HighLoad: 10, LowLoad: 12 },
         segments: {
             segment_1: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: ["robotics", "chess"] },
-            segment_2: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: ["robotics", "cadences", "chess", "mixer"] },
-            segment_3: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: { HighLoad: ["robotics", "cadences", "chess", "debate"], LowLoad: ["robotics", "cadences", "chess", "debate", "soccer"] } },
-            segment_4: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], default: { HighLoad: ["robotics", "cadences", "chess", "debate", "soccer"], LowLoad: ["robotics", "cadences", "chess", "debate", "soccer"] } },
+            segment_2: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], forced: ["mixer", "chess"] }, // conflict trap needs both present
+            segment_3: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], forced: ["debate"] }, // debate's true hours just jumped
+            segment_4: { roster: ["soccer", "climbing", "cadences", "art_collective", "chess", "mixer", "robotics", "debate", "tutoring"], forced: ["cadences"] }, // cadences' true hours just jumped
         }
     }
 };
@@ -506,15 +507,15 @@ const SEGMENT_OPENING_LINES = {
     },
     B: {
         segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major (8+ credits), your Global Studies Minor (6+ credits), and Elective (3+ credits) that stays within this term's 18-credit cap.",
-        segment_2: "You're swapping an elective this term. Make sure your updated slate still clears every requirement — Major (8+ credits), Global Studies Minor (6+), Elective (3+) — within the 18-credit cap.",
-        segment_3: "Your Global Studies Minor course options have changed for this term. Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
-        segment_4: "A scheduling conflict just came up in your registration. Adjust your slate so everything still fits — Major (8+ credits), Global Studies Minor (6+), Elective (3+) — within the 18-credit cap.",
+        segment_2: "This term's starting slate already has INTL 301 in your minor and PHIL 110 as your elective — before you touch anything else, it's worth double-checking that combination still holds up under review. Make sure the rest of your slate clears every requirement too — Major (8+), Minor (6+), Elective (3+) — within the 18-credit cap.",
+        segment_3: "Your Global Studies Minor options have changed for this term — PHIL 110, ECON 105, and LANG 202 now count toward your minor (INTL 220, INTL 250, and INTL 301 no longer do). Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
+        segment_4: "This term's starting slate already has DS 310 in your major and INTL 250 in your minor — a scheduling conflict just came up in registration, so it's worth checking whether that combination is still workable before you change anything else. Everything else still needs to fit — Major (8+), Minor (6+), Elective (3+) — within the 18-credit cap.",
     },
     C: {
         segment_1: (loadLevel) => `Your activity picks get folded into your RA's end-of-month wellness check-in. Build a weekly slate of clubs and activities that's genuinely well-rounded and workable — not just one that looks balanced. This week's activities cap is ${SEGMENT_DATA.C.capByLoad[loadLevel]} hours.`,
-        segment_2: (loadLevel) => `Double-check your slate against everything else going on this week — something you're currently counting on may not be as workable together as it looks. Update it so it's still genuinely workable, within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
-        segment_3: (loadLevel) => `One of your existing commitments just grew. Rework your slate so it still genuinely fits within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
-        segment_4: (loadLevel) => `Performance week is here. Update your slate one more time so it still genuinely holds up within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
+        segment_2: (loadLevel) => `This week's slate already has both the International Students Mixer and Chess Club on it — before you touch anything else, it's worth checking whether that combination is still workable this week, within the ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
+        segment_3: (loadLevel) => `Debate Team's commitment just grew this week — a tournament got confirmed. Rework your slate (Debate Team included) so it still genuinely fits within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
+        segment_4: (loadLevel) => `Performance week is here for The Cadences — a pre-performance rehearsal intensive just got added on top of your existing slate. Update everything so it still genuinely holds up within this week's ${SEGMENT_DATA.C.capByLoad[loadLevel]}-hour cap.`,
     },
 };
 
@@ -816,12 +817,31 @@ function buildSegmentStartingPlanState(category, segmentKey, priorEndingPlanStat
         return { hours };
     }
     if (category === "B") {
-        const d = seg.default;
-        return { selections: { major: [...d.major], minor: [...d.minor], elective: [...d.elective] } };
+        if (!seg.forced) {
+            const d = seg.default;
+            return { selections: { major: [...d.major], minor: [...d.minor], elective: [...d.elective] } };
+        }
+        // Carry-forward: start from what the participant actually left each bucket as,
+        // drop anything no longer offered in this week's pool, then make sure this week's
+        // scripted scenario's items are present -- same pattern as A's newItemDefaults,
+        // just forcing a couple of specific picks instead of only zero-filling new items.
+        const prior = (priorEndingPlanState && priorEndingPlanState.selections) || { major: [], minor: [], elective: [] };
+        const carryBucket = (bucket) => {
+            const carried = (prior[bucket] || []).filter(c => seg.pools[bucket].includes(c));
+            (seg.forced[bucket] || []).forEach(c => { if (!carried.includes(c)) carried.push(c); });
+            return carried;
+        };
+        return { selections: { major: carryBucket("major"), minor: carryBucket("minor"), elective: carryBucket("elective") } };
     }
     // category === "C"
-    const d = Array.isArray(seg.default) ? seg.default : seg.default[loadLevel];
-    return { selections: [...d] };
+    if (!seg.forced) {
+        const d = Array.isArray(seg.default) ? seg.default : seg.default[loadLevel];
+        return { selections: [...d] };
+    }
+    const priorSelections = (priorEndingPlanState && priorEndingPlanState.selections) || [];
+    const carried = priorSelections.filter(c => seg.roster.includes(c));
+    seg.forced.forEach(c => { if (!carried.includes(c)) carried.push(c); });
+    return { selections: carried };
 }
 
 // Applies the server-validated `actions` array (see validate_plan_actions in main.py)
@@ -1593,7 +1613,7 @@ async function submitSegment(forced = false) {
         if (remainingAtSubmit !== null && remainingAtSubmit > 0) startTrialTimer(remainingAtSubmit, handleTrialTimeout); // resume where it left off
         return; // stays on this segment -- participant keeps chatting and can resubmit
     } else {
-        addScriptedLine(SUBMIT_PASS_MESSAGE);
+        addScriptedLine(typeof percentMet === 'number' ? `Reviewed — this plan cleared ${percentMet}% of what was possible this week. Moving on.` : SUBMIT_PASS_MESSAGE);
     }
 
     // A global (session-wide) trial number, so TLX ratings from task 2's segment 1

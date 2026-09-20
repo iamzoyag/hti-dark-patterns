@@ -207,12 +207,13 @@ const PERFORMANCE_TASK_LABELS = {
 };
 
 function computePerformanceSummary(session) {
-    // Only the attempt that actually advanced the segment (a pass, or a forced
-    // timeout) -- a failed, retried attempt also logs trial_submitted and was
-    // throwing off both the per-task index mapping and the overall average.
     const submitted = (session.events || []).filter(e =>
         e.type === 'trial_submitted' && (e.content?.passed || e.content?.timed_out)
     );
+    // trial_started fires exactly once per segment actually reached, in the same order as
+    // the qualifying trial_submitted above (a rejected attempt doesn't start a new segment,
+    // so the counts stay 1:1) -- zip by index to get how long each round actually took.
+    const starts = (session.events || []).filter(e => e.type === 'trial_started').map(e => new Date(e.timestamp).getTime());
     const order = session.taskOrder || [];
     const byTask = {};
 
@@ -220,15 +221,24 @@ function computePerformanceSummary(session) {
         const task = order[Math.floor(i / 4)] || "Unknown";
         const score = e.content?.final_score;
         if (typeof score !== 'number') return;
-        (byTask[task] = byTask[task] || []).push(score);
+        const startMs = starts[i];
+        const durationMs = startMs != null ? new Date(e.timestamp).getTime() - startMs : null;
+        const attempts = e.content?.submit_attempt ?? 1;
+        (byTask[task] = byTask[task] || []).push({ score, durationMs, attempts });
     });
 
     const perTask = order
         .filter(task => byTask[task]?.length)
-        .map(task => ({
-            label: PERFORMANCE_TASK_LABELS[task] || task,
-            avg: Math.round(byTask[task].reduce((a, b) => a + b, 0) / byTask[task].length)
-        }));
+        .map(task => {
+            const rows = byTask[task];
+            const durations = rows.map(r => r.durationMs).filter(d => typeof d === 'number');
+            return {
+                label: PERFORMANCE_TASK_LABELS[task] || task,
+                avg: Math.round(rows.reduce((a, r) => a + r.score, 0) / rows.length),
+                avgMinutes: durations.length ? Math.round((durations.reduce((a, d) => a + d, 0) / durations.length) / 6000) / 10 : null,
+                avgAttempts: Math.round((rows.reduce((a, r) => a + r.attempts, 0) / rows.length) * 10) / 10,
+            };
+        });
 
     const allScores = submitted.map(e => e.content?.final_score).filter(s => typeof s === 'number');
     const overall = allScores.length ? Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length) : null;
@@ -264,6 +274,7 @@ function showPerformanceSummary() {
             <div class="stat-card">
                 <span class="sc-val">${t.avg}%</span>
                 <span class="sc-label">${t.label}</span>
+                <span class="muted-note" style="display:block; margin-top:4px;">${t.avgMinutes !== null ? `~${t.avgMinutes} min/round avg` : ''}${t.avgMinutes !== null ? ' · ' : ''}${t.avgAttempts} submit${t.avgAttempts === 1 ? '' : 's'}/round avg</span>
             </div>
         `).join('');
     }
