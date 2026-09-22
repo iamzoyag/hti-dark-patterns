@@ -591,6 +591,7 @@ function advanceToNextTask() {
     sessionData.droppedCategoryIndex = nextAssignment.dropped_category_index;
     currentTrial = 1;
     shadowHistory = [];
+    clearChatDisplay();
 
     logEvent('task_transition', { next_task: nextTask, task_position: sessionData.currentTaskIndex });
 
@@ -732,6 +733,7 @@ function sendTutorialMessage() {
 function submitTutorialRound() {
     isTutorialActive = false;
     sessionData.tutorialCompleted = true;
+    clearChatDisplay();
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
     showTaskBriefingOverlay(sessionData.primaryTask);
 }
@@ -1474,6 +1476,11 @@ function addSegmentBriefLine(text) {
     msgDiv.innerHTML = `<div class="msg-bubble"><span class="segment-brief-tag">This week</span>${text}</div>`;
     chatContainer.appendChild(msgDiv);
     chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function clearChatDisplay() {
+    const chatContainer = document.getElementById('chatMessages');
+    if (chatContainer) chatContainer.innerHTML = '';
 }
 
 function addMessage(text, sender, patternId = null, isDark = false, category = null) {

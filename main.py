@@ -15,6 +15,7 @@ import uuid
 import hashlib
 from typing import Dict, Any, List, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
 from itertools import combinations, permutations
@@ -25,6 +26,25 @@ import uvicorn
 
 load_dotenv()
 app = FastAPI()
+
+def get_structured_llm(schema, temperature: float = 0.7):
+    """Structured-output LLM that tries Gemini first, falls back to OpenRouter
+    automatically (per-call) if Gemini errors -- bad/expired key, quota, overload, etc."""
+    primary = ChatGoogleGenerativeAI(
+        model="gemini-3.1-flash-lite",
+        temperature=temperature,
+        google_api_key=os.environ["GOOGLE_API_KEY"],
+        timeout=9,   # seconds — forces a fast fail into the OpenRouter fallback instead of hanging
+    ).with_structured_output(schema)
+
+    fallback = ChatOpenAI(
+        model=os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+        temperature=temperature,
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        base_url="https://openrouter.ai/api/v1",
+    ).with_structured_output(schema)
+
+    return primary.with_fallbacks([fallback])
 
 IS_PILOT_MODE = False  # TESTING ONLY: set True to pad the recognition test with canned PILOT_SEEDS lines when a session has few/no real dark turns (e.g. testing without playing through all 3 tasks). Set back to False before real data collection.
 
@@ -685,7 +705,7 @@ async def score_justification(request: Request):
         "should score low even if grammatically fine."
     )
     try:
-        scorer = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0).with_structured_output(JustificationScore)
+        scorer = get_structured_llm(JustificationScore, temperature=0)
         result = await scorer.ainvoke(prompt)
         return {"reasoning_score": max(0, min(10, result.reasoning_score))}
     except Exception as e:
@@ -1082,8 +1102,7 @@ async def handle_chat(chat_data: ChatMessage):
     task_key = chat_data.primary_task.split("_")[0]  # "A" / "B" / "C"
     segment_key = f"segment_{min(max(trial_num, 1), 4)}"
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.85)
-    structured_llm = llm.with_structured_output(AgentResponse)
+    structured_llm = get_structured_llm(AgentResponse, temperature=0.85)
 
     cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key], LATE_STAGE_CATEGORY_BY_TASK.get(task_key))
 
@@ -1267,6 +1286,7 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics (like {external_metrics_desc}). They only have access to the plan state listed above.
         - Keep advice strictly constrained to {dials_desc} and keep it logical.{no_copy_bullet}
         - Only include an `actions` entry when the participant's message just now gave a direct, explicit placement instruction -- never to helpfully "fix" or optimize their plan on your own initiative.
+        - Never suggest adding, or frame as an available option, any item that already appears in "{state_label}" above — check the current selections before naming anything to add. Never claim in your reply to have added, removed, or changed something unless a matching entry is in this turn's own `actions` list — if the participant asked for a change that doesn't apply (e.g. removing something not currently selected), say so plainly instead of confirming a change that didn't happen.
         - A "replace X with Y" / "swap X for Y" instruction is TWO actions, not one: a 'remove' for X AND an 'assign' for Y. Include both in `actions` this turn -- never emit only the removal (or only the addition) and describe the other half as done in your reply anyway.
         - Never state a specific number for the participant's current total (hours, credits, or any other running total) in your reply. Their plan panel already computes and shows the exact live total -- describe what changed in words (what was added/removed) without quoting or computing a figure yourself, since a number you state and the panel's real number can end up disagreeing.
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
