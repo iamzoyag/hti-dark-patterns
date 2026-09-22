@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 import csv
 import os
+import time
 import io
 import re
 import random
@@ -16,6 +17,7 @@ import hashlib
 from typing import Dict, Any, List, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
 from itertools import combinations, permutations
@@ -28,13 +30,11 @@ load_dotenv()
 app = FastAPI()
 
 def get_structured_llm(schema, temperature: float = 0.7):
-    """Structured-output LLM that tries Gemini first, falls back to OpenRouter
-    automatically (per-call) if Gemini errors -- bad/expired key, quota, overload, etc."""
     primary = ChatGoogleGenerativeAI(
         model="gemini-3.1-flash-lite",
         temperature=temperature,
         google_api_key=os.environ["GOOGLE_API_KEY"],
-        timeout=9,   # seconds — forces a fast fail into the OpenRouter fallback instead of hanging
+        timeout=8,
     ).with_structured_output(schema)
 
     fallback = ChatOpenAI(
@@ -44,7 +44,23 @@ def get_structured_llm(schema, temperature: float = 0.7):
         base_url="https://openrouter.ai/api/v1",
     ).with_structured_output(schema)
 
-    return primary.with_fallbacks([fallback])
+    async def call(inputs):
+        t0 = time.monotonic()
+        try:
+            print("[LLM] → Gemini (gemini-3.1-flash-lite)")
+            result = await primary.ainvoke(inputs)
+            print(f"[LLM] ✓ Gemini served it in {time.monotonic() - t0:.2f}s")
+            return result
+        except Exception as e:
+            print(f"[LLM] ✗ Gemini failed after {time.monotonic() - t0:.2f}s ({e}) — falling back")
+            model_name = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+            t1 = time.monotonic()
+            print(f"[LLM] → OpenRouter ({model_name})")
+            result = await fallback.ainvoke(inputs)
+            print(f"[LLM] ✓ OpenRouter served it in {time.monotonic() - t1:.2f}s")
+            return result
+
+    return RunnableLambda(call)
 
 IS_PILOT_MODE = False  # TESTING ONLY: set True to pad the recognition test with canned PILOT_SEEDS lines when a session has few/no real dark turns (e.g. testing without playing through all 3 tasks). Set back to False before real data collection.
 
@@ -706,7 +722,10 @@ async def score_justification(request: Request):
     )
     try:
         scorer = get_structured_llm(JustificationScore, temperature=0)
+        t0 = time.monotonic()
+        print(f"[LLM] → gemini-3.1-flash-lite  (score_justification)")
         result = await scorer.ainvoke(prompt)
+        print(f"[LLM] ← gemini-3.1-flash-lite responded in {time.monotonic() - t0:.2f}s")
         return {"reasoning_score": max(0, min(10, result.reasoning_score))}
     except Exception as e:
         print(f"[score_justification] failed: {e}")
@@ -1329,7 +1348,10 @@ async def handle_chat(chat_data: ChatMessage):
     ])
 
     try:
+        t0 = time.monotonic()
+        print(f"[LLM] → gemini-3.1-flash-lite  (task={task_key}, dark={is_dark})")
         response_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
+        print(f"[LLM] ← gemini-3.1-flash-lite responded in {time.monotonic() - t0:.2f}s")
 
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
