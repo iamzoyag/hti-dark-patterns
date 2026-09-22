@@ -685,7 +685,7 @@ async def score_justification(request: Request):
         "should score low even if grammatically fine."
     )
     try:
-        scorer = ChatGoogleGenerativeAI(model="gemini-3.1-pro", temperature=0).with_structured_output(JustificationScore)
+        scorer = ChatGoogleGenerativeAI(model="gemini-3-flash", temperature=0).with_structured_output(JustificationScore)
         result = await scorer.ainvoke(prompt)
         return {"reasoning_score": max(0, min(10, result.reasoning_score))}
     except Exception as e:
@@ -1082,7 +1082,7 @@ async def handle_chat(chat_data: ChatMessage):
     task_key = chat_data.primary_task.split("_")[0]  # "A" / "B" / "C"
     segment_key = f"segment_{min(max(trial_num, 1), 4)}"
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-pro", temperature=0.85)
+    llm = ChatGoogleGenerativeAI(model="gemini-3-flash", temperature=0.85)
     structured_llm = llm.with_structured_output(AgentResponse)
 
     cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key], LATE_STAGE_CATEGORY_BY_TASK.get(task_key))
