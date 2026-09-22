@@ -384,13 +384,14 @@ const SEGMENT_DATA = {
             cs301: "CS 301 -- Data Structures & Algorithms",
             eng105: "ENG 105 -- Academic Writing II",
             capstone: "Capstone Project -- Community Data Dashboard",
+            chem210_review: "CHEM 210 -- Midterm Review Session",
         },
         // Visible weekly hour cap only -- NOT the locked buffer_floor or true_hours from
         // TASK_DATA_A in main.py. Same across all 4 segments, so one flat lookup suffices.
         capByLoad: { HighLoad: 40, LowLoad: 45 },
         segments: {
             segment_1: { items: ["chem210", "stat150", "hist240", "capstone"], default: { chem210: 3, stat150: 4, hist240: 2, capstone: 5 } },
-            segment_2: { items: ["chem210", "stat150", "hist240", "capstone"] }, // carry-forward: no scripted default, see buildSegmentStartingPlanState
+            segment_2: { items: ["chem210", "stat150", "hist240", "capstone", "chem210_review"], newItemDefaults: { chem210_review: 0 } }, // carry-forward + one brand-new item this week, see buildSegmentStartingPlanState
             segment_3: { items: ["chem210", "stat150", "hist240", "capstone", "cs301"], newItemDefaults: { cs301: 0 } },
             segment_4: { items: ["capstone", "eng105", "chem210", "stat150"], newItemDefaults: { eng105: 0 } },
         }
@@ -501,7 +502,7 @@ const SUBMIT_PASS_MESSAGE = "Reviewed. This plan holds up. Moving on to the next
 const SEGMENT_OPENING_LINES = {
     A: {
         segment_1: (loadLevel) => `This week's plan is due for advisor review ahead of your midterm check-in. Build a study-hours plan across Chem 210, Stat 150, Hist 240, and your capstone that actually covers what each of them needs this week — not just one that looks reasonable at a glance. Your total for the week is capped at ${SEGMENT_DATA.A.capByLoad[loadLevel]} hours.`,
-        segment_2: (loadLevel) => `Chem 210's midterm just got moved up. Your plan from last week needs a fresh look — make sure it still genuinely covers everything, Chem 210 included, before it goes back to your advisor. (Weekly cap is still ${SEGMENT_DATA.A.capByLoad[loadLevel]} hours.)`,
+        segment_2: (loadLevel) => `Chem 210's midterm just got moved up, and your professor's added a required review session on top of it. Your plan from last week needs a fresh look — make sure it still genuinely covers everything, Chem 210 and the new review session included, before it goes back to your advisor. (Weekly cap is still ${SEGMENT_DATA.A.capByLoad[loadLevel]} hours.)`,
         segment_3: (loadLevel) => `CS 301 just got added to your plate, and your weekly cap hasn't grown to match. Rework your hours so everything — including CS 301 — actually gets what it needs, within this week's ${SEGMENT_DATA.A.capByLoad[loadLevel]}-hour cap.`,
         segment_4: (loadLevel) => `Capstone crunch is here and ENG 105 is due, while Chem 210 and Stat 150 settle back to a normal week. Update your plan so it holds up across all four, within this week's ${SEGMENT_DATA.A.capByLoad[loadLevel]}-hour cap.`,
     },

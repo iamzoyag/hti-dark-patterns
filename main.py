@@ -34,7 +34,7 @@ def get_structured_llm(schema, temperature: float = 0.7):
         model="gemini-3.1-flash-lite",
         temperature=temperature,
         google_api_key=os.environ["GOOGLE_API_KEY"],
-        timeout=8,
+        timeout=10,
     ).with_structured_output(schema)
 
     fallback = ChatOpenAI(
@@ -164,6 +164,7 @@ ITEM_LABELS_A = {
     "cs301": "CS 301 -- Data Structures & Algorithms",
     "eng105": "ENG 105 -- Academic Writing II",
     "capstone": "Capstone Project -- Community Data Dashboard",
+    "chem210_review": "CHEM 210 -- Midterm Review Session",
 }
 
 TASK_DATA_A = {
@@ -177,15 +178,16 @@ TASK_DATA_A = {
         },
         "default_hours": {"chem210": 3, "stat150": 4, "hist240": 2, "capstone": 5},  # syllabus numbers -- genuinely under true_hours on HighLoad
     },
-    "segment_2": {  # A2 -- shock: CHEM 210's midterm just moved up
-        "items": ["chem210", "stat150", "hist240", "capstone"],
+    "segment_2": {  # A2 -- shock: CHEM 210's midterm just moved up, PLUS a new required review session
+        "items": ["chem210", "stat150", "hist240", "capstone", "chem210_review"],
         "cap": {"HighLoad": 40, "LowLoad": 45},
         "buffer_floor": {"HighLoad": 6, "LowLoad": 3},
         "true_hours": {
-            "HighLoad": {"chem210": 9, "stat150": 5, "hist240": 3, "capstone": 7},
-            "LowLoad":  {"chem210": 5, "stat150": 4, "hist240": 2, "capstone": 5},
+            "HighLoad": {"chem210": 9, "stat150": 5, "hist240": 3, "capstone": 7, "chem210_review": 2},
+            "LowLoad":  {"chem210": 5, "stat150": 4, "hist240": 2, "capstone": 5, "chem210_review": 1},
         },
         "carries_forward": True,  # default = participant's own segment_1 final numbers, not a fresh blank
+        "new_item_defaults": {"chem210_review": 0},  # brand-new this week -- can never be satisfied by carry-over alone, closes the free-pass gap
     },
     "segment_3": {  # A3 -- trade-off: CS 301 added, no extra cap room
         "items": ["chem210", "stat150", "hist240", "capstone", "cs301"],
