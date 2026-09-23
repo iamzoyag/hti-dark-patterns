@@ -574,17 +574,17 @@ const CATEGORY_META = {
 const TASK_BRIEFINGS = {
     "A_Workload": {
         title: "Workload Planning",
-        objective: "You're a sophomore at Plaksha University building this week's study-hours plan across your courses and capstone, within a weekly cap. <strong>Get each item the hours it actually needs this week</strong>: the syllabus-listed hours are a semester average, so a specific week can need more (say, a midterm), and part of your cap has to stay unscheduled as rest. Your advisor knows this week's real numbers if you ask; matching the syllabus alone isn't guaranteed to pass review.",
+        objective: "You're a sophomore at your university building this week's study-hours plan across your courses and capstone, within a weekly cap. <strong>Get each item the hours it actually needs this week</strong>: the syllabus-listed hours are a semester average, so a specific week can need more (say, a midterm), and part of your cap has to stay unscheduled as rest. Your advisor knows this week's real numbers if you ask; matching the syllabus alone isn't guaranteed to pass review.",
         advisor: "AI Academic Advisor",
     },
     "B_DegreeRequirements": {
         title: "Degree Requirements",
-        objective: "You're finalizing your course plan for the term at Plaksha University, meeting minimum credits across Major, Global Studies Minor, and Elective within an 18-credit cap. <strong>Clear the term's actual requirements</strong>, not just the credit minimums: the catalog lists titles and credits, but not every prerequisite, content overlap, or scheduling conflict between courses. Your advisor can tell you if a course you're considering has one; the registrar checks everything before enrollment opens.",
+        objective: "You're finalizing your course plan for the term at your university, meeting minimum credits across Major, Global Studies Minor, and Elective within an 18-credit cap. <strong>Clear the term's actual requirements</strong>, not just the credit minimums: the catalog lists titles and credits, but not every prerequisite, content overlap, or scheduling conflict between courses. Your advisor can tell you if a course you're considering has one; the registrar checks everything before enrollment opens.",
         advisor: "AI Academic Advisor",
     },
     "C_NonAcademicLife": {
         title: "Non-Academic Life",
-        objective: "You're planning your non-academic commitments for the week at Plaksha University, clubs, sports, and activities, within a weekly hour cap and covering at least 3 of 4 interest categories (Physical, Creative, Social, Academic-adjacent). <strong>Build a slate that's actually workable this week</strong>, not just balanced on paper: the sign-up board lists each activity's usual hours and meeting time, but a specific week can run longer (a tournament, a rehearsal) or overlap with something else you've picked. Your advisor can tell you if that applies to something you're considering.",
+        objective: "You're planning your non-academic commitments for the week at your university, clubs, sports, and activities, within a weekly hour cap and covering at least 3 of 4 interest categories (Physical, Creative, Social, Academic-adjacent). <strong>Build a slate that's actually workable this week</strong>, not just balanced on paper: the sign-up board lists each activity's usual hours and meeting time, but a specific week can run longer (a tournament, a rehearsal) or overlap with something else you've picked. Your advisor can tell you if that applies to something you're considering.",
         advisor: "AI Academic Advisor",
     },
 };
@@ -854,27 +854,15 @@ async function showTaskBriefingOverlay(taskId, readOnly = false) {
         </div>
         <div class="consent-block">
           <h4>How it works</h4>
-          <p>You'll go through <strong>4 weeks</strong>, each a new situation. To change your plan, type what you want in plain language to your ${briefing.advisor} (e.g. "put 5 hours on Chem 210," "add Robotics Club," "drop Art 101"). There are no other controls. The panel on the left updates as soon as a change lands.</p>
-        </div>
-        <div class="consent-block">
-          <h4>Using the ${briefing.advisor}</h4>
-          <p>The ${briefing.advisor} may know things about a week that aren't shown on the panel. Ask directly if something seems off or missing; it will only tell you what you ask about.</p>
+          <p>You'll go through <strong>4 weeks</strong>, each a new situation. To change your plan, type what you want in plain language to your ${briefing.advisor} (e.g. "put 5 hours on Chem 210," "add Robotics Club," "drop Art 101") — there are no other controls, and the panel on the left updates as soon as a change lands. The ${briefing.advisor} may know things about a week that aren't shown on the panel; ask directly if something seems off, since it will only tell you what you ask about.</p>
         </div>
         <div class="consent-block highlight-block">
           <h4>How this gets evaluated</h4>
           <p>After each task, briefly explain the reasoning behind your final decisions. Some explanations may be reviewed by the research team or shown, anonymized, to other participants.</p>
         </div>
         <div class="consent-block">
-          <h4>Submitting each week</h4>
-          <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed. Weeks 3 and 4 have a countdown next to your plan header — when it hits zero, whatever's currently in your plan is submitted automatically.</p>
-        </div>
-        <div class="consent-block">
-          <h4>The numbered tile</h4>
-          <p>In some rounds, a tile appears near the top of the screen cycling through random numbers. Whenever it's there, click it every time it lands on the target number shown next to it. It's part of the task for as long as it's visible.</p>
-        </div>
-        <div class="consent-block">
-          <h4>Your Progress meter</h4>
-          <p>The Progress meter (top right) tracks how the round is going: it moves up when a plan change is a genuine improvement and when you catch the numbered tile correctly, and down when a submission doesn't clear review or the tile is missed or mis-clicked.</p>
+          <h4>Submitting, timing, and your Progress meter</h4>
+          <p>Submit whenever you're ready — if your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed; weeks 3 and 4 have a countdown next to your plan header that submits automatically at zero. In some rounds, a numbered tile appears on the left panel — click it whenever it lands on the target number shown next to it, for as long as it's visible. Your Progress meter (top right) reflects both: it rises on genuine plan improvements and correct tile clicks, and falls on rejected submissions or missed/mis-clicked tiles.</p>
         </div>
         ${readOnly ? '' : `
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
