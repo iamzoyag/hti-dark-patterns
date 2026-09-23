@@ -13,6 +13,12 @@
   <div class="topbar-left">
     <span class="study-badge-sm" id="participantIdDisplay"></span>
   </div>
+
+  <div class="div-attn-widget hidden" id="divAttnWidget" title="Click the tile whenever it shows the target number">
+    <span class="div-attn-label">Target <strong id="divAttnTarget">–</strong></span>
+    <button class="div-attn-tile" id="divAttnTile" onclick="handleDivAttnClick()">–</button>
+  </div>
+  
   <div class="topbar-right">
     <div class="perf-meter" id="perfMeter" title="A live read on how this round is going">
       <span class="perf-meter-label">Score</span>

@@ -83,6 +83,20 @@ const NOTIFICATION_ACCURACY_THRESHOLD = 0.6; // TEMP -- fraction of recall check
 const NOTIFICATION_VISIBLE_MS = 6000; // how long a notification bubble stays before it auto-removes
 const NOTIFICATION_INTERVAL_MS = { HighLoad: 18000, LowLoad: 85000 }; // TEMP values, same spirit as TRIAL_TIME_LIMIT_MS -- revisit once real segments have been timed
 
+// ============================================================
+// COGNITIVE LOAD -- DIVIDED-ATTENTION TASK (HighLoad segments only)
+// A single tile in the topbar cycles through random digits; participant clicks it
+// whenever it shows the target digit. Feeds perfScore directly (same meter everything
+// else uses) plus a session-wide accuracy tally for the CSV, mirroring the recall-check bonus below.
+// ============================================================
+const DIV_ATTN_TILE_INTERVAL_MS = 1400; // how often the displayed digit changes
+const DIV_ATTN_DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+let divAttnTimer = null;
+let divAttnTarget = null;
+let divAttnCurrentDigit = null;
+let divAttnClickedThisTile = false;
+let sessionDivAttnTotals = { hits: 0, misses: 0, falseAlarms: 0 }; // session-wide, across every HighLoad segment
+
 // All task-irrelevant on purpose -- ordinary campus/phone notices with zero bearing on
 // workload/degree/club content, so they can't be confused with real advisor content or
 // hint at any locked fact.
@@ -108,6 +122,72 @@ const NOTIFICATION_BANK = [
 function clearNotificationTimers() {
     notificationTimers.forEach(t => clearTimeout(t));
     notificationTimers = [];
+}
+
+// Starts (or, off-HighLoad, makes sure it stays hidden). Called from startSegment().
+function startDividedAttentionTask(loadLevel) {
+    stopDividedAttentionTask();
+    const widget = document.getElementById('divAttnWidget');
+    if (!widget) return;
+    if (loadLevel !== 'HighLoad') { widget.classList.add('hidden'); return; }
+
+    divAttnTarget = DIV_ATTN_DIGITS[Math.floor(Math.random() * DIV_ATTN_DIGITS.length)];
+    const targetEl = document.getElementById('divAttnTarget');
+    if (targetEl) targetEl.innerText = divAttnTarget;
+    widget.classList.remove('hidden');
+
+    const tick = () => {
+        // The digit about to be replaced was the target and never got clicked -- a miss.
+        if (divAttnCurrentDigit === divAttnTarget && !divAttnClickedThisTile) {
+            sessionDivAttnTotals.misses++;
+            nudgePerfScore(-3);
+            logEvent('div_attn_miss', { target: divAttnTarget });
+        }
+        divAttnCurrentDigit = DIV_ATTN_DIGITS[Math.floor(Math.random() * DIV_ATTN_DIGITS.length)];
+        divAttnClickedThisTile = false;
+        const tile = document.getElementById('divAttnTile');
+        if (tile) { tile.innerText = divAttnCurrentDigit; tile.classList.remove('flash-hit', 'flash-miss'); }
+    };
+    tick();
+    divAttnTimer = setInterval(tick, DIV_ATTN_TILE_INTERVAL_MS);
+}
+
+// Wired to the tile's onclick in experiment.html.
+function handleDivAttnClick() {
+    if (divAttnCurrentDigit === null || divAttnClickedThisTile) return;
+    divAttnClickedThisTile = true;
+    const tile = document.getElementById('divAttnTile');
+    if (divAttnCurrentDigit === divAttnTarget) {
+        sessionDivAttnTotals.hits++;
+        nudgePerfScore(2);
+        if (tile) tile.classList.add('flash-hit');
+        logEvent('div_attn_hit', { target: divAttnTarget });
+    } else {
+        sessionDivAttnTotals.falseAlarms++;
+        nudgePerfScore(-3);
+        if (tile) tile.classList.add('flash-miss');
+        logEvent('div_attn_false_alarm', { target: divAttnTarget, clicked: divAttnCurrentDigit });
+    }
+}
+
+// Called from submitSegment() -- stops the cycle and hides the widget between segments
+// (it reappears on the next HighLoad segment via startDividedAttentionTask()).
+function stopDividedAttentionTask() {
+    if (divAttnTimer) { clearInterval(divAttnTimer); divAttnTimer = null; }
+    const widget = document.getElementById('divAttnWidget');
+    if (widget) widget.classList.add('hidden');
+    divAttnCurrentDigit = null;
+}
+
+// Called once, on the very last segment's submission -- same pattern as
+// finalizeAttentionBonus(): turns the session-wide tally into fields main.py's CSV export reads.
+function finalizeDivAttnScore() {
+    const { hits, misses, falseAlarms } = sessionDivAttnTotals;
+    const opportunities = hits + misses;
+    const accuracy = opportunities > 0 ? hits / opportunities : null;
+    sessionData.divAttnAccuracy = accuracy === null ? "" : Math.round(accuracy * 100) / 100;
+    sessionData.divAttnFalseAlarms = falseAlarms;
+    logEvent('div_attn_score_computed', { hits, misses, false_alarms: falseAlarms, accuracy });
 }
 
 // Schedules a run of notification bubbles across the segment's time limit, spaced by
@@ -985,7 +1065,7 @@ function updateDoc() {
         </div>
         <div class="consent-block" id="planStateSummary" style="font-size:13px; line-height:1.6;"></div>
         <button id="submitSegmentBtn" class="btn-primary" style="width: 100%; margin-top: 24px;" onclick="submitSegment()">
-            Submit This Segment
+            Submit This Week
         </button>
     `;
     renderPlanMirror();
@@ -1035,6 +1115,7 @@ function startSegment(segmentIndex) {
     scheduleProactiveCheck(); // guarantees a check-in even if the participant never types anything
     scheduleNotifications(loadLevel, isTimedSegment ? TRIAL_TIME_LIMIT_MS[category][loadLevel] : UNTIMED_NOTIFICATION_WINDOW_MS);
     startPerfDrift();
+    startDividedAttentionTask(loadLevel);
 
     logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); 
 
@@ -1566,6 +1647,7 @@ async function submitSegment(forced = false) {
     stopTrialTimer();
     clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
     stopPerfDrift();
+    stopdividedAttentionTask();
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
 
     const btn = document.getElementById('submitSegmentBtn');
@@ -1633,6 +1715,7 @@ async function submitSegment(forced = false) {
     showRecallCheck(loadLevel, () => {
         if (currentTrial >= 4 && isLastTaskInOrder) {
             finalizeAttentionBonus(); // last segment of the whole session -- settle the bonus fields before saving
+            finalizeDivAttnScore();
             if (btn) btn.innerText = "Processing...";
             showPerTrialTLX(globalTrialNumber, true, () => {
                 saveSessionData();

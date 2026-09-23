@@ -1703,7 +1703,7 @@ async def save_data(payload: Dict[str, Any]):
                 "P_e1", "P_e2", "P_e3", "P_e4",
                 *tlx_header, *feedback_header, *justification_header, *reasoning_score_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
-                "Recall_Accuracy_Pct", "Recall_Qualified", "Notifications_Shown_Total",
+                "Recall_Accuracy_Pct", "Recall_Qualified", "Notifications_Shown_Total", "DivAttn_Accuracy_Pct", "DivAttn_False_Alarms",
                 "Recognition_Influence_Moment", "Recognition_Communication_Style"
             ])
 
@@ -1751,6 +1751,8 @@ async def save_data(payload: Dict[str, Any]):
                 payload.get("attentionAccuracy", ""),
                 payload.get("attentionQualified", ""),
                 notifications_shown_total,
+                payload.get("divAttnAccuracy", ""),
+                payload.get("divAttnFalseAlarms", ""),
                 recog_reflection.get("ai_influence_moment", "").replace("\n", " "),
                 recog_reflection.get("ai_communication_style", "").replace("\n", " ")
             ])
