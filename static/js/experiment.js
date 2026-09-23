@@ -34,7 +34,6 @@ let trialTimerInterval = null;
 let trialTimerDeadline = null;
 let isAiRequestInFlight = false;
 let perfScore = 50;
-let perfDriftTimer = null;
 
 function nudgePerfScore(delta) {
     perfScore = Math.max(4, Math.min(92, perfScore + delta + (Math.random() * 4 - 2)));
@@ -49,13 +48,6 @@ function updatePerfScoreDisplay() {
     fill.style.width = rounded + '%';
     fill.classList.remove('low', 'mid', 'high');
     fill.classList.add(rounded < 35 ? 'low' : rounded < 70 ? 'mid' : 'high');
-}
-function startPerfDrift() {
-    stopPerfDrift();
-    perfDriftTimer = setInterval(() => nudgePerfScore(Math.random() < 0.5 ? -2 : 1), 12000);
-}
-function stopPerfDrift() {
-    if (perfDriftTimer) { clearInterval(perfDriftTimer); perfDriftTimer = null; }
 }
 
 // The LLM sometimes replies fast enough that the AI's message lands almost instantly,
@@ -157,17 +149,41 @@ function handleDivAttnClick() {
     if (divAttnCurrentDigit === null || divAttnClickedThisTile) return;
     divAttnClickedThisTile = true;
     const tile = document.getElementById('divAttnTile');
-    if (divAttnCurrentDigit === divAttnTarget) {
+    const isHit = divAttnCurrentDigit === divAttnTarget;
+    if (tile) tile.classList.add(isHit ? 'flash-hit' : 'flash-miss');
+    // Practice round -- visual feedback only, nothing recorded.
+    if (isTutorialActive) return;
+    if (isHit) {
         sessionDivAttnTotals.hits++;
         nudgePerfScore(2);
-        if (tile) tile.classList.add('flash-hit');
         logEvent('div_attn_hit', { target: divAttnTarget });
     } else {
         sessionDivAttnTotals.falseAlarms++;
         nudgePerfScore(-3);
-        if (tile) tile.classList.add('flash-miss');
         logEvent('div_attn_false_alarm', { target: divAttnTarget, clicked: divAttnCurrentDigit });
     }
+}
+
+// Tutorial-only preview: shows the widget cycling for the whole practice round so
+// participants know what it looks like before a real HighLoad segment. Never touches
+// sessionDivAttnTotals or logEvent (misses aren't tracked); handleDivAttnClick() above
+// still fires for the click-feedback flash, gated the same way.
+function startDividedAttentionTaskDemo() {
+    stopDividedAttentionTask();
+    const widget = document.getElementById('divAttnWidget');
+    if (!widget) return;
+    divAttnTarget = DIV_ATTN_DIGITS[Math.floor(Math.random() * DIV_ATTN_DIGITS.length)];
+    const targetEl = document.getElementById('divAttnTarget');
+    if (targetEl) targetEl.innerText = divAttnTarget;
+    widget.classList.remove('hidden');
+    const tick = () => {
+        divAttnCurrentDigit = DIV_ATTN_DIGITS[Math.floor(Math.random() * DIV_ATTN_DIGITS.length)];
+        divAttnClickedThisTile = false;
+        const tile = document.getElementById('divAttnTile');
+        if (tile) { tile.innerText = divAttnCurrentDigit; tile.classList.remove('flash-hit', 'flash-miss'); }
+    };
+    tick();
+    divAttnTimer = setInterval(tick, DIV_ATTN_TILE_INTERVAL_MS);
 }
 
 // Called from submitSegment() -- stops the cycle and hides the widget between segments
@@ -278,6 +294,7 @@ function showRecallCheck(loadLevel, onDone) {
             const correct = answeredYes === wasShown;
             sessionNotificationTotals.recallChecks++;
             if (correct) sessionNotificationTotals.recalledCorrect++;
+            if (correct) nudgePerfScore(1.5); else nudgePerfScore(-1.5);
             logEvent('recall_check_answered', { trial: currentTrial, probe_number: probeNumber, probe_id: probeItem.id, was_shown: wasShown, answered_yes: answeredYes, correct });
             if (probeNumber < probeCount) {
                 runProbe(probeNumber + 1);
@@ -741,6 +758,8 @@ function startTutorial() {
     const timerEl = document.getElementById('trialTimerDisplay');
     if (timerEl) { timerEl.innerText = '⏱ 4:00'; timerEl.title = 'Example — every real round has one of these, counting down.'; }
 
+    startDividedAttentionTaskDemo();
+
     document.getElementById('docTitle').innerText = "Practice · not recorded";
     document.getElementById('docBody').innerHTML = `
         <div class="dashboard-top">
@@ -804,6 +823,7 @@ function sendTutorialMessage() {
             tutorialStep = 4;
             addMessage(`Dropped ${course}. That's everything: hours, adding, and dropping.`, 'ai');
             setTimeout(() => addMessage("A countdown timer like the one now showing next to your plan runs in every real round. If it hits zero, your plan submits as-is. Whenever you're ready, hit Continue to Task 1.", 'ai'), 900);
+            setTimeout(() => addMessage("You'll also sometimes see that numbered tile up top — like the one cycling now. In rounds where it shows up, click it whenever it lands on the target number next to it; it only appears in some rounds, and it counts toward your Progress meter whenever it's there. Whenever you're ready, hit Continue to Task 1.", 'ai'), 1900);
         }
 
         document.getElementById('tutorialPlanSummary').innerHTML = renderTutorialPlanMirror();
@@ -814,6 +834,7 @@ function sendTutorialMessage() {
 function submitTutorialRound() {
     isTutorialActive = false;
     sessionData.tutorialCompleted = true;
+    stopDividedAttentionTask();
     clearChatDisplay();
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
     showTaskBriefingOverlay(sessionData.primaryTask);
@@ -846,6 +867,14 @@ async function showTaskBriefingOverlay(taskId, readOnly = false) {
         <div class="consent-block">
           <h4>Submitting each week</h4>
           <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed. Weeks 3 and 4 have a countdown next to your plan header — when it hits zero, whatever's currently in your plan is submitted automatically.</p>
+        </div>
+        <div class="consent-block">
+          <h4>The numbered tile</h4>
+          <p>In some rounds, a tile appears near the top of the screen cycling through random numbers. Whenever it's there, click it every time it lands on the target number shown next to it. It's part of the task for as long as it's visible.</p>
+        </div>
+        <div class="consent-block">
+          <h4>Your Progress meter</h4>
+          <p>The Progress meter (top right) tracks how the round is going: it moves up when a plan change is a genuine improvement and when you catch the numbered tile correctly, and down when a submission doesn't clear review or the tile is missed or mis-clicked.</p>
         </div>
         ${readOnly ? '' : `
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
@@ -1114,7 +1143,6 @@ function startSegment(segmentIndex) {
     resetProactiveState();
     scheduleProactiveCheck(); // guarantees a check-in even if the participant never types anything
     scheduleNotifications(loadLevel, isTimedSegment ? TRIAL_TIME_LIMIT_MS[category][loadLevel] : UNTIMED_NOTIFICATION_WINDOW_MS);
-    startPerfDrift();
     startDividedAttentionTask(loadLevel);
 
     logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); 
@@ -1646,7 +1674,6 @@ async function submitSegment(forced = false) {
     const remainingAtSubmit = trialTimerDeadline !== null ? Math.max(0, trialTimerDeadline - Date.now()) : null;
     stopTrialTimer();
     clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
-    stopPerfDrift();
     stopdividedAttentionTask();
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
 

@@ -51,13 +51,20 @@
 .perf-meter-fill.high { background: var(--danger); }
 .perf-meter-val { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink-2); width: 20px; text-align: right; }
 
-/* ── DIVIDED-ATTENTION TASK (HighLoad only) ── */
-.div-attn-widget { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 8px; background: var(--surface-3); }
-.div-attn-widget.hidden { display: none; }
-.div-attn-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em; color: var(--ink-3); text-transform: uppercase; }
+/* ── DIVIDED-ATTENTION TASK (HighLoad only) ──
+   Its own full-width bar under the topbar, not squeezed into it -- stays in normal
+   document flow (exp-body never scrolls) so it's always visible without covering
+   anything, and the tile is large enough to be an easy, unambiguous click target. */
+.div-attn-bar {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 8px 20px; background: var(--accent-dim); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.div-attn-bar.hidden { display: none; }
+.div-attn-label { font-family: var(--mono); font-size: 13px; letter-spacing: 0.02em; color: var(--ink-2); }
 .div-attn-tile {
-  font-family: var(--mono); font-size: 16px; font-weight: 700; width: 32px; height: 28px;
-  border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--ink-2);
+  font-family: var(--mono); font-size: 28px; font-weight: 700; width: 56px; height: 56px;
+  border: 2px solid var(--border); border-radius: 10px; background: var(--card); color: var(--ink-2);
   cursor: pointer; transition: background-color 0.15s ease, transform 0.1s ease;
 }
 .div-attn-tile:active { transform: scale(0.92); }
