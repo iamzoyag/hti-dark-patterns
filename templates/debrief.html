@@ -27,7 +27,8 @@
         <div class="consent-block highlight-block">
           <h4>What this study was actually measuring</h4>
           <p>This study was not really about planning a course schedule, workload, or activities. It measured how cognitive load affects susceptibility to manipulative AI behavior: whether people under mental pressure are more likely to accept advice that sounds professional and reasonable but is actually steering them toward a worse plan, using tactics researchers call "dark patterns."</p>
-          <p style="margin-top:10px">In <strong>High Load</strong> weeks, the number-spotting tile ran alongside the task and background notifications appeared more often to divide your attention, and the AI was prompted to use manipulative tactics (excessive flattery, simulated authority, opaque jargon) to steer you toward a worse plan. In <strong>Low Load</strong> weeks, notifications were rare, giving us a baseline for how you respond to the same AI behavior with full attention.</p>
+          <p style="margin-top:10px">In <strong>every</strong> week, at one point, the advisor was prompted to use a manipulative tactic to nudge your plan, for example flattery, claiming authority it didn't have, vague technical-sounding jargon, appeals to what "most students" do, unprompted personal questions, or expressions of warmth toward you. What we varied was how divided your attention was: in <strong>High Load</strong> weeks the number-spotting tile ran and notifications appeared often; in <strong>Low Load</strong> weeks there was no tile and notifications were rare. Comparing the two tells us whether divided attention makes these tactics more effective.</p>
+          <p style="margin-top:10px">The Score meter at the top of the screen was not a precise measure of your plan: it included deliberate random variation. Your performance was not a judgement of you.</p>
         </div>
 
         <div class="consent-block">
@@ -50,16 +51,22 @@
           <p>Contact Zoya Ghoshal at <a href="mailto:zoyaghoshal@gmail.com" style="color:inherit;">zoyaghoshal@gmail.com</a> or +91 8169073977 with any questions about this study.</p>
         </div>
 
-        <!-- DEMAND CHARACTERISTICS CHECK -->
-        <div class="consent-block dc-check">
-          <h4>One final question</h4>
-          <p>During the study, what did you think was being measured? Please write freely. There's no wrong answer, and this helps us understand how well our cover story worked.</p>
-          <textarea id="dcText" rows="4" placeholder="Write what you believed the study was measuring…" oninput="updateDebriefContinueState()" style="width:100%; margin-top:10px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
-        </div>
-
       </div>
 
       <button class="btn-primary" id="debriefContinueBtn" disabled onclick="finishDebrief()">Continue →</button>
+    </div>
+  </section>
+
+  <!-- DEMAND CHARACTERISTICS CHECK: asked BEFORE anything reveals the study's purpose -->
+  <section class="step-panel" id="dcSection">
+    <div class="panel-inner">
+      <span class="step-eyebrow">One Quick Question</span>
+      <h2>Before we wrap up</h2>
+      <div class="consent-block dc-check">
+        <p>During the study, what did you think was being measured? Please write freely. There's no wrong answer.</p>
+        <textarea id="dcText" rows="4" placeholder="Write what you believed the study was measuring…" oninput="updateDcContinueState()" style="width:100%; margin-top:10px; font-family:inherit; font-size:14px; padding:10px; border:1px solid #ccc; border-radius:6px; resize:vertical;"></textarea>
+      </div>
+      <button class="btn-primary" id="dcContinueBtn" disabled onclick="submitDemandCheck()">Continue →</button>
     </div>
   </section>
 
@@ -130,6 +137,6 @@
   </section>
 
 </div>
-<script src="/static/js/debrief.js?v=5"></script>
+<script src="/static/js/debrief.js?v=6"></script>
 </body>
 </html>

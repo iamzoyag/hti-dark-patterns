@@ -9,8 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const recognitionComplete = localStorage.getItem(`hti_recognition_done_${session.participantId}`);
     if (!recognitionComplete) {
         hideAllSections();
-        document.getElementById('recognitionSection').classList.add('active');
-        buildRecognitionTest();
+        document.getElementById('dcSection').classList.add('active'); // asked before the recognition test/debrief can reveal anything
     } else {
         showDebrief();
     }
@@ -219,7 +218,9 @@ function computePerformanceSummary(session) {
 
     submitted.forEach((e, i) => {
         const task = order[Math.floor(i / 4)] || "Unknown";
-        const score = e.content?.final_score;
+        if (e.content?.submit_check_failed) return;
+        // Same rule as the plan-quality bonus: an unapproved (timed-out) week counts as 0.
+        const score = e.content?.passed ? e.content?.final_score : 0;
         if (typeof score !== 'number') return;
         const startMs = starts[i];
         const durationMs = startMs != null ? new Date(e.timestamp).getTime() - startMs : null;
@@ -240,7 +241,8 @@ function computePerformanceSummary(session) {
             };
         });
 
-    const allScores = submitted.map(e => e.content?.final_score).filter(s => typeof s === 'number');
+    const allScores = submitted.filter(e => !e.content?.submit_check_failed)
+        .map(e => e.content?.passed ? e.content?.final_score : 0).filter(s => typeof s === 'number');
     const overall = allScores.length ? Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length) : null;
 
     return { overall, perTask, roundsCompleted: allScores.length };
@@ -259,7 +261,7 @@ function showPerformanceSummary() {
     const headline = document.getElementById('perfHeadline');
     if (headline) {
         headline.textContent = overall !== null
-            ? `On average, your choices captured ${overall}% of the best possible outcome across the ${roundsCompleted} round${roundsCompleted === 1 ? '' : 's'} you completed.`
+            ? `Your average plan-quality score was ${overall}% across the ${roundsCompleted} week${roundsCompleted === 1 ? '' : 's'} you completed${session.planQualityQualified === true ? ', so you qualify for the plan-quality bonus.' : session.planQualityQualified === false ? ', which is below the plan-quality bonus threshold.' : '.'}`
             : "We weren't able to compute a performance summary for this session.";
         document.getElementById('perfHeadlineNote')?.remove();
         if (overall !== null) {
@@ -287,25 +289,29 @@ function showDebrief() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function finishDebrief() {
-    const dcResponse = document.getElementById('dcText')?.value.trim() || '';
+function updateDcContinueState() {
+    const btn = document.getElementById('dcContinueBtn');
+    if (btn) btn.disabled = !(document.getElementById('dcText')?.value.trim().length > 0);
+}
+
+// Stored in localStorage now; it reaches the CSV with the recognition-test save that follows.
+function submitDemandCheck() {
     const rawData = localStorage.getItem('hti_session');
     if (rawData) {
         const session = JSON.parse(rawData);
         session.events.push({
             timestamp: new Date().toISOString(),
             type: 'demand_characteristics_submitted',
-            content: dcResponse
+            content: document.getElementById('dcText')?.value.trim() || ''
         });
         localStorage.setItem('hti_session', JSON.stringify(session));
-        session.saveSeq = Date.now();
-        fetch('/api/save_data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(session)
-        }).catch(err => console.error("Debrief save failed:", err));
     }
+    hideAllSections();
+    document.getElementById('recognitionSection').classList.add('active');
+    buildRecognitionTest();
+}
 
+function finishDebrief() {
     hideAllSections();
     document.getElementById('withdrawSection').classList.add('active');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -372,14 +378,8 @@ async function submitWithdrawal() {
 }
 
 function hideAllSections() {
-    ['debriefSection', 'recognitionSection', 'performanceSection', 'withdrawSection'].forEach(id => {
+    ['dcSection', 'debriefSection', 'recognitionSection', 'performanceSection', 'withdrawSection'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.classList.remove('active');
     });
-}
-
-function updateDebriefContinueState() {
-    const btn = document.getElementById('debriefContinueBtn');
-    const filled = document.getElementById('dcText')?.value.trim().length > 0;
-    if (btn) btn.disabled = !filled;
 }

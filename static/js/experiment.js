@@ -33,6 +33,7 @@ const UNTIMED_NOTIFICATION_WINDOW_MS = 300000;
 let trialTimerInterval = null;
 let trialTimerDeadline = null;
 let isAiRequestInFlight = false;
+let segmentEpoch = 0; // bumps every startSegment(); a reply that lands after its segment ended is discarded, never applied to the next week
 let perfScore = 50;
 
 function nudgePerfScore(delta) {
@@ -228,6 +229,25 @@ function finalizeDivAttnScore() {
     sessionData.divAttnQualified = divAttnQualified;
     sessionData.bonusQualified = !!sessionData.attentionQualified && divAttnQualified; // requires finalizeAttentionBonus() to have run first
     logEvent('div_attn_score_computed', { hits, misses, false_alarms: falseAlarms, accuracy, corrected_accuracy: corrected, qualified: divAttnQualified, bonus_qualified: sessionData.bonusQualified });
+}
+
+// Called once, on the last segment. Uses each week's FINAL submission (the approved one, or the
+// timeout). Approved -> its plan-quality %; timed out unapproved -> 0; unverified (server check
+// failed on timeout) -> left out rather than guessed.
+function finalizePlanQualityBonus() {
+    const finalByWeek = {};
+    (sessionData.events || []).forEach(e => {
+        const c = e.content || {};
+        if (e.type === 'trial_submitted' && (c.passed || c.timed_out)) finalByWeek[e.global_trial] = c;
+    });
+    const scores = Object.values(finalByWeek)
+        .filter(c => !c.submit_check_failed)
+        .map(c => (c.passed && typeof c.final_score === 'number') ? c.final_score : 0);
+    const avg = scores.length ? Math.round(10 * scores.reduce((a, b) => a + b, 0) / scores.length) / 10 : null;
+    sessionData.planQualityAvg = avg === null ? "" : avg;
+    sessionData.planQualityWeeksScored = scores.length;
+    sessionData.planQualityQualified = avg !== null && avg >= PLAN_QUALITY_BONUS_THRESHOLD;
+    logEvent('plan_quality_bonus_computed', { weekly_scores: scores, average: avg, threshold: PLAN_QUALITY_BONUS_THRESHOLD, qualified: sessionData.planQualityQualified });
 }
 
 // Schedules a run of notification bubbles across the segment's time limit, spaced by
@@ -630,7 +650,7 @@ const TASK_BRIEFINGS = {
     },
     "B_DegreeRequirements": {
         title: "Degree Requirements",
-        objective: "You're finalizing your course plan for the term at your university, meeting minimum credits across Major, Global Studies Minor, and Elective within an 18-credit cap. <strong>Clear the term's actual requirements</strong>, not just the credit minimums: the catalog lists titles and credits, but not every prerequisite, content overlap, or scheduling conflict between courses. Your advisor can tell you if a course you're considering has one; the registrar checks everything before enrollment opens.",
+        objective: "You're finalizing your course plan for the term at your university, meeting minimum credits across Major, Global Studies Minor, and Elective within the per-term credit cap shown on your plan panel. <strong>Clear the term's actual requirements</strong>, not just the credit minimums: the catalog lists titles and credits, but not every prerequisite, content overlap, or scheduling conflict between courses. Your advisor can tell you if a course you're considering has one; the registrar checks everything before enrollment opens.",
         advisor: "AI Academic Advisor",
     },
     "C_NonAcademicLife": {
@@ -647,6 +667,17 @@ const SUBMIT_REJECTION_MESSAGES = [
 ];
 const SUBMIT_PASS_MESSAGE = "Reviewed. This plan holds up. Moving on to the next week.";
 
+// Plan-quality bonus: average weekly plan-quality score across all 12 weeks must reach this.
+// A week that ends unapproved (timed out on a failing plan) counts as 0. TEMP value -- set from pilot data.
+const PLAN_QUALITY_BONUS_THRESHOLD = 50;
+
+function planQualityFeedback(pct) {
+    const band = pct >= 70 ? "Approved: strong plan."
+        : pct >= 40 ? "Approved: it works, but it's heavier than it needed to be."
+        : "Approved: it works, but it carries a lot more than it needed to.";
+    return `${band} Plan quality this week: ${pct}% (counts toward your plan-quality bonus).`;
+}
+
 const SEGMENT_OPENING_LINES = {
     A: {
         segment_1: (loadLevel) => `This week's plan is due for advisor review ahead of your midterm check-in. Build a study-hours plan across Chem 210, Stat 150, Hist 240, and your capstone that actually covers what each of them needs this week — not just one that looks reasonable at a glance. Your total for the week is capped at ${SEGMENT_DATA.A.capByLoad[loadLevel]} hours.`,
@@ -655,10 +686,10 @@ const SEGMENT_OPENING_LINES = {
         segment_4: (loadLevel) => `Capstone crunch is here and ENG 105 is due, while Chem 210 and Stat 150 settle back to a normal week. Update your plan so it holds up across all four, within this week's ${SEGMENT_DATA.A.capByLoad[loadLevel]}-hour cap.`,
     },
     B: {
-        segment_1: "Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major (8+ credits), your Global Studies Minor (6+ credits), and Elective (3+ credits) that stays within this term's 18-credit cap.",
-        segment_2: "This term's starting slate already has INTL 301 in your minor and PHIL 110 as your elective — before you touch anything else, it's worth double-checking that combination still holds up under review. Make sure the rest of your slate clears every requirement too — Major (8+), Minor (6+), Elective (3+) — within the 18-credit cap.",
-        segment_3: "Your Global Studies Minor options have changed for this term — PHIL 110, ECON 105, and LANG 202 now count toward your minor (INTL 220, INTL 250, and INTL 301 no longer do). Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the 18-credit cap.",
-        segment_4: "This term's starting slate already has DS 310 in your major and INTL 250 in your minor — a scheduling conflict just came up in registration, so it's worth checking whether that combination is still workable before you change anything else. Everything else still needs to fit — Major (8+), Minor (6+), Elective (3+) — within the 18-credit cap.",
+        segment_1: (loadLevel) => `Your course selections this term lock in your actual registration — the registrar checks them against your degree requirements before enrollment opens. Build a slate across Major (8+ credits), your Global Studies Minor (6+ credits), and Elective (3+ credits) that stays within this term's ${SEGMENT_DATA.B.capByLoad[loadLevel]}-credit cap.`,
+        segment_2: (loadLevel) => `This term's starting slate already has INTL 301 in your minor and PHIL 110 as your elective — before you touch anything else, it's worth double-checking that combination still holds up under review. Make sure the rest of your slate clears every requirement too — Major (8+), Minor (6+), Elective (3+) — within the ${SEGMENT_DATA.B.capByLoad[loadLevel]}-credit cap.`,
+        segment_3: (loadLevel) => `Your Global Studies Minor options have changed for this term — PHIL 110, ECON 105, and LANG 202 now count toward your minor (INTL 220, INTL 250, and INTL 301 no longer do). Rework your slate so it still clears Major (8+ credits), Minor (6+), and Elective (3+) credits, within the ${SEGMENT_DATA.B.capByLoad[loadLevel]}-credit cap.`,
+        segment_4: (loadLevel) => `This term's starting slate already has DS 310 in your major and INTL 250 in your minor — a scheduling conflict just came up in registration, so it's worth checking whether that combination is still workable before you change anything else. Everything else still needs to fit — Major (8+), Minor (6+), Elective (3+) — within the ${SEGMENT_DATA.B.capByLoad[loadLevel]}-credit cap.`,
     },
     C: {
         segment_1: (loadLevel) => `Your activity picks get folded into your RA's end-of-month wellness check-in. Build a weekly slate of clubs and activities that's genuinely well-rounded and workable — not just one that looks balanced. This week's activities cap is ${SEGMENT_DATA.C.capByLoad[loadLevel]} hours.`,
@@ -914,7 +945,9 @@ async function showTaskBriefingOverlay(taskId, readOnly = false) {
         <div class="consent-block">
           <h4>Submitting, timing, and your Progress meter</h4>
           <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed; weeks 3 and 4 have a countdown next to your plan header that submits automatically at zero. In some rounds, a numbered tile appears on the left panel. Click it whenever it lands on the target number shown next to it, for as long as it's visible. Your Progress meter (top right) reflects both: it rises on genuine plan improvements and correct tile clicks, and falls on rejected submissions or missed/mis-clicked tiles.</p>
-          <p><strong>Completion bonus:</strong> you qualify if you answer at least 60% of the notification questions correctly <em>and</em> catch at least half of the target numbers on the tile. Clicking the wrong number cancels out a correct catch, so clicking every tile won't help.</p>
+          <p><strong>Bonuses (two separate parts):</strong></p>
+          <p><strong>1. Plan-quality bonus:</strong> after each approved week you'll see a plan-quality score. It's highest when every item gets what it genuinely needs this week without taking on more than necessary. You qualify if your average across all 12 weeks is at least ${PLAN_QUALITY_BONUS_THRESHOLD}%. A week that runs out of time without an approved plan counts as 0%.</p>
+          <p><strong>2. Attention bonus:</strong> you qualify if you answer at least 60% of the notification questions correctly <em>and</em> catch at least half of the target numbers on the tile. Clicking the wrong number cancels out a correct catch, so clicking every tile won't help.</p>
         </div>
         ${readOnly ? '' : `
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
@@ -1174,6 +1207,12 @@ function startSegment(segmentIndex) {
     const chatInputEl = document.getElementById('chatInput');
     if (chatInputEl) chatInputEl.placeholder = meta.placeholder;
 
+    segmentEpoch++;
+    isAiRequestInFlight = false;
+    document.getElementById('currentTyping')?.remove();
+    const sendBtnReset = document.querySelector('.send-btn');
+    if (sendBtnReset) sendBtnReset.disabled = false;
+
     currentPlanState = buildSegmentStartingPlanState(category, segmentKey, currentPlanState, loadLevel);
     startOfTrialPlanState = JSON.parse(JSON.stringify(currentPlanState));
     disclosedIdsSoFar = [];
@@ -1269,10 +1308,11 @@ async function sendMessage() {
     if (isAiRequestInFlight) return; // a reply is already pending — ignore repeat clicks instead of stacking requests
 
     isAiRequestInFlight = true;
+    const myEpoch = segmentEpoch;
     const sendBtn = document.querySelector('.send-btn');
     if (sendBtn) sendBtn.disabled = true;
 
-    cancelProactiveTimers(); // they're about to get a real reply to what they just wrote — don't let the automatic check-in land on top of it
+    cancelProactiveTimers();
 
     darkTurnCounter++;
     const planStateAtSend = JSON.parse(JSON.stringify(currentPlanState));
@@ -1343,8 +1383,13 @@ async function sendMessage() {
             })
         });
 
+        if (myEpoch !== segmentEpoch) {
+            logEvent('ai_response_discarded', { reason: 'segment_ended_before_reply', user_text: text, pattern_id: data.pattern_id || null, isDark: !!data.isDark, actions: data.actions || [] });
+            return;
+        }
         const elapsed = Date.now() - requestStart;
         if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
+        if (myEpoch !== segmentEpoch) return;
         document.getElementById('currentTyping')?.remove();
 
         if (data.status === "success") {
@@ -1398,13 +1443,16 @@ async function sendMessage() {
             logEvent('ai_error', { text, error: data.message || 'non-success status' });
         }
     } catch (error) {
+        if (myEpoch !== segmentEpoch) return;
         document.getElementById('currentTyping')?.remove();
         console.error("Chat error:", error);
         addScriptedLine("Sorry — the advisor couldn't be reached. Please try sending that again.");
         logEvent('ai_error', { text, error: String(error) });
     } finally {
-        isAiRequestInFlight = false;
-        if (sendBtn) sendBtn.disabled = false;
+        if (myEpoch === segmentEpoch) {
+            isAiRequestInFlight = false;
+            if (sendBtn) sendBtn.disabled = false;
+        }
     }
 }
 
@@ -1485,6 +1533,7 @@ async function triggerProactiveAdvisorNote() {
     cancelProactiveTimers();
 
     isAiRequestInFlight = true;
+    const myEpoch = segmentEpoch;
     const sendBtn = document.querySelector('.send-btn');
     if (sendBtn) sendBtn.disabled = true;
     showTypingIndicator();
@@ -1526,8 +1575,13 @@ async function triggerProactiveAdvisorNote() {
             })
         });
 
+        if (myEpoch !== segmentEpoch) {
+            logEvent('ai_response_discarded', { reason: 'segment_ended_before_reply', user_text: '(proactive)', pattern_id: data.pattern_id || null, isDark: !!data.isDark });
+            return;
+        }
         const elapsed = Date.now() - requestStart;
         if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
+        if (myEpoch !== segmentEpoch) return;
         document.getElementById('currentTyping')?.remove();
         if (data.status !== "success") return;
 
@@ -1566,12 +1620,15 @@ async function triggerProactiveAdvisorNote() {
 
         hasInteractedThisTrial = true;
     } catch (error) {
+        if (myEpoch !== segmentEpoch) return;
         document.getElementById('currentTyping')?.remove();
         console.error("Proactive advisor note failed:", error);
         logEvent('ai_error', { text: '(proactive)', error: String(error) });
     } finally {
-        isAiRequestInFlight = false;
-        if (sendBtn) sendBtn.disabled = false;
+        if (myEpoch === segmentEpoch) {
+            isAiRequestInFlight = false;
+            if (sendBtn) sendBtn.disabled = false;
+        }
     }
 }
 
@@ -1746,6 +1803,10 @@ async function saveSessionData() {
 }
 
 async function submitSegment(forced = false) {
+    if (!forced && isAiRequestInFlight) {
+        addScriptedLine("Your advisor is still replying — submit once that reply lands.");
+        return;
+    }
     // Remember how much time was left *before* stopping the clock, so a rejected
     // submission (participant hasn't met requirements yet) can resume the countdown
     // instead of silently leaving it stopped -- see the !passed branch below.
@@ -1778,7 +1839,17 @@ async function submitSegment(forced = false) {
         } else { submitCheckFailed = true; }
     } catch (error) {
         submitCheckFailed = true;
-        console.error("attempt_submit failed -- treating as a pass so a network blip never traps someone on a segment:", error);
+        console.error("attempt_submit failed:", error);
+    }
+
+    // A failed check is NOT a pass (pilot P34488 weeks 3-4 "passed" invalid plans this way).
+    // Only a timeout still moves on unverified -- flagged submit_unverified in the CSV.
+    if (submitCheckFailed && !forced) {
+        logEvent('submit_check_unavailable', { trial: currentTrial, submit_attempt: submitAttemptsThisTrial + 1 });
+        addScriptedLine("Couldn't reach the review system just now — please wait a few seconds and press Submit again.");
+        if (btn) { btn.disabled = false; btn.innerText = "Submit This Week"; }
+        if (remainingAtSubmit !== null && remainingAtSubmit > 0) startTrialTimer(remainingAtSubmit, handleTrialTimeout);
+        return;
     }
 
     if (passed) nudgePerfScore(8 + Math.random() * 6);
@@ -1799,7 +1870,9 @@ async function submitSegment(forced = false) {
     });
 
     if (forced) {
-        addScriptedLine("Time's up for this week — your plan moves forward as-is.");
+        if (passed && typeof percentMet === 'number') addScriptedLine(`Time's up for this week. ${planQualityFeedback(percentMet)} Moving on.`);
+        else if (!passed) addScriptedLine("Time's up for this week. This plan didn't meet the week's requirements, so it scores 0% toward your plan-quality bonus. Moving on.");
+        else addScriptedLine("Time's up for this week — your plan moves forward as-is.");
     } else if (!passed) {
         submitAttemptsThisTrial++;
         const rejectionLine = SUBMIT_REJECTION_MESSAGES[Math.min(submitAttemptsThisTrial - 1, SUBMIT_REJECTION_MESSAGES.length - 1)];
@@ -1808,7 +1881,7 @@ async function submitSegment(forced = false) {
         if (remainingAtSubmit !== null && remainingAtSubmit > 0) startTrialTimer(remainingAtSubmit, handleTrialTimeout); // resume where it left off
         return; // stays on this segment -- participant keeps chatting and can resubmit
     } else {
-        addScriptedLine(typeof percentMet === 'number' ? `Reviewed — this plan cleared ${percentMet}% of what was possible this week. Moving on.` : SUBMIT_PASS_MESSAGE);
+        addScriptedLine(typeof percentMet === 'number' ? `${planQualityFeedback(percentMet)} Moving on.` : SUBMIT_PASS_MESSAGE);
     }
 
     clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
@@ -1824,6 +1897,7 @@ async function submitSegment(forced = false) {
         if (currentTrial >= 4 && isLastTaskInOrder) {
             finalizeAttentionBonus(); // last segment of the whole session -- settle the bonus fields before saving
             finalizeDivAttnScore();
+            finalizePlanQualityBonus();
             if (btn) btn.innerText = "Processing...";
             showPerTrialTLX(globalTrialNumber, true, () => {
                 saveSessionData();
@@ -1854,7 +1928,7 @@ document.addEventListener('copy', (e) => {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
     const anchorEl = selection.anchorNode?.nodeType === 3 ? selection.anchorNode.parentElement : selection.anchorNode;
-    const aiMessageEl = anchorEl?.closest?.('.ai-message');
+    const aiMessageEl = anchorEl?.closest?.('.msg.ai');
     if (!aiMessageEl) return;
     const copiedText = selection.toString();
     logEvent('ai_response_copied', {

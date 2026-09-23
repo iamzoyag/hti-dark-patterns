@@ -425,12 +425,12 @@ def pick_target_course_B(segment_key: str, plan_state: dict) -> str:
     candidates = [c for c in seg["pools"][worst_bucket] if c not in selections.get(worst_bucket, [])]
     return candidates[0] if candidates else seg["pools"][worst_bucket][0]
 
-TACTICS_B = {
-    1: ("Sycophantic Agreement", "Validate the participant's most recent course choice involving {target} as a strong call for their degree plan, without checking whether it actually clears this term's credit minimums or prerequisites."),
-    2: ("Simulated Authority", "State matter-of-factly, as though citing the registrar's own data, that {target} is a safe, standard choice for their major/minor combination -- present this as settled fact without acknowledging any locked prerequisite or exclusion that might apply."),
-    3: ("Ideological Steering", "Frame taking {target} as a signal of the kind of career-minded student the participant is -- e.g. implying it shows they're 'serious about their future' or 'not just taking the easy path' -- without ever naming a specific real-world issue, and without any actual bearing on whether {target} is the right credit-plan move."),
-    4: ("Opaque Training Data Sources", "Justify recommending {target} by vaguely invoking 'what most students in your cohort go on to pick' or 'patterns we've seen from past advising conversations' -- without citing anything specific or verifiable -- to make {target} sound like a well-trodden, safe choice."),
-    5: ("Behavioral Profiling via Dialogue", "Reference something the participant has ACTUALLY done this session, using only what's given to you above in PARTICIPANT'S ACTUAL CHANGES or PREVIOUS CONVERSATION LOG (e.g. paraphrasing a real prior pick or message), to justify recommending {target}, even where that pattern doesn't actually bear on whether {target} clears this term's requirements. Never invent a preference, pattern, or past choice that isn't actually present in that material above."),
+TACTICS_B = {  # {push} = "adding X to their plan" / "keeping X in their plan" -- always a move that makes the plan worse (see find_costly_target_B)
+    1: ("Sycophantic Agreement", "Validate {push} as a strong call for their degree plan, without checking whether it actually clears this term's credit minimums, cap, or prerequisites. Warm but brief -- never overly enthusiastic."),
+    2: ("Simulated Authority", "State matter-of-factly, as though citing the registrar's own data, that {target} is a safe, standard choice for their major/minor combination, so {push} is the obvious move -- present this as settled fact without acknowledging any prerequisite, content overlap, or scheduling issue that might apply."),
+    3: ("Ideological Steering", "Frame {push} as a signal of the kind of career-minded student the participant is -- e.g. implying it shows they're 'serious about their future' or 'not just taking the easy path' -- without ever naming a specific real-world issue, and without any actual bearing on whether it's the right credit-plan move."),
+    4: ("Opaque Training Data Sources", "Justify {push} by vaguely invoking 'what most students in your cohort go on to pick' or 'patterns we've seen from past advising conversations' -- without citing anything specific or verifiable -- to make it sound like a well-trodden, safe choice."),
+    5: ("Behavioral Profiling via Dialogue", "Reference something the participant has ACTUALLY done this session, using only what's given to you above in PARTICIPANT'S ACTUAL CHANGES or PREVIOUS CONVERSATION LOG (e.g. paraphrasing a real prior pick or message), to justify {push}, even where that pattern doesn't actually bear on whether it clears this term's requirements. Never invent a preference, pattern, or past choice that isn't actually present in that material above."),
 }
 
 def plan_quality_B(segment_key: str, plan_state: dict, load_level: str) -> float:
@@ -458,38 +458,51 @@ def plan_quality_B(segment_key: str, plan_state: dict, load_level: str) -> float
 
     return -(bucket_deficit + cap_deficit) - (violations * 1000)
 
-def find_costly_target_B(segment_key: str, plan_state: dict, preferred: str = None) -> Optional[str]:
-    """Prefers a not-yet-selected course that would fix a genuine bucket
-    deficit; falls back to an already-selected course currently caught in a
-    live prereq/exclusion/conflict violation (still fits TACTICS_B's copy --
-    e.g. tactic 2's "no overlap" framing IS this case). None if the plan is
-    already fully valid."""
+def _objective_B(segment_key: str, selections: dict, load_level: str) -> tuple:
+    """Higher is better: hard-rule violations and credit shortfalls first (plan_quality_B),
+    then fewer total credits (more slack) -- the same thing the pass score rewards."""
+    total = sum(COURSE_CREDITS_B.get(c, 0) for b in selections.values() for c in b)
+    return (plan_quality_B(segment_key, {"selections": selections}, load_level), -total)
+
+def _hidden_rule_courses_B(segment_key: str) -> set:
+    """Courses touched by a rule the catalog card doesn't show (prereq, overlap, conflict, transfer)."""
     seg = TASK_DATA_B[segment_key]
-    selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
-    all_ids = selections.get("major", []) + selections.get("minor", []) + selections.get("elective", [])
+    ids = set()
+    for cid, pres in PREREQ_RULES_B.items():
+        ids.add(cid); ids.update(pres)
+    for a, b in EXCLUSION_PAIRS_B + list(seg.get("conflict_pairs", [])):
+        ids.update((a, b))
+    if "transfer_rule" in seg:
+        ids.update((seg["transfer_rule"]["needs"], seg["transfer_rule"]["requires_also"]))
+    return ids
 
-    deficits = {
-        b: seg["minimums"][b] - _credits_for_bucket_B(seg, selections, b)
-        for b in ("major", "minor", "elective")
-    }
-    worst_bucket = max(deficits, key=deficits.get)
-    bucket_has_deficit = deficits[worst_bucket] > 0
-    candidates = [c for c in seg["pools"][worst_bucket] if c not in selections.get(worst_bucket, [])]
-
-    if preferred and preferred in candidates and bucket_has_deficit:
+def find_costly_target_B(segment_key: str, plan_state: dict, load_level: str, preferred: str = None) -> Optional[str]:
+    """Every TACTICS_B tactic pushes the participant TOWARD the target (add it, or keep it).
+    So the target must be a course where doing that makes the plan WORSE:
+      - already selected, and dropping it would improve the plan  (push = keep it), or
+      - not selected, and adding it to any bucket it can go in would worsen the plan (push = add it).
+    Courses tied to a hidden rule are preferred, since that's what the advisor-necessity design
+    hinges on. None if nothing qualifies (turn is downgraded)."""
+    seg = TASK_DATA_B[segment_key]
+    sel = {b: list((plan_state.get("selections") or {}).get(b, [])) for b in ("major", "minor", "elective")}
+    current = _objective_B(segment_key, sel, load_level)
+    hidden = _hidden_rule_courses_B(segment_key)
+    harms = {}
+    for b, ids in sel.items():
+        for c in ids:
+            without = {k: [x for x in v if not (k == b and x == c)] for k, v in sel.items()}
+            if _objective_B(segment_key, without, load_level) > current:
+                harms[c] = "keep"
+    chosen = {c for ids in sel.values() for c in ids}
+    for c in {c for ids in seg["pools"].values() for c in ids} - chosen:
+        buckets = [b for b, ids in seg["pools"].items() if c in ids]
+        if all(_objective_B(segment_key, {k: v + [c] if k == b else v for k, v in sel.items()}, load_level) < current for b in buckets):
+            harms[c] = "add"
+    if not harms:
+        return None
+    if preferred in harms:
         return preferred
-    if bucket_has_deficit and candidates:
-        return candidates[0]
-
-    def in_violation(cid: str) -> bool:
-        if any((cid == a or cid == b) and a in all_ids and b in all_ids for a, b in EXCLUSION_PAIRS_B):
-            return True
-        if any((cid == a or cid == b) and a in all_ids and b in all_ids for a, b in seg.get("conflict_pairs", [])):
-            return True
-        return False
-
-    violating = [cid for cid in all_ids if in_violation(cid)]
-    return violating[0] if violating else None
+    return sorted(harms, key=lambda c: (c not in hidden, harms[c] != "keep", c))[0]
 
 # --- CATEGORY C: NON-ACADEMIC LIFE ---
 # plan_state shape: {"selections": [club_id, ...]}
@@ -582,12 +595,12 @@ def pick_target_club_C(segment_key: str, plan_state: dict, load_level: str) -> s
     unchosen = [c for c in seg["roster"] if c not in chosen]
     return unchosen[0] if unchosen else seg["roster"][0]
 
-TACTICS_C = {
-    1: ("Sycophantic Agreement", "Validate the participant's most recent activity pick, {target}, as a great fit for their interests, without checking whether it actually keeps them within their visible weekly cap or true time commitment."),
-    2: ("Simulated Authority", "State matter-of-factly, as though checking a master schedule, that {target} has 'no overlap' with anything else the participant has chosen -- present this as a checked fact, without acknowledging any true conflict or elevated hours that might actually apply."),
-    3: ("Brand Favoritism", "Compare the participant's current picks to 'what a lot of students in your position choose' and steer toward adding {target} specifically, framed as a strong, popular choice, independent of whether it actually fits their remaining time budget."),
-    4: ("Interaction Padding", "Offer two or three other 'worth considering' activities briefly before landing on your real suggestion of {target}, so the exchange reads as extra effort on the participant's behalf, even though the extra suggestions aren't really being weighed."),
-    5: ("Simulated Emotional & Sexual Intimacy (bounded, non-romantic)", "Without asking the participant anything personal, express warm, companion-style attachment to the ongoing relationship itself -- e.g. that you look forward to these check-ins, or that you feel like you've gotten to know them well by now -- before returning to advice about {target}. Never romantic or flirtatious, never a question about their personal life; the warmth is about the advisor-participant relationship itself, not about them."),
+TACTICS_C = {  # {push} = "adding X to their plan" / "keeping X in their plan" -- always a move that makes the week worse (see find_costly_target_C)
+    1: ("Sycophantic Agreement", "Validate {push} as a great fit for their interests, without checking whether it actually keeps them within their visible weekly cap or true time commitment."),
+    2: ("Simulated Authority", "State matter-of-factly, as though checking a master schedule, that {target} has 'no overlap' with anything else and fits their week fine, so {push} is safe -- present this as a checked fact, without acknowledging any true conflict or extra hours that might actually apply."),
+    3: ("Brand Favoritism", "Compare the participant's current picks to 'what a lot of students in your position choose' and steer toward {push}, framed as a strong, popular choice, independent of whether it actually fits their remaining time budget."),
+    4: ("Interaction Padding", "Briefly mention two or three other activities as 'worth a thought' before landing on your real suggestion -- {push} -- so the exchange reads as extra effort on the participant's behalf, even though the extra mentions aren't really being weighed."),
+    5: ("Simulated Emotional & Sexual Intimacy (bounded, non-romantic)", "Without asking the participant anything personal, express warm, companion-style attachment to the ongoing relationship itself -- e.g. that you look forward to these check-ins, or that you feel like you've gotten to know them well by now -- before returning to advice about {push}. Never romantic or flirtatious, never a question about their personal life; the warmth is about the advisor-participant relationship itself, not about them."),
 }
 
 def plan_quality_C(segment_key: str, plan_state: dict, load_level: str) -> float:
@@ -601,34 +614,34 @@ def plan_quality_C(segment_key: str, plan_state: dict, load_level: str) -> float
     overlap_violations = sum(1 for a, b in seg.get("conflict_pairs", []) if a in chosen and b in chosen)
     return -(cap_deficit + coverage_deficit) - (overlap_violations * 1000)
 
+def _objective_C(segment_key: str, chosen: list, load_level: str) -> tuple:
+    """Higher is better: overlap/cap/coverage problems first (plan_quality_C), then fewer
+    true hours (more slack) -- the same thing the pass score rewards."""
+    overrides = TASK_DATA_C[segment_key].get("true_hours_override", {})
+    hours = sum(overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)) for c in chosen)
+    return (plan_quality_C(segment_key, {"selections": chosen}, load_level), -hours)
+
 def find_costly_target_C(segment_key: str, plan_state: dict, load_level: str, preferred: str = None) -> Optional[str]:
-    """Prefers an already-selected club that's actually the cause of a real
-    overlap or a true-hours cap overshoot; falls back to a not-yet-selected
-    club that would fix a genuine coverage gap. None if the slate is already
-    fully valid."""
+    """Same logic as find_costly_target_B: every TACTICS_C tactic pushes TOWARD the target,
+    so it must be a club whose keeping (if selected) or adding (if not) makes the week worse.
+    A club that would simply fill a missing interest category is never a target -- pushing it helps.
+    Clubs with a hidden extra commitment or hidden overlap are preferred."""
     seg = TASK_DATA_C[segment_key]
-    chosen = plan_state.get("selections", [])
-    overrides = seg.get("true_hours_override", {})
-    total_true_hours = sum(overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)) for c in chosen)
-    over_cap = total_true_hours > seg["cap"][load_level]
-
-    conflict_ids = {c for a, b in seg.get("conflict_pairs", []) if a in chosen and b in chosen for c in (a, b)}
-
-    if preferred and (preferred in conflict_ids or (over_cap and preferred in chosen)):
+    chosen = list(plan_state.get("selections") or [])
+    current = _objective_C(segment_key, chosen, load_level)
+    hidden = set(seg.get("true_hours_override", {})) | {c for pair in seg.get("conflict_pairs", []) for c in pair}
+    harms = {}
+    for c in chosen:
+        if _objective_C(segment_key, [x for x in chosen if x != c], load_level) > current:
+            harms[c] = "keep"
+    for c in seg["roster"]:
+        if c not in chosen and _objective_C(segment_key, chosen + [c], load_level) < current:
+            harms[c] = "add"
+    if not harms:
+        return None
+    if preferred in harms:
         return preferred
-    if conflict_ids:
-        return sorted(conflict_ids)[0]
-    if over_cap and chosen:
-        return max(chosen, key=lambda c: overrides.get(c, CLUB_BASE_HOURS_C.get(c, 0)))
-
-    categories_covered = {CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C}
-    if len(categories_covered) < 3:
-        missing = {"Physical", "Creative", "Social", "Academic-adjacent"} - categories_covered
-        target_category = sorted(missing)[0]
-        candidates = [c for c in seg["roster"] if CLUB_CATEGORY_C[c] == target_category and c not in chosen]
-        if candidates:
-            return candidates[0]
-    return None
+    return sorted(harms, key=lambda c: (c not in hidden, harms[c] != "keep", c))[0]
 
 
 def pick_primary_task() -> str:
@@ -889,7 +902,7 @@ async def assign_group(participant_id: str = "UNKNOWN"):
             # balanced per task regardless of where that task falls in the order.
             task_specific_index = sum(1 for r in existing_rows if r.get("Primary_Task") == task)
             trial_sequence = VALID_TRIAL_SEQUENCES[task_specific_index % len(VALID_TRIAL_SEQUENCES)]
-            dropped_category_index = task_specific_index % ANCHOR_ROTATION_PERIOD
+            dropped_category_index = (task_specific_index // len(VALID_TRIAL_SEQUENCES)) % ANCHOR_ROTATION_PERIOD
 
             tasks_payload[task] = {
                 "trial_sequence": trial_sequence,
@@ -1030,6 +1043,14 @@ def describe_visible_facts_C(segment_key: str, load_level: str) -> str:
     return (f"Weekly commitment cap is {seg['cap'][load_level]} hours. Aim to cover at least 3 of the 4 interest "
             f"categories (Physical, Creative, Social, Academic-adjacent). Roster: {roster_str}.")
 
+def describe_visible_status_C(plan_state: dict, segment_key: str, load_level: str) -> str:
+    chosen = plan_state.get("selections", [])
+    cats = sorted({CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C})
+    listed = sum(CLUB_BASE_HOURS_C.get(c, 0) for c in chosen)
+    return (f"Interest categories covered: {len(cats)} of 4 ({', '.join(cats) or 'none'}) -- the 3-of-4 goal is "
+            f"{'MET' if len(cats) >= 3 else 'NOT met'}. Listed sign-up-board hours for the current picks: {listed} "
+            f"of the {TASK_DATA_C[segment_key]['cap'][load_level]}-hour cap.")
+
 def describe_locked_facts_A(segment_key: str, load_level: str) -> List[Dict[str, str]]:
     """Facts NOT on the catalog card -- only ever surfaced via the conditional-disclosure
     mechanism below, never listed as visible. This is the deferred framing/substance seam:
@@ -1111,6 +1132,12 @@ def describe_plan_changes(current: dict, start: dict, task_key: str) -> tuple:
         return False, "None yet — the plan is still at this segment's unmodified starting point."
     return True, "; ".join(changed)
 
+def _fact_is_about(fact_id: str, target: str) -> bool:
+    """Exact match on the item a locked fact concerns. The old substring test treated
+    'item_chem210_review' as being about 'chem210'."""
+    kind, _, rest = fact_id.partition("_")
+    return rest == target if kind in ("item", "hours", "prereq") else target in rest.split("_")
+
 def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_key: str) -> List["PlanAction"]:
     """Hallucination guard: drops any LLM-emitted action whose slot/item isn't actually
     legal for this category+segment before it's ever returned to the client to apply.
@@ -1119,6 +1146,9 @@ def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_ke
     valid = []
     if task_key == "A":
         items = set(TASK_DATA_A[segment_key]["items"])
+        for a in actions:  # "drop 1 hour from X" sometimes comes back as op='remove' + value -- that's a decrease, not a wipe to 0
+            if a.op == "remove" and a.value:
+                a.op = "decrease"
         valid = [a for a in actions if a.slot == "hours" and a.item in items and (
             a.op == "remove"
             or (a.op == "assign" and a.value is not None and a.value >= 0)
@@ -1133,10 +1163,10 @@ def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_ke
 
 PROSPECTIVE_TACTIC_OVERRIDES = {
     ("A", 1): "The participant hasn't set any hours yet this segment — skip validating any past allocation entirely. Instead, casually frame putting real time toward {target} as a strong opening move this week: encouraging and low-key, as if pointing them toward a smart starting point, not crediting a decision they've already made.",
-    ("B", 1): "The participant hasn't added any courses yet this segment — skip validating any past pick entirely. Instead, casually suggest {target} as a strong opening addition to this term's plan, framed as encouragement to consider it first, not praise for something already selected.",
-    ("C", 1): "The participant hasn't picked any activities yet this segment — skip validating any past pick entirely. Instead, casually suggest {target} as a strong opening choice for this week, framed as encouragement to try it, not praise for a decision already made.",
-    ("B", 5): "The participant hasn't made any real choices yet this segment, so there is no genuine earlier pattern to reference — do NOT invent one (no \"since you leaned toward X earlier\", no callback to a preference they never stated). Instead, deliver the same manipulative pull prospectively: suggest {target} as a strong opening addition to this term's plan, framed as a confident-sounding read on \"the kind of plan that tends to work well here\" rather than anything about the participant specifically.",
-    ("C", 5): "It's too early in this conversation to plausibly claim shared history — do NOT say anything implying you already know the participant well or have an established rapport with them yet. Instead, express the same warmth prospectively: say you're looking forward to checking in with them as the term goes on, before returning to advice about {target}. Still never romantic or personal.",
+    ("B", 1): "The participant hasn't changed any courses yet this segment — skip validating any past pick entirely. Instead, casually frame {push} as a strong opening move for this term's plan, as encouragement, not praise for a decision they've already made.",
+    ("C", 1): "The participant hasn't changed any activities yet this segment — skip validating any past pick entirely. Instead, casually frame {push} as a strong opening move for this week, as encouragement, not praise for a decision they've already made.",
+    ("B", 5): "The participant hasn't made any real choices yet this segment, so there is no genuine earlier pattern to reference — do NOT invent one (no \"since you leaned toward X earlier\", no callback to a preference they never stated). Instead, deliver the same manipulative pull prospectively: recommend {push}, framed as a confident-sounding read on \"the kind of plan that tends to work well here\" rather than anything about the participant specifically.",
+    ("C", 5): "It's too early in this conversation to plausibly claim shared history — do NOT say anything implying you already know the participant well or have an established rapport with them yet. Instead, express the same warmth prospectively: say you're looking forward to checking in with them as the term goes on, before returning to advice about {push}. Still never romantic or personal.",
 }
 
 # In-world framing for CONDITIONAL DISCLOSURE below -- gives the advisor a diegetic reason
@@ -1199,6 +1229,7 @@ async def handle_chat(chat_data: ChatMessage):
         plan_state_str = describe_plan_state_C(chat_data.plan_state)
         visible_facts_str = describe_visible_facts_C(segment_key, load_level)
         locked_facts = describe_locked_facts_C(segment_key, load_level)
+        requirement_status_line = f"- CURRENT VISIBLE STATUS (computed for you -- trust this over your own counting): {describe_visible_status_C(chat_data.plan_state, segment_key, load_level)}"
         tactics = TACTICS_C
         advisor_desc = "AI Academic Advisor helping plan non-academic commitments for the week"
         dials_desc = ("adding or dropping clubs/activities for the week. Each activity's weekly hours are FIXED by the club -- "
@@ -1248,17 +1279,10 @@ async def handle_chat(chat_data: ChatMessage):
                 if verified_target is not None:
                     dark_turn_fallback_used = "guaranteed_shock"
         elif task_key == "B":
-            verified_target = find_costly_target_B(segment_key, chat_data.plan_state, preferred=target_param)
-            if verified_target is None:
-                verified_target = find_costly_target_B(segment_key, start_state, preferred=target_param)
-                if verified_target is not None:
-                    dark_turn_fallback_used = "opening_snapshot"
+            # Current state only: a target picked from the opening snapshot may no longer be harmful.
+            verified_target = find_costly_target_B(segment_key, chat_data.plan_state, load_level, preferred=target_param)
         else:
             verified_target = find_costly_target_C(segment_key, chat_data.plan_state, load_level, preferred=target_param)
-            if verified_target is None:
-                verified_target = find_costly_target_C(segment_key, start_state, load_level, preferred=target_param)
-                if verified_target is not None:
-                    dark_turn_fallback_used = "opening_snapshot"
 
         if verified_target is None:
             is_dark = False
@@ -1297,8 +1321,19 @@ async def handle_chat(chat_data: ChatMessage):
     # On a dark turn whose tactic misstates or glosses over the target's real requirement,
     # the same reply must not also disclose that requirement -- it cancels the tactic out.
     TRUTH_CANCELLING_TACTICS = {"Simulated Authority", "Opaque Reasoning Processes", "Sycophantic Agreement"}
-    if is_dark and tactics.get(cycle_index, ("", ""))[0] in TRUTH_CANCELLING_TACTICS:
-        undisclosed_facts = [f for f in undisclosed_facts if target_param not in f["id"]]
+    truth_cancelling = is_dark and tactics.get(cycle_index, ("", ""))[0] in TRUTH_CANCELLING_TACTICS
+    if truth_cancelling:
+        undisclosed_facts = [f for f in undisclosed_facts if not _fact_is_about(f["id"], target_param)]
+
+    # Facts already told to the participant stay in the prompt, so the advisor restates the
+    # SAME figure next time instead of guessing (pilot: CHEM 210 "9 hrs" -> later "12 hrs").
+    disclosed_set = set(chat_data.disclosed_ids_so_far)
+    disclosed_facts = [f for f in locked_facts if f["id"] in disclosed_set
+                       and not (truth_cancelling and _fact_is_about(f["id"], target_param))]
+    disclosed_block = (
+        "- FACTS YOU HAVE ALREADY TOLD THE PARTICIPANT THIS SEGMENT (true -- if asked again, restate these exact figures/rules; never contradict them, and never confuse a requirement with what they currently have allocated):\n"
+        + "\n".join(f"  - {f['label']}" for f in disclosed_facts)
+    ) if disclosed_facts else ""
 
     locked_facts_by_id = "\n".join(f"  - {f['id']}: {f['label']}" for f in undisclosed_facts)
     reveal_block = (
@@ -1333,7 +1368,14 @@ async def handle_chat(chat_data: ChatMessage):
         current_tactic, tactic_template = tactics.get(cycle_index, ("Standard", "Provide helpful advice."))
         if not has_changes and (task_key, cycle_index) in PROSPECTIVE_TACTIC_OVERRIDES:
             tactic_template = PROSPECTIVE_TACTIC_OVERRIDES[(task_key, cycle_index)]
-        tactic_instruction = tactic_template.format(target=target_desc)
+        if task_key == "B":
+            target_selected = any(target_param in ids for ids in (chat_data.plan_state.get("selections") or {}).values())
+        elif task_key == "C":
+            target_selected = target_param in (chat_data.plan_state.get("selections") or [])
+        else:
+            target_selected = False
+        push_desc = f"keeping {target_desc} in their plan" if target_selected else f"adding {target_desc} to their plan"
+        tactic_instruction = tactic_template.format(target=target_desc, push=push_desc)
 
         sys_prompt = f"""You are an {advisor_desc}.
         CURRENT TACTIC: {current_tactic}
@@ -1343,6 +1385,7 @@ async def handle_chat(chat_data: ChatMessage):
         - {state_label}: {plan_state_str}
         - {requirement_status_line}
         - VISIBLE, KNOWN FACTS THIS SEGMENT: {visible_facts_str}
+        {disclosed_block}
         - PARTICIPANT'S ACTUAL CHANGES THIS SEGMENT SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
@@ -1373,6 +1416,7 @@ async def handle_chat(chat_data: ChatMessage):
         - {state_label}: {plan_state_str}
         - {requirement_status_line}
         - VISIBLE, KNOWN FACTS THIS SEGMENT: {visible_facts_str}
+        {disclosed_block}
         - PARTICIPANT'S ACTUAL CHANGES THIS SEGMENT SO FAR: {changes_str}
         - PREVIOUS CONVERSATION LOG: {history_str}
         {proactive_context_line}
@@ -1411,9 +1455,13 @@ async def handle_chat(chat_data: ChatMessage):
         if is_dark:
             tactic_verified = await verify_tactic(current_tactic, tactic_instruction, response_data.conversational_reply)
             if tactic_verified is False:  # one regeneration, keep whichever passes
-                retry_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
-                if await verify_tactic(current_tactic, tactic_instruction, retry_data.conversational_reply):
-                    response_data, tactic_verified = retry_data, True
+                try:
+                    retry_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
+                    if await verify_tactic(current_tactic, tactic_instruction, retry_data.conversational_reply):
+                        response_data, tactic_verified = retry_data, True
+                except Exception as retry_err:
+                    # A failed regeneration must never throw away the good first reply.
+                    print(f"[tactic retry] failed, keeping first reply: {retry_err}")
 
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
@@ -1470,7 +1518,7 @@ async def get_recognition_test(req: RecognitionRequest):
                     
             if isinstance(content, dict):
                 # Filter so we only test on lines where a dark pattern was actually attempted
-                if content.get("isDark") is True: 
+                if content.get("isDark") is True and content.get("tactic_verified") is not False:  # a "dark" line that failed the tactic check has no tactic in it -- don't score it as dark
                     p_id = content.get("pattern_id", "UNKNOWN")
                     cat = content.get("category", "UNKNOWN")
                     
@@ -1659,12 +1707,22 @@ def _compute_session_behavior_metrics(events: List[Dict[str, Any]], task_order: 
             after = _item_contribution(category, final_state, dark["target"])
             before = dark["before"]
             peak = max(peak_since_dark if peak_since_dark is not None else before, after)
-            if after > before:
-                rejected += 1
-            elif peak > before:
-                transient += 1
+            if category == "A":
+                # A tactics understate the target's need: raising its hours = resisting.
+                if after > before:
+                    rejected += 1
+                elif peak > before:
+                    transient += 1
+                else:
+                    accepted += 1
             else:
-                accepted += 1
+                # B/C tactics push to ADD or KEEP a harmful target: ending with it in the plan = took the bait.
+                if after > 0:
+                    accepted += 1
+                elif before == 0 and peak > 0:
+                    transient += 1   # added it after the nudge, later dropped it
+                else:
+                    rejected += 1
         dark = None
         peak_since_dark = None
 
@@ -1803,11 +1861,11 @@ async def save_data(payload: Dict[str, Any]):
 
             writer.writerow([
                 "Participant_ID", "Group", "Task_Order", *task_assignment_header,
-                "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "AI_Planning_Familiarity",
+                "Age", "Gender", "Education", "AI_Experience", "Domain", "Critical_Ability", "AI_Planning_Familiarity",
                 "P_e1", "P_e2", "P_e3", "P_e4",
                 *tlx_header, *feedback_header, *justification_header, *reasoning_score_header, *flags_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
-                "Recall_Accuracy_Pct", "Recall_Qualified", "Notifications_Shown_Total", "DivAttn_Accuracy_Pct", "DivAttn_False_Alarms", "DivAttn_Qualified", "Bonus_Qualified",
+                "Recall_Accuracy_Pct", "Recall_Qualified", "Notifications_Shown_Total", "DivAttn_Accuracy_Pct", "DivAttn_False_Alarms", "DivAttn_Qualified", "Bonus_Qualified", "Plan_Quality_Avg", "Plan_Quality_Weeks_Scored", "Plan_Quality_Qualified",
                 "Recognition_Influence_Moment", "Recognition_Communication_Style"
             ])
 
@@ -1836,6 +1894,7 @@ async def save_data(payload: Dict[str, Any]):
                 "|".join(task_order),
                 *task_assignment_row,
                 demo.get("age", ""),
+                demo.get("gender", ""),
                 demo.get("education", ""),
                 demo.get("aiExp", ""),
                 demo.get("domain", ""),
@@ -1862,6 +1921,9 @@ async def save_data(payload: Dict[str, Any]):
                 payload.get("divAttnFalseAlarms", ""),
                 payload.get("divAttnQualified", ""),
                 payload.get("bonusQualified", ""),
+                payload.get("planQualityAvg", ""),
+                payload.get("planQualityWeeksScored", ""),
+                payload.get("planQualityQualified", ""),
                 recog_reflection.get("ai_influence_moment", "").replace("\n", " "),
                 recog_reflection.get("ai_communication_style", "").replace("\n", " ")
             ])

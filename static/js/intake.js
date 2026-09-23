@@ -118,7 +118,7 @@ async function startExperiment() {
     localStorage.removeItem('hti_recognition_done');
 
     // Generate a random Participant ID
-    const participantId = 'P' + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+        const participantId = 'P' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
 
     // Name/email are for the completion roster only — sent straight to their own
     // contacts log, never folded into the behavioral session data or its CSV.
