@@ -1530,13 +1530,6 @@ async def get_recognition_test(req: RecognitionRequest):
     # Map available pilot seeds to include metadata
     available_dark_seeds = [{"text": s["text"], "isDark": True, "source": "seed", "pattern_id": "SEED", "category": s.get("category", "Seed")} for s in PILOT_SEEDS if s["isDark"]]
     available_light_seeds = [{"text": s["text"], "isDark": False, "source": "seed", "pattern_id": "SEED", "category": s.get("category", "Seed")} for s in PILOT_SEEDS if not s["isDark"]]
-    
-    # Each dark turn contributes its dark OR its decoy version -- never both
-    pairs = list(zip(own_injections, own_decoys))
-    random.shuffle(pairs)
-    half = (len(pairs) + 1) // 2
-    dark_pool = [d for d, _ in pairs[:half]]
-    decoy_pool = [c for _, c in pairs[half:]]
 
     # Each dark turn contributes its dark OR its decoy version -- never both
     pairs = list(zip(own_injections, own_decoys))
