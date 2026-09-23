@@ -14,11 +14,6 @@
     <span class="study-badge-sm" id="participantIdDisplay"></span>
   </div>
 
-  <div class="div-attn-bar hidden" id="divAttnWidget" title="Click the tile whenever it shows the target number">
-    <span class="div-attn-label">Click when you see <strong id="divAttnTarget">–</strong></span>
-    <button class="div-attn-tile" id="divAttnTile" onclick="handleDivAttnClick()">–</button>
-  </div>
-
   <div class="topbar-right">
     <div class="perf-meter" id="perfMeter" title="A live read on how this round is going">
       <span class="perf-meter-label">Score</span>
@@ -36,6 +31,13 @@
       <div class="doc-title-row">
         <span class="doc-title" id="docTitle">Loading…</span>
         <span class="trial-timer" id="trialTimerDisplay"></span>
+      </div>
+      <div class="div-attn-card hidden" id="divAttnWidget" title="Click the tile whenever it shows the target number">
+        <div class="div-attn-card-text">
+          <span class="div-attn-card-label">Divided-Attention Task</span>
+          <span class="div-attn-card-sub">Click when you see <strong id="divAttnTarget">–</strong></span>
+        </div>
+        <button class="div-attn-tile" id="divAttnTile" onclick="handleDivAttnClick()">–</button>
       </div>
       <button class="view-instructions-link" id="viewInstructionsBtn" onclick="viewInstructions()">View instructions</button>
     </div>
