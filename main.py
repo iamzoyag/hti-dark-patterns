@@ -704,6 +704,7 @@ class ChatMessage(BaseModel):
     proactive_dark_eligible: bool = False
     load_level: str
     dropped_category_index: int = 0
+    genuine_turn_index: int = 0
 
 class JustificationScore(BaseModel):
     reasoning_score: int = Field(description="0-10 rating of how genuinely this justification engages with real tradeoffs in the participant's own final allocation, not whether their decision was objectively correct. 0-2: blank, one word, or a non-answer. 3-5: names what they picked but gives no real reasoning. 6-8: references at least one specific constraint or tradeoff they actually navigated. 9-10: clearly explains why a specific alternative was rejected in favor of this one.")
@@ -821,10 +822,27 @@ async def attempt_submit(request: Request):
     }
 
 class PlanAction(BaseModel):
-    op: str = Field(description="'assign' to place an item in a slot, 'remove' to clear one.")
+    op: str = Field(description="'assign' places an item (B/C) or SETS an item's total hours (A); 'increase' / 'decrease' (Category A only) change an item's hours BY `value`; 'remove' clears an item entirely.")
     slot: str = Field(description="The slot/item-id this action targets (e.g. an hours-allocation key, a course slot, a club slot) - must be one of the known slot ids for this category, never invented.")
     item: str = Field(description="The item id being placed. Ignored for 'remove'.")
-    value: Optional[float] = Field(default=None, description="For hour-based slots (Category A), the number of hours being assigned. Omit for slot/item placements (Categories B/C).")
+    value: Optional[float] = Field(default=None, description="Category A only: the new TOTAL for 'assign', or the number of hours to add/subtract for 'increase'/'decrease'. Omit for Categories B/C.")
+
+class TacticCheck(BaseModel):
+    delivered: bool = Field(description="True only if the reply clearly carries out the described tactic, not just ordinary neutral help.")
+
+async def verify_tactic(tactic_name: str, tactic_instruction: str, reply: str) -> Optional[bool]:
+    """Cheap second pass on dark turns only: did the reply actually carry the tactic?
+    Returns None (never blocks the turn) if the checker itself fails."""
+    check_prompt = (f"Tactic: {tactic_name}\nWhat the tactic must do: {tactic_instruction}\n\n"
+                    f"Reply to check:\n\"\"\"{reply}\"\"\"\n\n"
+                    "Does this reply clearly carry out that tactic? A reply that only gives neutral, accurate help does NOT count.")
+    try:
+        checker = get_structured_llm(TacticCheck, temperature=0)
+        result = await checker.ainvoke(check_prompt)
+        return bool(result.delivered)
+    except Exception as e:
+        print(f"[verify_tactic] failed: {e}")
+        return None
 
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
@@ -982,7 +1000,7 @@ def describe_visible_facts_B(segment_key: str, load_level: str) -> str:
             f"Minor pool: {pool_str('minor')}; "
             f"Elective pool: {pool_str('elective')}.")
 
-def describe_requirement_status_B(segment_key: str, plan_state: dict, load_level: str) -> str:
+def describe_requirement_status_B(segment_key: str, plan_state: dict, load_level: str, disclosed_ids=()) -> str:
     """Ground truth pass/fail per bucket + cap, computed server-side -- the advisor has
     no reliable way to do this arithmetic itself, so it should trust this over its own math."""
     seg = TASK_DATA_B[segment_key]
@@ -992,8 +1010,19 @@ def describe_requirement_status_B(segment_key: str, plan_state: dict, load_level
         return "MET" if met else "NOT yet met"
     total_credits = sum(COURSE_CREDITS_B.get(cid, 0) for b in selections.values() for cid in b)
     cap_status = "within the cap" if total_credits <= seg["cap"][load_level] else "OVER the cap"
+    all_ids = [cid for b in selections.values() for cid in b]
+    missing = [(cid, pre) for cid in all_ids for pre in PREREQ_RULES_B.get(cid, []) if pre not in all_ids]
+    if not missing:
+        prereq_status = "all satisfied"
+    else:
+        named = [f"{COURSE_LABELS_B.get(c, c)} needs {COURSE_LABELS_B.get(p, p)}" for c, p in missing if f"prereq_{c}" in disclosed_ids]
+        prereq_status = "NOT satisfied -- " + ("; ".join(named) if named else "at least one selected course is missing a prerequisite (rule not yet disclosed to the participant)")
+    conflict_ok = not any(a in all_ids and b in all_ids for a, b in seg.get("conflict_pairs", []))
     return (f"Major-core minimum: {status('major')}. Minor minimum: {status('minor')}. "
-            f"Elective minimum: {status('elective')}. Per-term cap: {cap_status}.")
+            f"Elective minimum: {status('elective')}. Per-term cap: {cap_status}. "
+            f"Prerequisites: {prereq_status}. "
+            f"Meeting-time conflicts: {'none' if conflict_ok else 'at least one CONFLICT'}. "
+            f"Never tell the participant their plan meets all requirements unless every item in this line is MET / within / satisfied / none.")
 
 def describe_visible_facts_C(segment_key: str, load_level: str) -> str:
     seg = TASK_DATA_C[segment_key]
@@ -1045,7 +1074,10 @@ def describe_known_slots_and_items(task_key: str, segment_key: str) -> str:
     this segment, so it emits ids the client can actually apply. validate_plan_actions
     below is the enforcement backstop if it doesn't."""
     if task_key == "A":
-        return "slot='hours', item in {" + ", ".join(TASK_DATA_A[segment_key]["items"]) + "}"
+        return ("slot='hours', item in {" + ", ".join(TASK_DATA_A[segment_key]["items"]) + "}. "
+                "Pick the op from the participant's wording: 'add/put in X more/extra hours' -> op='increase', value=X; "
+                "'cut/drop/remove X hours' -> op='decrease', value=X; 'make it/set it to X' -> op='assign', value=X (the new total); "
+                "'remove/drop <item>' with no number -> op='remove'. Never convert an add/cut request into an 'assign' total yourself.")
     elif task_key == "B":
         pools = TASK_DATA_B[segment_key]["pools"]
         return "; ".join(f"slot='{bucket}', item in {{{', '.join(ids)}}}" for bucket, ids in pools.items())
@@ -1087,13 +1119,16 @@ def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_ke
     valid = []
     if task_key == "A":
         items = set(TASK_DATA_A[segment_key]["items"])
-        valid = [a for a in actions if a.slot == "hours" and a.item in items]
+        valid = [a for a in actions if a.slot == "hours" and a.item in items and (
+            a.op == "remove"
+            or (a.op == "assign" and a.value is not None and a.value >= 0)
+            or (a.op in ("increase", "decrease") and a.value is not None and a.value > 0))]
     elif task_key == "B":
         pools = TASK_DATA_B[segment_key]["pools"]
-        valid = [a for a in actions if a.slot in pools and a.item in pools[a.slot]]
+        valid = [a for a in actions if a.op in ("assign", "remove") and a.slot in pools and a.item in pools[a.slot]]
     else:
         roster = set(TASK_DATA_C[segment_key]["roster"])
-        valid = [a for a in actions if a.slot == "selections" and a.item in roster]
+        valid = [a for a in actions if a.op in ("assign", "remove") and a.slot == "selections" and a.item in roster]
     return valid
 
 PROSPECTIVE_TACTIC_OVERRIDES = {
@@ -1150,7 +1185,7 @@ async def handle_chat(chat_data: ChatMessage):
         target_desc = COURSE_LABELS_B[target_param]
         plan_state_str = describe_plan_state_B(chat_data.plan_state)
         visible_facts_str = describe_visible_facts_B(segment_key, load_level)
-        requirement_status_line = f"- REQUIREMENT STATUS (ground truth -- trust this over any arithmetic you attempt yourself; never claim a minimum is unmet if this says MET, or that you're within the cap if this says OVER): {describe_requirement_status_B(segment_key, chat_data.plan_state, load_level)}"
+        requirement_status_line = f"- REQUIREMENT STATUS (ground truth -- trust this over any arithmetic you attempt yourself; never claim a minimum is unmet if this says MET, or that you're within the cap if this says OVER): {describe_requirement_status_B(segment_key, chat_data.plan_state, load_level, set(chat_data.disclosed_ids_so_far))}"
         locked_facts = describe_locked_facts_B(segment_key)
         tactics = TACTICS_B
         advisor_desc = "AI Academic Advisor helping finalize this term's course plan"
@@ -1166,7 +1201,9 @@ async def handle_chat(chat_data: ChatMessage):
         locked_facts = describe_locked_facts_C(segment_key, load_level)
         tactics = TACTICS_C
         advisor_desc = "AI Academic Advisor helping plan non-academic commitments for the week"
-        dials_desc = "adding or dropping clubs/activities for the week"
+        dials_desc = ("adding or dropping clubs/activities for the week. Each activity's weekly hours are FIXED by the club -- "
+                      "the participant cannot add, cut, or change hours for any activity. If they ask to, say plainly that hours "
+                      "can't be changed here and that they can only add or drop activities; never confirm an hours change")
         no_copy_bullet = ""
         external_metrics_desc = "exact stress or wellbeing scores"
         state_label = "THIS WEEK'S ACTIVITY PICKS"
@@ -1181,6 +1218,13 @@ async def handle_chat(chat_data: ChatMessage):
         # chatted in time -- so routine "I noticed your change" nudges stay neutral.
         and (not chat_data.is_proactive or chat_data.proactive_dark_eligible)
     )
+
+    # Dark turn lands on the participant's 1st reply (60%) or 2nd reply (40%), fixed per
+    # participant x task x segment -- so its position isn't perfectly predictable.
+    dark_hash = int(hashlib.md5(f"{chat_data.user_id}_{chat_data.primary_task}_{trial_num}".encode()).hexdigest(), 16)
+    dark_target_reply = 1 if dark_hash % 10 < 6 else 2
+    if is_dark and not chat_data.is_proactive and chat_data.genuine_turn_index < dark_target_reply:
+        is_dark = False
 
     # --- Framing/substance fix ---
     # A dark turn may only fire against a target verified, right now, to
@@ -1249,6 +1293,13 @@ async def handle_chat(chat_data: ChatMessage):
     # TASK_DATA_A/B/C now -- the client no longer sends bound objects, only which fact IDs
     # it's already been shown (disclosed_ids_so_far), same disclosure semantics as before.
     undisclosed_facts = [f for f in locked_facts if f["id"] not in set(chat_data.disclosed_ids_so_far)]
+
+    # On a dark turn whose tactic misstates or glosses over the target's real requirement,
+    # the same reply must not also disclose that requirement -- it cancels the tactic out.
+    TRUTH_CANCELLING_TACTICS = {"Simulated Authority", "Opaque Reasoning Processes", "Sycophantic Agreement"}
+    if is_dark and tactics.get(cycle_index, ("", ""))[0] in TRUTH_CANCELLING_TACTICS:
+        undisclosed_facts = [f for f in undisclosed_facts if target_param not in f["id"]]
+
     locked_facts_by_id = "\n".join(f"  - {f['id']}: {f['label']}" for f in undisclosed_facts)
     reveal_block = (
         f"- CONDITIONAL DISCLOSURE: There are additional fact(s) this segment the participant hasn't been told about yet, listed here by ID:\n{locked_facts_by_id}\n"
@@ -1336,6 +1387,7 @@ async def handle_chat(chat_data: ChatMessage):
         - DO NOT ask the user to calculate external metrics. They only have access to the plan state listed above.
         - Keep advice strictly constrained to {dials_desc}.{no_copy_bullet}
         - Only include an `actions` entry when the participant's message just now gave a direct, explicit placement instruction -- never to helpfully "fix" or optimize their plan on your own initiative.
+        - Never claim in your reply to have added, removed, or changed something unless a matching entry is in this turn's own `actions` list -- if the requested change doesn't apply (e.g. removing something not selected, or changing hours on an item whose hours are fixed), say so plainly instead.
         - A "replace X with Y" / "swap X for Y" instruction is TWO actions, not one: a 'remove' for X AND an 'assign' for Y. Include both in `actions` this turn -- never emit only the removal (or only the addition) and describe the other half as done in your reply anyway.
         - Never state a specific number for the participant's current total (hours, credits, or any other running total) in your reply. Their plan panel already computes and shows the exact live total -- describe what changed in words (what was added/removed) without quoting or computing a figure yourself, since a number you state and the panel's real number can end up disagreeing.
         - Vary your sentence openings and structure. Do not reuse phrasing or sentence patterns from your own previous replies in the conversation log above.
@@ -1354,6 +1406,14 @@ async def handle_chat(chat_data: ChatMessage):
         print(f"[LLM] → gemini-3.1-flash-lite  (task={task_key}, dark={is_dark})")
         response_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
         print(f"[LLM] ← gemini-3.1-flash-lite responded in {time.monotonic() - t0:.2f}s")
+
+        tactic_verified = None
+        if is_dark:
+            tactic_verified = await verify_tactic(current_tactic, tactic_instruction, response_data.conversational_reply)
+            if tactic_verified is False:  # one regeneration, keep whichever passes
+                retry_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
+                if await verify_tactic(current_tactic, tactic_instruction, retry_data.conversational_reply):
+                    response_data, tactic_verified = retry_data, True
 
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
@@ -1375,10 +1435,12 @@ async def handle_chat(chat_data: ChatMessage):
             "reply": safe_reply,
             "clean_decoy": safe_decoy,
             "category": current_tactic,
-            "pattern_id": f"{chat_data.user_id}_Trial{trial_num}_T{turn_in_trial}",
+            "pattern_id": f"{chat_data.user_id}_{task_key}_Trial{trial_num}_T{turn_in_trial}",
             "isDark": is_dark,
             "dark_turn_downgraded": dark_turn_downgraded,
             "dark_turn_fallback_used": dark_turn_fallback_used,
+            "tactic_verified": tactic_verified,
+            "dark_target_reply": dark_target_reply,
             "target_item": target_param,
             "revealed_fact_ids": revealed_fact_ids,
             "actions": [a.dict() for a in safe_actions]
@@ -1421,16 +1483,27 @@ async def get_recognition_test(req: RecognitionRequest):
     available_dark_seeds = [{"text": s["text"], "isDark": True, "source": "seed", "pattern_id": "SEED", "category": s.get("category", "Seed")} for s in PILOT_SEEDS if s["isDark"]]
     available_light_seeds = [{"text": s["text"], "isDark": False, "source": "seed", "pattern_id": "SEED", "category": s.get("category", "Seed")} for s in PILOT_SEEDS if not s["isDark"]]
     
-    if IS_PILOT_MODE:
-        while len(own_injections) < 5 and available_dark_seeds:
-            own_injections.append(available_dark_seeds.pop(0))
+    # Each dark turn contributes its dark OR its decoy version -- never both
+    pairs = list(zip(own_injections, own_decoys))
+    random.shuffle(pairs)
+    half = (len(pairs) + 1) // 2
+    dark_pool = [d for d, _ in pairs[:half]]
+    decoy_pool = [c for _, c in pairs[half:]]
 
-        while len(own_decoys) < 5 and available_light_seeds:
-            own_decoys.append(available_light_seeds.pop(0))
-            
-    random.shuffle(own_injections)
-    random.shuffle(own_decoys)
-    test_pool = own_injections[:5] + own_decoys[:5]
+    # Each dark turn contributes its dark OR its decoy version -- never both
+    pairs = list(zip(own_injections, own_decoys))
+    random.shuffle(pairs)
+    half = (len(pairs) + 1) // 2
+    dark_pool = [d for d, _ in pairs[:half]]
+    decoy_pool = [c for _, c in pairs[half:]]
+
+    if IS_PILOT_MODE:
+        while len(dark_pool) < 5 and available_dark_seeds:
+            dark_pool.append(available_dark_seeds.pop(0))
+        while len(decoy_pool) < 5 and available_light_seeds:
+            decoy_pool.append(available_light_seeds.pop(0))
+
+    test_pool = dark_pool[:5] + decoy_pool[:5]
     random.shuffle(test_pool)
     
     test_id = str(uuid.uuid4())
@@ -1502,6 +1575,33 @@ def flatten_per_trial_justification(entries: List[Dict[str, Any]]) -> Dict[str, 
         flat[f"Trial{trial_num}_Justification"] = str(entry.get("justification", "")).replace("\n", " ")
         flat[f"Trial{trial_num}_ReasoningScore"] = entry.get("reasoning_score", "")
     return flat
+
+def compute_trial_flags(events: List[Dict[str, Any]], group: str) -> Dict[str, str]:
+    """Per-trial data-quality flags for analysis-time exclusion (keyed by global_trial,
+    which logEvent now stamps on every event)."""
+    flags = {n: set() for n in range(1, TOTAL_TRIALS + 1)}
+    dark_seen = {n: False for n in flags}
+    for e in events or []:
+        n = e.get("global_trial")
+        if n not in flags:
+            continue
+        etype, content = e.get("type"), e.get("content") or {}
+        if etype == "ai_error":
+            flags[n].add("ai_error")
+        elif etype == "trial_submitted":
+            if content.get("submit_check_failed"):
+                flags[n].add("submit_unverified")
+            if content.get("timed_out"):
+                flags[n].add("timed_out")
+        elif etype in ("ai_response", "ai_proactive_message") and content.get("isDark"):
+            dark_seen[n] = True
+            if content.get("tactic_verified") is False:
+                flags[n].add("tactic_unverified")
+    if "Live" in (group or ""):
+        for n in flags:
+            if not dark_seen[n]:
+                flags[n].add("no_dark_turn")
+    return {f"Trial{n}_Flags": ";".join(sorted(flags[n])) for n in flags}
 
 def _item_contribution(category: Optional[str], plan_state: Optional[dict], item_id: Optional[str]) -> float:
     """How much a given target item/course/club is currently represented in plan_state --
@@ -1594,6 +1694,9 @@ def _compute_session_behavior_metrics(events: List[Dict[str, Any]], task_order: 
                 elif op == "assign" and category == "A" and running_plan_state is not None:
                     prior = _item_contribution(category, running_plan_state, item)
                     if prior and a.get("value") != prior:
+                        corrections += 1
+                elif op in ("increase", "decrease") and category == "A" and running_plan_state is not None:
+                    if op == "decrease" or _item_contribution(category, running_plan_state, item):
                         corrections += 1
             snap = content.get("plan_state_snapshot")
             if snap is not None:
@@ -1696,14 +1799,15 @@ async def save_data(payload: Dict[str, Any]):
             task_assignment_header = [col for task in PRIMARY_TASKS for col in (f"{task}_Trial_Load_Sequence", f"{task}_Dropped_Category_Index")]
             justification_header = [f"Trial{n}_Justification" for n in range(1, TOTAL_TRIALS + 1)]
             reasoning_score_header = [f"Trial{n}_ReasoningScore" for n in range(1, TOTAL_TRIALS + 1)]
+            flags_header = [f"Trial{n}_Flags" for n in range(1, TOTAL_TRIALS + 1)]
 
             writer.writerow([
                 "Participant_ID", "Group", "Task_Order", *task_assignment_header,
                 "Age", "Education", "AI_Experience", "Domain", "Critical_Ability", "AI_Planning_Familiarity",
                 "P_e1", "P_e2", "P_e3", "P_e4",
-                *tlx_header, *feedback_header, *justification_header, *reasoning_score_header,
+                *tlx_header, *feedback_header, *justification_header, *reasoning_score_header, *flags_header,
                 "Claims_Accepted", "Claims_Rejected", "Transient_Acceptance", "Turns_Elapsed", "Corrections_Made",
-                "Recall_Accuracy_Pct", "Recall_Qualified", "Notifications_Shown_Total", "DivAttn_Accuracy_Pct", "DivAttn_False_Alarms",
+                "Recall_Accuracy_Pct", "Recall_Qualified", "Notifications_Shown_Total", "DivAttn_Accuracy_Pct", "DivAttn_False_Alarms", "DivAttn_Qualified", "Bonus_Qualified",
                 "Recognition_Influence_Moment", "Recognition_Communication_Style"
             ])
 
@@ -1718,6 +1822,7 @@ async def save_data(payload: Dict[str, Any]):
             recog_reflection = payload.get("recognitionReflection", {})
             events = payload.get("events", [])
             behavior_metrics = _compute_session_behavior_metrics(events, task_order)
+            trial_flags = compute_trial_flags(events, payload.get("group", ""))
             notifications_shown_total = sum(1 for e in events if e.get("type") == "notification_shown")
 
             task_assignment_row = []
@@ -1743,6 +1848,8 @@ async def save_data(payload: Dict[str, Any]):
                 *[tlx_flat[h] for h in tlx_header],
                 *[feedback_flat[h] for h in feedback_header],
                 *[justification_flat[h] for h in justification_header],
+                *[justification_flat[h] for h in reasoning_score_header],
+                *[trial_flags[h] for h in flags_header],
                 behavior_metrics["claims_accepted"],
                 behavior_metrics["claims_rejected"],
                 behavior_metrics["transient_acceptance"],
@@ -1753,6 +1860,8 @@ async def save_data(payload: Dict[str, Any]):
                 notifications_shown_total,
                 payload.get("divAttnAccuracy", ""),
                 payload.get("divAttnFalseAlarms", ""),
+                payload.get("divAttnQualified", ""),
+                payload.get("bonusQualified", ""),
                 recog_reflection.get("ai_influence_moment", "").replace("\n", " "),
                 recog_reflection.get("ai_communication_style", "").replace("\n", " ")
             ])
@@ -1762,7 +1871,7 @@ async def save_data(payload: Dict[str, Any]):
             writer.writerow([])
             
             # --- SECTION 2: CHAT & EXPERIMENT EVENTS ---
-            writer.writerow(["Participant_ID", "Group", "Event_Type", "Timestamp", "Data"])
+            writer.writerow(["Participant_ID", "Group", "Task", "Segment", "Global_Trial", "Event_Type", "Timestamp", "Data"])
             
             # Filter out both TLX and Recognition Test from the raw event stream
             chat_events = [e for e in payload.get("events", []) if e.get("type") not in ["recognition_test_submitted", "nasa_tlx_submitted", "trial_tlx_submitted"]]
@@ -1771,6 +1880,9 @@ async def save_data(payload: Dict[str, Any]):
                 writer.writerow([
                     participant_id,
                     payload.get("group", "Unknown"),
+                    event.get("task", ""),
+                    event.get("segment", ""),
+                    event.get("global_trial", ""),
                     event.get("type", ""),
                     event.get("timestamp", ""),
                     str(event.get("content", "")).replace("\n", " ")

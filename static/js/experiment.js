@@ -71,7 +71,8 @@ let currentLoadLevel = null; // set in startSegment(); read by renderPlanMirror 
 let notificationTimers = [];
 let notificationsShownThisSegment = []; // this segment only -- feeds this segment's recall-check probe
 let sessionNotificationTotals = { recallChecks: 0, recalledCorrect: 0 }; // session-wide, across every segment/task -- feeds the final bonus calc
-const NOTIFICATION_ACCURACY_THRESHOLD = 0.6; // TEMP -- fraction of recall checks that must be correct to qualify for the completion bonus; revisit once real sessions are timed
+const NOTIFICATION_ACCURACY_THRESHOLD = 0.6; // fraction of recall checks that must be correct to qualify for the completion bonus; revisit once real sessions are timed
+const DIV_ATTN_ACCURACY_THRESHOLD = 0.5;
 const NOTIFICATION_VISIBLE_MS = 6000; // how long a notification bubble stays before it auto-removes
 const NOTIFICATION_INTERVAL_MS = { HighLoad: 18000, LowLoad: 85000 }; // TEMP values, same spirit as TRIAL_TIME_LIMIT_MS -- revisit once real segments have been timed
 
@@ -81,7 +82,7 @@ const NOTIFICATION_INTERVAL_MS = { HighLoad: 18000, LowLoad: 85000 }; // TEMP va
 // whenever it shows the target digit. Feeds perfScore directly (same meter everything
 // else uses) plus a session-wide accuracy tally for the CSV, mirroring the recall-check bonus below.
 // ============================================================
-const DIV_ATTN_TILE_INTERVAL_MS = 1400; // how often the displayed digit changes
+const DIV_ATTN_TILE_INTERVAL_MS = 2000; // how often the displayed digit changes
 const DIV_ATTN_DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 let divAttnTimer = null;
 let divAttnTarget = null;
@@ -134,7 +135,9 @@ function startDividedAttentionTask(loadLevel) {
             sessionDivAttnTotals.misses++;
             nudgePerfScore(-3);
             logEvent('div_attn_miss', { target: divAttnTarget });
+            flashDivAttnMiss();
         }
+        updateDivAttnScore();
         divAttnCurrentDigit = DIV_ATTN_DIGITS[Math.floor(Math.random() * DIV_ATTN_DIGITS.length)];
         divAttnClickedThisTile = false;
         const tile = document.getElementById('divAttnTile');
@@ -155,6 +158,7 @@ function handleDivAttnClick() {
     if (isTutorialActive) return;
     if (isHit) {
         sessionDivAttnTotals.hits++;
+        updateDivAttnScore();
         nudgePerfScore(2);
         logEvent('div_attn_hit', { target: divAttnTarget });
     } else {
@@ -162,6 +166,20 @@ function handleDivAttnClick() {
         nudgePerfScore(-3);
         logEvent('div_attn_false_alarm', { target: divAttnTarget, clicked: divAttnCurrentDigit });
     }
+}
+
+function updateDivAttnScore() {
+    const el = document.getElementById('divAttnScore');
+    if (el) el.innerText = `Caught ${sessionDivAttnTotals.hits} · Missed ${sessionDivAttnTotals.misses}`;
+}
+
+// Visible "you missed one" cue -- without it a miss is silent and the task is easy to ignore.
+function flashDivAttnMiss() {
+    const widget = document.getElementById('divAttnWidget');
+    if (!widget) return;
+    widget.classList.remove('div-attn-missed');
+    void widget.offsetWidth; // restart the animation
+    widget.classList.add('div-attn-missed');
 }
 
 // Tutorial-only preview: shows the widget cycling for the whole practice round so
@@ -201,9 +219,15 @@ function finalizeDivAttnScore() {
     const { hits, misses, falseAlarms } = sessionDivAttnTotals;
     const opportunities = hits + misses;
     const accuracy = opportunities > 0 ? hits / opportunities : null;
-    sessionData.divAttnAccuracy = accuracy === null ? "" : Math.round(accuracy * 100) / 100;
+    sessionData.divAttnAccuracy = accuracy === null ? "" : Math.round(accuracy * 1000) / 10;
     sessionData.divAttnFalseAlarms = falseAlarms;
-    logEvent('div_attn_score_computed', { hits, misses, false_alarms: falseAlarms, accuracy });
+    // Bonus uses a false-alarm-corrected score, so clicking every tile can't game it:
+    // each wrong click cancels one correct one.
+    const corrected = opportunities > 0 ? Math.max(0, hits - falseAlarms) / opportunities : null;
+    const divAttnQualified = corrected === null || corrected >= DIV_ATTN_ACCURACY_THRESHOLD; // no HighLoad weeks -> this part doesn't apply
+    sessionData.divAttnQualified = divAttnQualified;
+    sessionData.bonusQualified = !!sessionData.attentionQualified && divAttnQualified; // requires finalizeAttentionBonus() to have run first
+    logEvent('div_attn_score_computed', { hits, misses, false_alarms: falseAlarms, accuracy, corrected_accuracy: corrected, qualified: divAttnQualified, bonus_qualified: sessionData.bonusQualified });
 }
 
 // Schedules a run of notification bubbles across the segment's time limit, spaced by
@@ -250,6 +274,31 @@ function showNotificationBubble(item) {
     }, NOTIFICATION_VISIBLE_MS);
 }
 
+// Foils for the recall check are NEVER shown as notifications, so a "No" is always correct for them.
+const RECALL_FOIL_BANK = [
+    { id: "f1", text: "🖨️ Print Center: color printers back online in the library" },
+    { id: "f2", text: "🚲 Bike Share: new docking station opened by the gym" },
+    { id: "f3", text: "🎨 Art Building: open studio hours moved to Thursday" },
+    { id: "f4", text: "🧾 Bursar's Office: closed early today at 3pm" },
+    { id: "f5", text: "🌮 Food truck parked by the east lawn until 2pm" },
+    { id: "f6", text: "💡 Facilities: hallway lights being replaced in West Hall" },
+    { id: "f7", text: "🎤 Open mic night signups now open at the Student Center" },
+    { id: "f8", text: "🧊 Ice machine on floor 2 is temporarily out of order" },
+    { id: "f9", text: "📸 ID photos being retaken in the admin lobby today" },
+    { id: "f10", text: "🌳 Grounds crew mowing the quad this morning" },
+    { id: "f11", text: "🪪 Lost ID cards can be picked up at Security" },
+    { id: "f12", text: "🥤 Vending machines in Hall C now accept card payments" },
+    { id: "f13", text: "🎬 Film club screening moved to the small auditorium" },
+    { id: "f14", text: "🔧 Elevator in the science building under maintenance" },
+    { id: "f15", text: "🏀 Rec Center: basketball courts reserved 5–7pm" },
+    { id: "f16", text: "📻 Campus radio: new late-night show starts this week" },
+    { id: "f17", text: "🧴 Hand sanitizer stations refilled across campus" },
+    { id: "f18", text: "🗳️ Student council polls close Friday at noon" },
+    { id: "f19", text: "🍩 Free donuts at the career office until they run out" },
+    { id: "f20", text: "🚿 Hot water briefly off in North Hall this afternoon" },
+];
+const usedFoilIdsThisSession = new Set();
+
 const RECALL_PROBE_COUNT = { HighLoad: 4, LowLoad: 2 }; // independent old/new probes per segment -- each its own 50/50 real-vs-decoy draw
 
 function showRecallCheck(loadLevel, onDone) {
@@ -270,7 +319,8 @@ function showRecallCheck(loadLevel, onDone) {
 
     const pickProbe = () => {
         const shownPool = notificationsShownThisSegment.filter(n => !usedIds.has(n.id));
-        const unseenPool = NOTIFICATION_BANK.filter(n => !notificationsShownThisSegment.some(s => s.id === n.id) && !usedIds.has(n.id));
+        let unseenPool = RECALL_FOIL_BANK.filter(n => !usedFoilIdsThisSession.has(n.id) && !usedIds.has(n.id));
+        if (!unseenPool.length) unseenPool = RECALL_FOIL_BANK.filter(n => !usedIds.has(n.id)); // bank exhausted -- allow repeats across weeks
         const wantShown = Math.random() < 0.5;
         // Only honor the real-vs-decoy coin flip when that side still has an unused item --
         // otherwise fall back to whichever side does, so a probe never repeats an item
@@ -287,6 +337,7 @@ function showRecallCheck(loadLevel, onDone) {
         if (!probe) { overlay.style.display = 'none'; onDone(); return; }
         const { probeItem, wasShown } = probe;
         usedIds.add(probeItem.id);
+        if (!wasShown) usedFoilIdsThisSession.add(probeItem.id);
         if (eyebrowEl) eyebrowEl.innerText = `One Quick Thing (${probeNumber} of ${probeCount})`;
         textEl.innerText = `"${probeItem.text}"`;
 
@@ -318,7 +369,7 @@ function showRecallCheck(loadLevel, onDone) {
 function finalizeAttentionBonus() {
     const { recallChecks, recalledCorrect } = sessionNotificationTotals;
     const accuracy = recallChecks > 0 ? recalledCorrect / recallChecks : null;
-    sessionData.attentionAccuracy = accuracy === null ? "" : Math.round(accuracy * 100) / 100;
+    sessionData.attentionAccuracy = accuracy === null ? "" : Math.round(accuracy * 1000) / 10;
     sessionData.attentionQualified = accuracy !== null && accuracy >= NOTIFICATION_ACCURACY_THRESHOLD;
     logEvent('attention_bonus_computed', { recall_checks: recallChecks, recalled_correct: recalledCorrect, accuracy, qualified: sessionData.attentionQualified });
 }
@@ -862,7 +913,8 @@ async function showTaskBriefingOverlay(taskId, readOnly = false) {
         </div>
         <div class="consent-block">
           <h4>Submitting, timing, and your Progress meter</h4>
-          <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed; weeks 3 and 4 have a countdown next to your plan header that submits automatically at zero. In some rounds, a numbered tile appears on the left panel. lick it whenever it lands on the target number shown next to it, for as long as it's visible. Your Progress meter (top right) reflects both: it rises on genuine plan improvements and correct tile clicks, and falls on rejected submissions or missed/mis-clicked tiles.</p>
+          <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed; weeks 3 and 4 have a countdown next to your plan header that submits automatically at zero. In some rounds, a numbered tile appears on the left panel. Click it whenever it lands on the target number shown next to it, for as long as it's visible. Your Progress meter (top right) reflects both: it rises on genuine plan improvements and correct tile clicks, and falls on rejected submissions or missed/mis-clicked tiles.</p>
+          <p><strong>Completion bonus:</strong> you qualify if you answer at least 60% of the notification questions correctly <em>and</em> catch at least half of the target numbers on the tile. Clicking the wrong number cancels out a correct catch, so clicking every tile won't help.</p>
         </div>
         ${readOnly ? '' : `
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
@@ -956,12 +1008,24 @@ function applyPlanActions(actions) {
     actions.forEach(a => {
         if (category === "A") {
             if (a.slot !== "hours") return;
-            if (a.op === "assign") { currentPlanState.hours[a.item] = a.value ?? 0; changed = true; touched.add(a.item); }
-            else if (a.op === "remove") { currentPlanState.hours[a.item] = 0; changed = true; touched.add(a.item); }
+            const current = currentPlanState.hours[a.item] ?? 0;
+            if (a.op === "assign") { currentPlanState.hours[a.item] = a.value ?? 0; }
+            else if (a.op === "increase") { currentPlanState.hours[a.item] = current + (a.value ?? 0); }
+            else if (a.op === "decrease") { currentPlanState.hours[a.item] = Math.max(0, current - (a.value ?? 0)); }
+            else if (a.op === "remove") { currentPlanState.hours[a.item] = 0; }
+            else return;
+            changed = true; touched.add(a.item);
         } else if (category === "B") {
             const bucket = currentPlanState.selections[a.slot];
             if (!bucket) return;
-            if (a.op === "assign" && !bucket.includes(a.item)) { bucket.push(a.item); changed = true; touched.add(a.item); }
+            if (a.op === "assign" && !bucket.includes(a.item)) {
+                // A course can only sit in one bucket -- adding it here moves it out of any other
+                Object.values(currentPlanState.selections).forEach(other => {
+                    const i = other.indexOf(a.item);
+                    if (other !== bucket && i !== -1) other.splice(i, 1);
+                });
+                bucket.push(a.item); changed = true; touched.add(a.item);
+            }
             else if (a.op === "remove") {
                 const idx = bucket.indexOf(a.item);
                 if (idx !== -1) { bucket.splice(idx, 1); changed = true; touched.add(a.item); }
@@ -1121,6 +1185,7 @@ function startSegment(segmentIndex) {
 
     taskStartTime = Date.now();
     window.lastTurnTimestamp = Date.now();
+    telemetry = { keystrokes: [], scrollEvents: [], backspaces: 0 };
     turnsInTrial = 0;
     hasInteractedThisTrial = false;
     submitAttemptsThisTrial = 0;
@@ -1254,7 +1319,7 @@ async function sendMessage() {
     telemetry = { keystrokes: [], scrollEvents: [], backspaces: 0 };
 
     try {
-        const response = await fetch('/api/chat', {
+        const data = await fetchJsonWithRetry('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1265,6 +1330,7 @@ async function sendMessage() {
                 group: sessionData.group,
                 trial_num: currentTrial,
                 turn_in_trial: darkTurnCounter,
+                genuine_turn_index: turnsInTrial,
                 dark_delivered: darkDeliveredThisTrial,
                 roi_score: 0,                
                 all_constraints_met: false, 
@@ -1277,7 +1343,6 @@ async function sendMessage() {
             })
         });
 
-        const data = await response.json();
         const elapsed = Date.now() - requestStart;
         if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
         document.getElementById('currentTyping')?.remove();
@@ -1298,6 +1363,8 @@ async function sendMessage() {
                 target_item: data.target_item || null, 
                 dark_turn_downgraded: data.dark_turn_downgraded || false,
                 dark_turn_fallback_used: data.dark_turn_fallback_used || null,
+                tactic_verified: data.tactic_verified ?? null,
+                dark_target_reply: data.dark_target_reply ?? null,
                 plan_state_at_request: planStateAtSend, // State the AI actually saw when generating this reply
                 plan_state_snapshot: JSON.parse(JSON.stringify(currentPlanState)) // Captures state immediately as AI message lands
             });
@@ -1328,10 +1395,13 @@ async function sendMessage() {
         } else {
             console.error("Chat request returned non-success status:", data);
             addScriptedLine("Sorry — something went wrong on that last message. Please try rephrasing it.");
+            logEvent('ai_error', { text, error: data.message || 'non-success status' });
         }
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
         console.error("Chat error:", error);
+        addScriptedLine("Sorry — the advisor couldn't be reached. Please try sending that again.");
+        logEvent('ai_error', { text, error: String(error) });
     } finally {
         isAiRequestInFlight = false;
         if (sendBtn) sendBtn.disabled = false;
@@ -1430,7 +1500,7 @@ async function triggerProactiveAdvisorNote() {
     const proactiveDarkEligible = (Date.now() - taskStartTime) >= PROACTIVE_CEILING_MS;
 
     try {
-        const response = await fetch('/api/chat', {
+        const data = await fetchJsonWithRetry('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1456,7 +1526,6 @@ async function triggerProactiveAdvisorNote() {
             })
         });
 
-        const data = await response.json();
         const elapsed = Date.now() - requestStart;
         if (elapsed < MIN_AI_RESPONSE_DELAY_MS) await sleep(MIN_AI_RESPONSE_DELAY_MS - elapsed);
         document.getElementById('currentTyping')?.remove();
@@ -1475,6 +1544,7 @@ async function triggerProactiveAdvisorNote() {
             isDark: data.isDark,
             target_item: data.target_item || null, 
             dark_turn_downgraded: data.dark_turn_downgraded || false,
+            tactic_verified: data.tactic_verified ?? null,
             is_repeat: !isFirstFire,
             revealed_ids: data.revealed_fact_ids || [],
             plan_state_at_request: planStateAtSend,
@@ -1498,6 +1568,7 @@ async function triggerProactiveAdvisorNote() {
     } catch (error) {
         document.getElementById('currentTyping')?.remove();
         console.error("Proactive advisor note failed:", error);
+        logEvent('ai_error', { text: '(proactive)', error: String(error) });
     } finally {
         isAiRequestInFlight = false;
         if (sendBtn) sendBtn.disabled = false;
@@ -1605,11 +1676,30 @@ function addMessage(text, sender, patternId = null, isDark = false, category = n
     }
 }
 
+// Retries network/server failures (incl. an ngrok HTML error page that isn't JSON) before
+// giving up -- a brief outage shouldn't silently eat a participant's message.
+async function fetchJsonWithRetry(url, options, retries = 2, backoffMs = 1500) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const res = await fetch(url, options);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } catch (err) {
+            if (attempt >= retries) throw err;
+            await sleep(backoffMs * (attempt + 1));
+        }
+    }
+}
+
 function logEvent(type, content) {
     sessionData.events = sessionData.events || [];
+    const taskIdx = sessionData.currentTaskIndex ?? 0;
     sessionData.events.push({
         timestamp: new Date().toISOString(),
         type: type,
+        task: sessionData.primaryTask || "",
+        segment: currentTrial,
+        global_trial: taskIdx * 4 + currentTrial,
         content: content
     });
     // Persist to local storage continuously
@@ -1661,8 +1751,6 @@ async function submitSegment(forced = false) {
     // instead of silently leaving it stopped -- see the !passed branch below.
     const remainingAtSubmit = trialTimerDeadline !== null ? Math.max(0, trialTimerDeadline - Date.now()) : null;
     stopTrialTimer();
-    clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
-    stopDividedAttentionTask();
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
 
     const btn = document.getElementById('submitSegmentBtn');
@@ -1671,8 +1759,9 @@ async function submitSegment(forced = false) {
     let passed = true;
     let verdictDetail = null;
     let percentMet = null;
+    let submitCheckFailed = false;
     try {
-        const res = await fetch('/api/attempt_submit', {
+        const data = await fetchJsonWithRetry('/api/attempt_submit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1682,13 +1771,13 @@ async function submitSegment(forced = false) {
                 load_level: loadLevel
             })
         });
-        const data = await res.json();
         if (data.status === "success") {
             passed = data.passed;
             verdictDetail = data.verdict_detail;
             percentMet = data.percent_met;
-        }
+        } else { submitCheckFailed = true; }
     } catch (error) {
+        submitCheckFailed = true;
         console.error("attempt_submit failed -- treating as a pass so a network blip never traps someone on a segment:", error);
     }
 
@@ -1705,7 +1794,8 @@ async function submitSegment(forced = false) {
         timed_out: !!forced,
         submit_attempt: submitAttemptsThisTrial + 1,
         passed,
-        verdict_detail: verdictDetail
+        verdict_detail: verdictDetail,
+        submit_check_failed: submitCheckFailed
     });
 
     if (forced) {
@@ -1720,6 +1810,9 @@ async function submitSegment(forced = false) {
     } else {
         addScriptedLine(typeof percentMet === 'number' ? `Reviewed — this plan cleared ${percentMet}% of what was possible this week. Moving on.` : SUBMIT_PASS_MESSAGE);
     }
+
+    clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
+    stopDividedAttentionTask();
 
     // A global (session-wide) trial number, so TLX ratings from task 2's segment 1
     // don't overwrite task 1's segment 1 in sessionData.perTrialTLX.

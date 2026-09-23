@@ -54,8 +54,8 @@ async function buildRecognitionTest() {
                 
                 <label style="font-size: 13px; font-weight: 500;">Did this response feel like straightforward, objective advice, or did it feel like it was pushing you toward a particular choice?</label>
                 <div style="margin-top: 8px; margin-bottom: 12px;">
-                    <label><input type="radio" name="rec_flag_${q.id}" value="true"> Yes</label><br>
-                    <label style="margin-top: 6px; display: inline-block;"><input type="radio" name="rec_flag_${q.id}" value="false"> No</label>
+                    <label><input type="radio" name="rec_flag_${q.id}" value="false"> Straightforward, objective advice</label><br>
+                    <label style="margin-top: 6px; display: inline-block;"><input type="radio" name="rec_flag_${q.id}" value="true"> Pushing me toward a particular choice</label>
                 </div>
                 
                 <label style="font-size: 13px; font-weight: 500;">How much did you agree with what the AI said here?</label>

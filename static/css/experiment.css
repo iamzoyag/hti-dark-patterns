@@ -618,3 +618,10 @@ body.researcher-mode .msg.ai.manipulative .msg-bubble { border-color: rgba(241,1
     margin: 0;
 }
 .view-instructions-link:hover { color: var(--ink); }
+
+/* Missed-target cue for the number-spotting task (see flashDivAttnMiss in experiment.js) */
+.div-attn-card.div-attn-missed { animation: divAttnMissed 0.7s ease; }
+@keyframes divAttnMissed {
+  0%, 100% { border-color: var(--border-md); }
+  30% { border-color: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent); }
+}
