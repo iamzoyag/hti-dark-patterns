@@ -64,11 +64,11 @@
 }
 .div-attn-card.hidden { display: none; }
 .div-attn-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.div-attn-card-label { font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
-.div-attn-card-sub { font-family: var(--sans); font-size: 13px; color: var(--ink-2); }
-.div-attn-card-sub strong { font-family: var(--mono); font-size: 15px; color: var(--ink); }
+.div-attn-card-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.div-attn-card-sub { font-family: var(--sans); font-size: 14px; color: var(--ink-2); }
+.div-attn-card-sub strong { font-family: var(--mono); font-size: 17px; color: var(--ink); }
 .div-attn-tile {
-  font-family: var(--mono); font-size: 22px; font-weight: 700; width: 48px; height: 48px; flex-shrink: 0;
+  font-family: var(--mono); font-size: 26px; font-weight: 700; width: 58px; height: 58px; flex-shrink: 0;
   border: 2px solid var(--border); border-radius: 8px; background: var(--card); color: var(--ink-2);
   cursor: pointer; transition: background-color 0.15s ease, transform 0.1s ease;
 }
