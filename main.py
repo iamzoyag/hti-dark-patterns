@@ -48,7 +48,7 @@ def get_structured_llm(schema, temperature: float = 0.7):
         t0 = time.monotonic()
         try:
             print("[LLM] → Gemini (gemini-3.1-flash-lite)")
-            result = await primary.ainvoke(inputs)
+            result = await asyncio.wait_for(primary.ainvoke(inputs), timeout=8)
             print(f"[LLM] ✓ Gemini served it in {time.monotonic() - t0:.2f}s")
             return result
         except Exception as e:
@@ -56,7 +56,7 @@ def get_structured_llm(schema, temperature: float = 0.7):
             model_name = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
             t1 = time.monotonic()
             print(f"[LLM] → OpenRouter ({model_name})")
-            result = await fallback.ainvoke(inputs)
+            result = await asyncio.wait_for(fallback.ainvoke(inputs), timeout=8)
             print(f"[LLM] ✓ OpenRouter served it in {time.monotonic() - t1:.2f}s")
             return result
 

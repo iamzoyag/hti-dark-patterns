@@ -862,7 +862,7 @@ async function showTaskBriefingOverlay(taskId, readOnly = false) {
         </div>
         <div class="consent-block">
           <h4>Submitting, timing, and your Progress meter</h4>
-          <p>Submit whenever you're ready — if your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed; weeks 3 and 4 have a countdown next to your plan header that submits automatically at zero. In some rounds, a numbered tile appears on the left panel — click it whenever it lands on the target number shown next to it, for as long as it's visible. Your Progress meter (top right) reflects both: it rises on genuine plan improvements and correct tile clicks, and falls on rejected submissions or missed/mis-clicked tiles.</p>
+          <p>Submit whenever you're ready. If your plan doesn't clear that week's requirements, you'll get a short note and can keep adjusting. Weeks 1 and 2 are untimed; weeks 3 and 4 have a countdown next to your plan header that submits automatically at zero. In some rounds, a numbered tile appears on the left panel. lick it whenever it lands on the target number shown next to it, for as long as it's visible. Your Progress meter (top right) reflects both: it rises on genuine plan improvements and correct tile clicks, and falls on rejected submissions or missed/mis-clicked tiles.</p>
         </div>
         ${readOnly ? '' : `
         <label class="checkbox-row" id="taskBriefingCheck" style="margin-top:16px;">
@@ -1662,7 +1662,7 @@ async function submitSegment(forced = false) {
     const remainingAtSubmit = trialTimerDeadline !== null ? Math.max(0, trialTimerDeadline - Date.now()) : null;
     stopTrialTimer();
     clearNotificationTimers(); // no more bubbles competing for attention once they're done with this segment
-    stopdividedAttentionTask();
+    stopDividedAttentionTask();
     const loadLevel = sessionData.trialSequence[currentTrial - 1];
 
     const btn = document.getElementById('submitSegmentBtn');
