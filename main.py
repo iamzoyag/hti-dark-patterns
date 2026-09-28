@@ -1790,7 +1790,7 @@ def send_completion_email(participant_id: str, csv_path: str, csv_bytes: bytes) 
         msg.set_content(f"Participant {participant_id} finished the study. CSV attached.")
         msg.add_attachment(csv_bytes, maintype="text", subtype="csv", filename=os.path.basename(csv_path))
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
@@ -1808,7 +1808,7 @@ def send_withdrawal_notification(participant_id: str, email: str) -> None:
         msg["From"] = SMTP_USER
         msg["To"] = NOTIFY_EMAIL_TO
         msg.set_content(f"Participant {participant_id} has requested their data be withdrawn.\nContact email provided: {email}\nPlease action within the 7-day window stated in the debrief.")
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
@@ -1962,12 +1962,14 @@ async def save_data(payload: Dict[str, Any]):
 
             _write_save_seq(participant_id, incoming_seq)
 
-            is_complete = any(e.get("type") == "recognition_test_submitted" for e in payload.get("events", []))
-            if is_complete:
-                marker = f"data/.emailed_{participant_id}"
-                if not os.path.exists(marker):
-                    await asyncio.to_thread(send_completion_email, participant_id, filename, csv_buffer.getvalue().encode("utf-8"))
-                    open(marker, "w").close()
+        # Email dispatch happens AFTER the file is closed/flushed, and is fire-and-forget --
+        # a slow or unreachable mail server must never delay this response.
+        is_complete = any(e.get("type") == "recognition_test_submitted" for e in payload.get("events", []))
+        if is_complete and not os.path.exists(f"data/.emailed_{participant_id}"):
+            async def _send_and_mark():
+                await asyncio.to_thread(send_completion_email, participant_id, filename, csv_buffer.getvalue().encode("utf-8"))
+                open(f"data/.emailed_{participant_id}", "w").close()
+            asyncio.create_task(_send_and_mark())
                 
         return {"status": "success"}
     except Exception as e:

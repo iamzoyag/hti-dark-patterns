@@ -1710,6 +1710,7 @@ function clearChatDisplay() {
 }
 
 function addMessage(text, sender, patternId = null, isDark = false, category = null) {
+    if (sender === 'ai' && !text?.trim()) return; // never render a blank AI bubble
     const chatContainer = document.getElementById('chatMessages');
     if (!chatContainer) return;
 
