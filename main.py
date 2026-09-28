@@ -29,36 +29,73 @@ import uvicorn
 load_dotenv()
 app = FastAPI()
 
-def get_structured_llm(schema, temperature: float = 0.7):
-    primary = ChatGoogleGenerativeAI(
-        model="gemini-3.1-flash-lite",
-        temperature=temperature,
-        google_api_key=os.environ["GOOGLE_API_KEY"],
-        timeout=10,
-    ).with_structured_output(schema)
+def _normalize(s: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', s.lower())
 
-    fallback = ChatOpenAI(
-        model=os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
-        temperature=temperature,
-        api_key=os.environ["OPENROUTER_API_KEY"],
-        base_url="https://openrouter.ai/api/v1",
-    ).with_structured_output(schema)
+def resolve_item_id(item: str, canonical_ids, labels: dict) -> str:
+    """Corrects an LLM-emitted id that doesn't match the canonical set but clearly
+    refers to one -- e.g. 'capstone' instead of 'ds400', whose own label is
+    'DS 400 -- Capstone'. Only ever resolves when exactly one canonical item's label
+    contains the (normalized) guess; otherwise returns it unchanged so the existing
+    validation still safely drops it, same as today."""
+    if item in canonical_ids:
+        return item
+    norm_item = _normalize(item)
+    if not norm_item:
+        return item
+    matches = [cid for cid in canonical_ids if norm_item in _normalize(labels.get(cid, cid))]
+    return matches[0] if len(matches) == 1 else item
+
+FALLBACK_CHAIN = [
+    ("gemini", "gemini-3.1-flash-lite"),
+    ("gemini", "gemini-3.5-flash"),
+    ("gemini", "gemini-2.5-flash"),
+    ("gemini", "gemini-2.5-flash-lite"),
+    ("openrouter", "openai/gpt-4o-mini"),
+    ("openrouter", "google/gemini-3.8-flash"),
+    ("openrouter", "deepseek/deepseek-v4.1-flash"),
+    ("openrouter", "qwen/qwen3.8-flash"),
+]
+STAGGER_DELAY = 8   # seconds to wait before trying the NEXT tier concurrently
+PER_TIER_TIMEOUT = 8
+
+def get_structured_llm(schema, temperature: float = 0.7):
+    def make_model(provider, model_name):
+        if provider == "gemini":
+            return ChatGoogleGenerativeAI(
+                model=model_name, temperature=temperature,
+                google_api_key=os.environ["GOOGLE_API_KEY"], timeout=10,
+            ).with_structured_output(schema)
+        return ChatOpenAI(
+            model=model_name, temperature=temperature,
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+        ).with_structured_output(schema)
+
+    async def attempt(provider, model_name, inputs):
+        t0 = time.monotonic()
+        print(f"[LLM] → {provider}:{model_name}")
+        result = await asyncio.wait_for(make_model(provider, model_name).ainvoke(inputs), timeout=PER_TIER_TIMEOUT)
+        print(f"[LLM] ✓ {provider}:{model_name} served it in {time.monotonic() - t0:.2f}s")
+        return result
 
     async def call(inputs):
-        t0 = time.monotonic()
-        try:
-            print("[LLM] → Gemini (gemini-3.1-flash-lite)")
-            result = await asyncio.wait_for(primary.ainvoke(inputs), timeout=8)
-            print(f"[LLM] ✓ Gemini served it in {time.monotonic() - t0:.2f}s")
-            return result
-        except Exception as e:
-            print(f"[LLM] ✗ Gemini failed after {time.monotonic() - t0:.2f}s ({e}) — falling back")
-            model_name = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-            t1 = time.monotonic()
-            print(f"[LLM] → OpenRouter ({model_name})")
-            result = await asyncio.wait_for(fallback.ainvoke(inputs), timeout=8)
-            print(f"[LLM] ✓ OpenRouter served it in {time.monotonic() - t1:.2f}s")
-            return result
+        chain = list(FALLBACK_CHAIN)
+        pending = {asyncio.ensure_future(attempt(*chain.pop(0), inputs))}
+        last_err = None
+        while pending:
+            done, pending = await asyncio.wait(pending, timeout=STAGGER_DELAY, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                try:
+                    result = task.result()
+                    for p in pending: p.cancel()
+                    return result
+                except Exception as e:
+                    last_err = e
+                    print(f"[LLM] ✗ a tier failed ({e})")
+            if not done and chain:
+                pending.add(asyncio.ensure_future(attempt(*chain.pop(0), inputs)))
+        raise last_err or RuntimeError("All LLM tiers failed")
 
     return RunnableLambda(call)
 
@@ -328,6 +365,7 @@ COURSE_LABELS_B = {
     "intl220": "INTL 220", "intl250": "INTL 250", "intl301": "INTL 301", "lang202": "LANG 202",
     "art101": "ART 101", "phil110": "PHIL 110", "econ105": "ECON 105",
 }
+ITEM_ALIASES_B = {"capstone": "ds400"}
 COURSE_DESCRIPTIONS_B = {
     "ds210": "Intro to Data Science -- data wrangling, cleaning, and visualization.",
     "ds220": "Applied Statistics for Data Science -- hypothesis testing and regression on real datasets.",
@@ -1139,14 +1177,11 @@ def _fact_is_about(fact_id: str, target: str) -> bool:
     return rest == target if kind in ("item", "hours", "prereq") else target in rest.split("_")
 
 def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_key: str) -> List["PlanAction"]:
-    """Hallucination guard: drops any LLM-emitted action whose slot/item isn't actually
-    legal for this category+segment before it's ever returned to the client to apply.
-    plan_state itself lives client-side (echoed back to us each turn, like the old
-    `allocations` field) -- this function validates, it doesn't persist anything."""
     valid = []
     if task_key == "A":
         items = set(TASK_DATA_A[segment_key]["items"])
-        for a in actions:  # "drop 1 hour from X" sometimes comes back as op='remove' + value -- that's a decrease, not a wipe to 0
+        for a in actions:
+            a.item = resolve_item_id(a.item, items, ITEM_LABELS_A)
             if a.op == "remove" and a.value:
                 a.op = "decrease"
         valid = [a for a in actions if a.slot == "hours" and a.item in items and (
@@ -1155,9 +1190,14 @@ def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_ke
             or (a.op in ("increase", "decrease") and a.value is not None and a.value > 0))]
     elif task_key == "B":
         pools = TASK_DATA_B[segment_key]["pools"]
+        for a in actions:
+            if a.slot in pools:
+                a.item = resolve_item_id(a.item, set(pools[a.slot]), COURSE_LABELS_B)
         valid = [a for a in actions if a.op in ("assign", "remove") and a.slot in pools and a.item in pools[a.slot]]
     else:
         roster = set(TASK_DATA_C[segment_key]["roster"])
+        for a in actions:
+            a.item = resolve_item_id(a.item, roster, CLUB_LABELS_C)
         valid = [a for a in actions if a.op in ("assign", "remove") and a.slot == "selections" and a.item in roster]
     return valid
 
@@ -1477,6 +1517,8 @@ async def handle_chat(chat_data: ChatMessage):
         revealed_fact_ids = list(set(response_data.disclosed_fact_ids or []) & valid_locked_ids) if disclosure_ok else []
 
         safe_actions = validate_plan_actions(response_data.actions, task_key, segment_key)
+        if len(safe_actions) != len(response_data.actions):
+            print(f"[action_dropped] {chat_data.user_id} {task_key} trial{trial_num}: claimed actions {[a.dict() for a in response_data.actions]}, kept {[a.dict() for a in safe_actions]}")
 
         return {
             "status": "success",
