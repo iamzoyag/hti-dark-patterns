@@ -953,7 +953,7 @@ async def status_dashboard(key: str = ""):
         if f.startswith("HTI_Study_") and f.endswith(".csv"):
             try:
                 with open(os.path.join("data", f), encoding="utf-8") as fh:
-                    is_complete = any(row.get("Event_Type") == "recognition_test_submitted" for row in csv.DictReader(fh))
+                    is_complete = "recognition_test_submitted" in fh.read()
                 completed += 1 if is_complete else 0
                 partial += 0 if is_complete else 1
             except Exception:
