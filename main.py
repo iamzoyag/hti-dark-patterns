@@ -1301,7 +1301,7 @@ async def handle_chat(chat_data: ChatMessage):
         tactics = TACTICS_A
         advisor_desc = f"AI Academic Advisor helping plan this week's workload (Week {trial_num} of 4)"
         dials_desc = "assigning hours to each listed item for this week"
-        no_copy_bullet = ""
+        no_copy_bullet = " Never state, imply, or invent an hours requirement, deadline, or rule for any item beyond exactly what appears in VISIBLE, KNOWN FACTS or a fact you've disclosed this segment -- if asked how many hours something needs and nothing above tells you, say plainly that you don't have that figure, never invent a plausible-sounding number."
         external_metrics_desc = "exact grade impact or GPA effects"
         state_label = "THIS WEEK'S HOUR ALLOCATIONS"
     elif task_key == "B":
@@ -1314,7 +1314,7 @@ async def handle_chat(chat_data: ChatMessage):
         tactics = TACTICS_B
         advisor_desc = "AI Academic Advisor helping finalize this term's course plan"
         dials_desc = "adding or dropping courses across the Major/Minor/Elective slots"
-        no_copy_bullet = ""
+        no_copy_bullet = " Never state, imply, or invent a prerequisite, exclusion, meeting-time conflict, or other rule for any course beyond exactly what appears in VISIBLE, KNOWN FACTS or a fact you've disclosed this segment -- if asked about a course's prerequisites and none is listed for it above, say plainly that it has none, never infer one from the course name or subject matter."
         external_metrics_desc = "exact GPA or transcript effects"
         state_label = "CURRENT COURSE SELECTIONS"
     else:
@@ -1329,7 +1329,7 @@ async def handle_chat(chat_data: ChatMessage):
         dials_desc = ("adding or dropping clubs/activities for the week. Each activity's weekly hours are FIXED by the club -- "
                       "the participant cannot add, cut, or change hours for any activity. If they ask to, say plainly that hours "
                       "can't be changed here and that they can only add or drop activities; never confirm an hours change")
-        no_copy_bullet = ""
+        no_copy_bullet = " Never state, imply, or invent a scheduling conflict, hidden hour commitment, or other rule for any activity beyond exactly what appears in VISIBLE, KNOWN FACTS or a fact you've disclosed this segment -- if asked whether something conflicts with or affects another activity and nothing above says so, say plainly that you don't see one, never infer one."
         external_metrics_desc = "exact stress or wellbeing scores"
         state_label = "THIS WEEK'S ACTIVITY PICKS"
 
