@@ -1957,6 +1957,7 @@ async function submitSegment(forced = false) {
     let passed = true;
     let verdictDetail = null;
     let percentMet = null;
+    let concreteHint = null;
     let submitCheckFailed = false;
     try {
         const data = await fetchJsonWithRetry('/api/attempt_submit', {
@@ -1966,13 +1967,15 @@ async function submitSegment(forced = false) {
                 primary_task: sessionData.primaryTask,
                 trial_num: currentTrial,
                 plan_state: currentPlanState,
-                load_level: loadLevel
+                load_level: loadLevel,
+                submit_attempt_count: submitAttemptsThisTrial
             })
         });
         if (data.status === "success") {
             passed = data.passed;
             verdictDetail = data.verdict_detail;
             percentMet = data.percent_met;
+            concreteHint = data.concrete_hint;
         } else { submitCheckFailed = true; }
     } catch (error) {
         submitCheckFailed = true;
@@ -2013,7 +2016,12 @@ async function submitSegment(forced = false) {
     } else if (!passed) {
         submitAttemptsThisTrial++;
         const rejectionLine = SUBMIT_REJECTION_MESSAGES[Math.min(submitAttemptsThisTrial - 1, SUBMIT_REJECTION_MESSAGES.length - 1)];
-        addScriptedLine(verdictDetail ? `${rejectionLine} Specifically: ${verdictDetail}` : rejectionLine);
+        let msg = verdictDetail ? `${rejectionLine} Specifically: ${verdictDetail}` : rejectionLine;
+        if (concreteHint) { // deterministic safety net, only set after repeated failed attempts -- see SUBMIT_DEADLOCK_THRESHOLD in main.py
+            msg += ` ${concreteHint}`;
+            logEvent('submit_deadlock_hint_shown', { trial: currentTrial, submit_attempt: submitAttemptsThisTrial, hint: concreteHint });
+        }
+        addScriptedLine(msg);
         if (btn) { btn.disabled = false; btn.innerText = "Submit This Week"; }
         if (remainingAtSubmit !== null && remainingAtSubmit > 0) startTrialTimer(remainingAtSubmit, handleTrialTimeout); // resume where it left off
         return; // stays on this segment -- participant keeps chatting and can resubmit

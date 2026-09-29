@@ -369,6 +369,45 @@ def find_costly_target_A(segment_key: str, plan_state: dict, load_level: str, pr
     costly = {i: d for i, d in deficits.items() if d > 0}
     return max(costly, key=costly.get) if costly else None
 
+def find_helpful_action_A(segment_key: str, plan_state: dict, load_level: str) -> Optional[Dict[str, str]]:
+    """Deterministic (non-LLM) submit-deadlock safety net: after repeated failed
+    submissions, brute-forces ONE move (or, when a plain move can't work without busting
+    the cap, one trim-and-raise pair) that provably improves plan_quality_A -- never
+    invented, never dependent on the advisor getting anything right. Stays as vague as the
+    rest of the submit-rejection UI (no numbers): names item(s) and a direction, never an
+    amount. None if the plan already passes or genuinely needs more untangling than that."""
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    threshold_key = "true_minimum" if "true_minimum" in seg else "true_hours"
+    thresholds = seg[threshold_key][load_level]
+    current = plan_quality_A(segment_key, plan_state, load_level)
+    best = None  # (score, desc)
+
+    def consider(cand_hours: dict, desc: dict):
+        nonlocal best
+        score = plan_quality_A(segment_key, {"hours": cand_hours}, load_level)
+        if score > current and (best is None or score > best[0]):
+            best = (score, desc)
+
+    for i in seg["items"]:
+        if hours.get(i, 0) < thresholds.get(i, 0):
+            cand = dict(hours); cand[i] = thresholds[i]
+            consider(cand, {"action": "raise", "item": i})
+    for i in seg["items"]:
+        if hours.get(i, 0) > thresholds.get(i, 0):
+            cand = dict(hours); cand[i] = thresholds[i]
+            consider(cand, {"action": "trim", "item": i})
+    for i in seg["items"]:
+        if hours.get(i, 0) >= thresholds.get(i, 0):
+            continue
+        for j in seg["items"]:
+            if j == i or hours.get(j, 0) <= thresholds.get(j, 0):
+                continue
+            cand = dict(hours); cand[i] = thresholds[i]; cand[j] = thresholds[j]
+            consider(cand, {"action": "swap", "raise_item": i, "trim_item": j})
+
+    return best[1] if best else None
+
 
 # --- CATEGORY B: DEGREE REQUIREMENTS ---
 # plan_state shape: {"selections": {"major": [course_id...], "minor": [...], "elective": [...]}}
@@ -569,6 +608,50 @@ def find_costly_target_B(segment_key: str, plan_state: dict, load_level: str, pr
         return preferred
     return sorted(harms, key=lambda c: (c not in hidden, harms[c] != "keep", c))[0]
 
+def find_helpful_action_B(segment_key: str, plan_state: dict, load_level: str) -> Optional[Dict[str, str]]:
+    """Deterministic (non-LLM) submit-deadlock safety net -- see find_helpful_action_A.
+    Also searches drop+add swaps (across any buckets, not just the same one): a course
+    that's a straight improvement to add on its own is rare once the cap is tight -- the
+    real fix is very often a swap, which a single-action-only search would miss entirely.
+    Correctness doesn't depend on separately checking prerequisites here: _objective_B
+    already penalizes a broken prerequisite by -1000, so any candidate that breaks one
+    scores far below `current` and is never chosen."""
+    seg = TASK_DATA_B[segment_key]
+    sel = {b: list((plan_state.get("selections") or {}).get(b, [])) for b in ("major", "minor", "elective")}
+    current = _objective_B(segment_key, sel, load_level)
+    all_ids = {c for ids in sel.values() for c in ids}
+    pool_all = {c for ids in seg["pools"].values() for c in ids}
+    unselected = pool_all - all_ids
+    best = None  # (score, desc)
+
+    def consider(cand_sel: dict, desc: dict):
+        nonlocal best
+        score = _objective_B(segment_key, cand_sel, load_level)
+        if score > current and (best is None or score > best[0]):
+            best = (score, desc)
+
+    for b, ids in sel.items():
+        for c in ids:
+            without = {k: [x for x in v if not (k == b and x == c)] for k, v in sel.items()}
+            consider(without, {"action": "drop", "item": c})
+    for c in unselected:
+        for b, ids in seg["pools"].items():
+            if c not in ids:
+                continue
+            withit = {k: v + [c] if k == b else v for k, v in sel.items()}
+            consider(withit, {"action": "add", "item": c})
+    for b1, ids in sel.items():
+        for c1 in ids:
+            reduced = {k: [x for x in v if not (k == b1 and x == c1)] for k, v in sel.items()}
+            for c2 in unselected:
+                for b2, ids2 in seg["pools"].items():
+                    if c2 not in ids2:
+                        continue
+                    swapped = {k: v + [c2] if k == b2 else v for k, v in reduced.items()}
+                    consider(swapped, {"action": "swap", "drop_item": c1, "add_item": c2})
+
+    return best[1] if best else None
+
 # --- CATEGORY C: NON-ACADEMIC LIFE ---
 # plan_state shape: {"selections": [club_id, ...]}
 
@@ -707,6 +790,64 @@ def find_costly_target_C(segment_key: str, plan_state: dict, load_level: str, pr
     if preferred in harms:
         return preferred
     return sorted(harms, key=lambda c: (c not in hidden, harms[c] != "keep", c))[0]
+
+def find_helpful_action_C(segment_key: str, plan_state: dict, load_level: str) -> Optional[Dict[str, str]]:
+    """Deterministic (non-LLM) submit-deadlock safety net -- see find_helpful_action_A.
+    Also searches drop+add swaps, same rationale as find_helpful_action_B."""
+    seg = TASK_DATA_C[segment_key]
+    chosen = list(plan_state.get("selections") or [])
+    current = _objective_C(segment_key, chosen, load_level)
+    best = None  # (score, desc)
+
+    def consider(cand: list, desc: dict):
+        nonlocal best
+        score = _objective_C(segment_key, cand, load_level)
+        if score > current and (best is None or score > best[0]):
+            best = (score, desc)
+
+    for c in chosen:
+        consider([x for x in chosen if x != c], {"action": "drop", "item": c})
+    for c in seg["roster"]:
+        if c not in chosen:
+            consider(chosen + [c], {"action": "add", "item": c})
+    for c1 in chosen:
+        reduced = [x for x in chosen if x != c1]
+        for c2 in seg["roster"]:
+            if c2 in chosen or c2 == c1:
+                continue
+            consider(reduced + [c2], {"action": "swap", "drop_item": c1, "add_item": c2})
+
+    return best[1] if best else None
+
+def find_helpful_action(category: str, segment_key: str, plan_state: dict, load_level: str) -> Optional[str]:
+    """Dispatches to the right category's deterministic safety net and phrases the result
+    at the same vagueness level as the rest of the submit-rejection UI (an item + a
+    direction, never a number). Called only after repeated failed submissions -- see
+    /api/attempt_submit -- so it never touches a plan that just hasn't been tried yet."""
+    if category == "A":
+        result = find_helpful_action_A(segment_key, plan_state, load_level)
+        if not result:
+            return None
+        if result["action"] == "swap":
+            return f"Putting more time toward {ITEM_LABELS_A[result['raise_item']]} and trimming time from {ITEM_LABELS_A[result['trim_item']]} would move this plan toward passing."
+        verb = "Trimming time from" if result["action"] == "trim" else "Putting more time toward"
+        return f"{verb} {ITEM_LABELS_A[result['item']]} would move this plan toward passing."
+    elif category == "B":
+        result = find_helpful_action_B(segment_key, plan_state, load_level)
+        if not result:
+            return None
+        if result["action"] == "swap":
+            return f"Dropping {COURSE_LABELS_B[result['drop_item']]} and adding {COURSE_LABELS_B[result['add_item']]} would move this plan toward passing."
+        verb = "Dropping" if result["action"] == "drop" else "Adding"
+        return f"{verb} {COURSE_LABELS_B[result['item']]} would move this plan toward passing."
+    else:
+        result = find_helpful_action_C(segment_key, plan_state, load_level)
+        if not result:
+            return None
+        if result["action"] == "swap":
+            return f"Dropping {CLUB_LABELS_C[result['drop_item']]} and adding {CLUB_LABELS_C[result['add_item']]} would move this plan toward passing."
+        verb = "Dropping" if result["action"] == "drop" else "Adding"
+        return f"{verb} {CLUB_LABELS_C[result['item']]} would move this plan toward passing."
 
 
 def pick_primary_task() -> str:
@@ -861,6 +1002,8 @@ def plan_quality_pct_C(segment_key: str, plan_state: dict, load_level: str) -> i
 # `label` of exactly one unmet checklist item -- vague by construction (every label
 # already avoids the exact locked number) and never the raw failed_ids list, which is for
 # CSV logging only.
+SUBMIT_DEADLOCK_THRESHOLD = 3  # failed attempts before the deterministic safety net kicks in
+
 @app.post("/api/attempt_submit")
 async def attempt_submit(request: Request):
     data = await request.json()
@@ -868,6 +1011,7 @@ async def attempt_submit(request: Request):
     segment_key = f"segment_{data.get('trial_num', 1)}"
     plan_state = data.get("plan_state", {}) or {}
     load_level = data.get("load_level", "LowLoad")
+    submit_attempt_count = data.get("submit_attempt_count", 0)
 
     if category == "A":
         results = evaluate_checklist_A(segment_key, plan_state, load_level)
@@ -891,12 +1035,17 @@ async def attempt_submit(request: Request):
     else:
         # Failed attempts keep the old checklist-fraction score -- still meaningful there.
         percent_met = round(100 * (len(results) - len(failed)) / len(results)) if results else None
+    concrete_hint = None
+    if failed and submit_attempt_count >= SUBMIT_DEADLOCK_THRESHOLD:
+        concrete_hint = find_helpful_action(category, segment_key, plan_state, load_level)
+
     return {
         "status": "success",
         "passed": passed,
         "percent_met": percent_met,
         "failed_ids": [r["id"] for r in failed],  # logging only -- never shown verbatim to the participant
         "verdict_detail": failed[0].get("fail", failed[0]["label"]) if failed else None,
+        "concrete_hint": concrete_hint,  # deterministic safety net -- only set after SUBMIT_DEADLOCK_THRESHOLD failed attempts
     }
 
 class PlanAction(BaseModel):
