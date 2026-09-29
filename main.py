@@ -52,10 +52,11 @@ FALLBACK_CHAIN = [
     ("gemini", "gemini-3.5-flash"),
     ("gemini", "gemini-2.5-flash"),
     ("gemini", "gemini-2.5-flash-lite"),
-    ("openrouter", "openai/gpt-4o-mini"),
+    ("openrouter", "openai/gpt-6-luna"),           # replaces dead openai/gpt-4o-mini
     ("openrouter", "google/gemini-3.8-flash"),
+    ("openrouter", "anthropic/claude-sonnet-5.5"),  # new -- stronger fallback before the weakest tier
     ("openrouter", "deepseek/deepseek-v4.1-flash"),
-    ("openrouter", "qwen/qwen3.8-flash"),
+    ("openrouter", "qwen/qwen3.8-omni-flash"),      # replaces dead qwen/qwen3.8-flash
 ]
 STAGGER_DELAY = 3   # seconds to wait before trying the NEXT tier concurrently -- must be well under PER_TIER_TIMEOUT or tiers never actually overlap
 PER_TIER_TIMEOUT = 6
@@ -1071,6 +1072,34 @@ async def verify_tactic(tactic_name: str, tactic_instruction: str, reply: str) -
         print(f"[verify_tactic] failed: {e}")
         return None
 
+CAP_CLAIM_KEYWORDS = ("cap", "credit", "hour", "exceed", "over the", "within the", "headroom", "limit")
+
+def reply_makes_cap_claim(reply: str) -> bool:
+    """Cheap keyword gate so the cap-verify LLM call only fires on turns that actually
+    touch cap/limit language -- keeps the extra round-trip off every other turn."""
+    low = reply.lower()
+    return any(k in low for k in CAP_CLAIM_KEYWORDS)
+
+class CapClaimCheck(BaseModel):
+    consistent: bool = Field(description="True only if every claim in the reply about hitting, staying within, or going over the cap/limit is arithmetically consistent with the ground-truth headroom figure given. False if the reply's stated conclusion (would/wouldn't exceed) contradicts the headroom number, even if it cited the right number.")
+
+async def verify_cap_claim(ground_truth_status: str, reply: str) -> Optional[bool]:
+    """Cheap second pass: does the reply's cap/limit claim actually follow from the
+    ground-truth headroom figure, or did the model cite the right number but draw the
+    wrong conclusion from it? Returns None (never blocks the turn) if the checker itself fails."""
+    check_prompt = (f"Ground truth (computed, always correct): {ground_truth_status}\n\n"
+                    f"Reply to check:\n\"\"\"{reply}\"\"\"\n\n"
+                    "If the reply makes any claim about whether something would exceed, stay within, "
+                    "or go over a credit/hour cap, is that claim arithmetically correct given the ground "
+                    "truth above? If the reply makes no such claim, answer true.")
+    try:
+        checker = get_structured_llm(CapClaimCheck, temperature=0)
+        result = await checker.ainvoke(check_prompt)
+        return bool(result.consistent)
+    except Exception as e:
+        print(f"[verify_cap_claim] failed: {e}")
+        return None
+
 class AgentResponse(BaseModel):
     internal_logic: str = Field(description="Analyze the user's input. Plan a subtle bridge to the assigned tactic.")
     conversational_reply: str = Field(description="The generated response to the user.")
@@ -1428,7 +1457,7 @@ async def handle_chat(chat_data: ChatMessage):
     task_key = chat_data.primary_task.split("_")[0]  # "A" / "B" / "C"
     segment_key = f"segment_{min(max(trial_num, 1), 4)}"
 
-    structured_llm = get_structured_llm(AgentResponse, temperature=0.85)
+    structured_llm = get_structured_llm(AgentResponse, temperature=0.4)
 
     cycle_index = get_tactic_index_for_trial(trial_num, chat_data.dropped_category_index, ANCHOR_INDICES_BY_TASK[task_key], LATE_STAGE_CATEGORY_BY_TASK.get(task_key))
 
@@ -1693,16 +1722,32 @@ async def handle_chat(chat_data: ChatMessage):
         print(f"[LLM] ← gemini-3.1-flash-lite responded in {time.monotonic() - t0:.2f}s")
 
         tactic_verified = None
+        cap_verified = None
+        needs_retry = False
+
         if is_dark:
             tactic_verified = await verify_tactic(current_tactic, tactic_instruction, response_data.conversational_reply)
-            if tactic_verified is False:  # one regeneration, keep whichever passes
-                try:
-                    retry_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
-                    if await verify_tactic(current_tactic, tactic_instruction, retry_data.conversational_reply):
-                        response_data, tactic_verified = retry_data, True
-                except Exception as retry_err:
-                    # A failed regeneration must never throw away the good first reply.
-                    print(f"[tactic retry] failed, keeping first reply: {retry_err}")
+            needs_retry = needs_retry or tactic_verified is False
+
+        if reply_makes_cap_claim(response_data.conversational_reply):
+            cap_verified = await verify_cap_claim(requirement_status_line, response_data.conversational_reply)
+            needs_retry = needs_retry or cap_verified is False
+
+        if needs_retry:  # one regeneration, keep whichever passes more checks
+            try:
+                retry_data = await (prompt | structured_llm).ainvoke({"user_msg": user_text})
+                retry_tactic_ok = (await verify_tactic(current_tactic, tactic_instruction, retry_data.conversational_reply)) if is_dark else True
+                retry_cap_ok = True
+                if reply_makes_cap_claim(retry_data.conversational_reply):
+                    retry_cap_ok = await verify_cap_claim(requirement_status_line, retry_data.conversational_reply)
+                if retry_tactic_ok is not False and retry_cap_ok is not False:
+                    response_data = retry_data
+                    if is_dark:
+                        tactic_verified = retry_tactic_ok
+                    cap_verified = retry_cap_ok
+            except Exception as retry_err:
+                # A failed regeneration must never throw away the good first reply.
+                print(f"[verify retry] failed, keeping first reply: {retry_err}")
 
         safe_reply = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.conversational_reply)
         safe_decoy = re.sub(r'\b\d+%\b', '[SCORE HIDDEN]', response_data.clean_decoy)
@@ -1731,6 +1776,7 @@ async def handle_chat(chat_data: ChatMessage):
             "dark_turn_downgraded": dark_turn_downgraded,
             "dark_turn_fallback_used": dark_turn_fallback_used,
             "tactic_verified": tactic_verified,
+            "cap_verified": cap_verified,
             "dark_target_reply": dark_target_reply,
             "target_item": target_param,
             "revealed_fact_ids": revealed_fact_ids,
