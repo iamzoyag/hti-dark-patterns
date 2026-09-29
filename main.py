@@ -57,12 +57,12 @@ FALLBACK_CHAIN = [
     ("openrouter", "deepseek/deepseek-v4.1-flash"),
     ("openrouter", "qwen/qwen3.8-flash"),
 ]
-STAGGER_DELAY = 8   # seconds to wait before trying the NEXT tier concurrently
-PER_TIER_TIMEOUT = 8
+STAGGER_DELAY = 3   # seconds to wait before trying the NEXT tier concurrently -- must be well under PER_TIER_TIMEOUT or tiers never actually overlap
+PER_TIER_TIMEOUT = 6
 _TIER_FAIL_STREAK: Dict[str, int] = collections.defaultdict(int)
 _TIER_COOLDOWN_UNTIL: Dict[str, float] = {}
 TIER_COOLDOWN_SECONDS = 120
-FAILURE_THRESHOLD = 2
+FAILURE_THRESHOLD = 1   # one failure is enough -- with several LLM calls stacking per dark-turn request (primary + tactic check + possible retry), waiting for a 2nd confirmation means the first two calls in a request both eat the full dead-tier walk before cooldown ever helps
 
 def _tier_available(provider, model_name) -> bool:
     until = _TIER_COOLDOWN_UNTIL.get(f"{provider}:{model_name}")
