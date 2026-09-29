@@ -119,8 +119,9 @@ const NOTIFICATION_BANK = [
     { id: "n16", text: "🔔 Fire alarm test scheduled in North Hall at 1pm — no action needed" },
 ];
 
+let allowUnload = false;   // set true right before we deliberately navigate (e.g. to /debrief)
 window.addEventListener('beforeunload', (e) => {
-    if (sessionData && sessionData.tutorialCompleted) {
+    if (!allowUnload && sessionData && sessionData.tutorialCompleted) {
         e.preventDefault();
         e.returnValue = '';
     }
@@ -1925,23 +1926,32 @@ async function autosaveProgress() {
 }
 
 async function saveSessionData() {
+    const btn = document.getElementById('submitSegmentBtn');
+    const goToDebrief = () => { allowUnload = true; window.location.href = '/debrief'; };
+    // Safety net: if nothing has redirected within 25s, give the participant a visible way forward.
+    setTimeout(() => {
+        if (btn) { btn.disabled = false; btn.innerText = "Continue"; btn.onclick = goToDebrief; }
+    }, 25000);
+
     for (let attempt = 1; attempt <= 2; attempt++) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 15000);
         try {
             sessionData.saveSeq = Date.now();
             const response = await fetch('/api/save_data', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(sessionData)
+                body: JSON.stringify(sessionData),
+                signal: ctrl.signal
             });
+            clearTimeout(timer);
             if (!response.ok) throw new Error(`Save endpoint returned ${response.status}`);
-            window.location.href = '/debrief';
+            goToDebrief();
             return;
         } catch (error) {
+            clearTimeout(timer);
             console.error(`Save attempt ${attempt} failed:`, error);
-            if (attempt === 2) {
-                alert("We couldn't confirm your data was saved due to a connection issue. Please stay on this page and try again.");
-                window.location.href = '/debrief';
-            }
+            if (attempt === 2) goToDebrief();   // debrief re-saves the full session, so don't block on this
         }
     }
 }
