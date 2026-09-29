@@ -104,8 +104,9 @@ def get_structured_llm(schema, temperature: float = 0.7):
             print(f"[LLM] ✓ {provider}:{model_name} served it in {time.monotonic() - t0:.2f}s")
             _record_tier_result(provider, model_name, True)
             return result
-        except Exception:
-            _record_tier_result(provider, model_name, False)
+        except Exception as e:
+            if not isinstance(e, TimeoutError):   # a slow reply isn't a dead model
+                _record_tier_result(provider, model_name, False)
             raise
 
     async def call(inputs):
