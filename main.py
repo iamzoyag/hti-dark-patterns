@@ -52,18 +52,22 @@ FALLBACK_CHAIN = [
     ("gemini", "gemini-3.5-flash"),
     ("gemini", "gemini-2.5-flash"),
     ("gemini", "gemini-2.5-flash-lite"),
+    # ("openrouter", "stealth/space-bunny-alpha"), 
+    ("openrouter", "google/gemini-3.1-flash-lite"), 
+    ("openrouter", "google/gemini-2.5-flash"),
+    ("openrouter", "google/gemini-3.5-flash"),
     ("openrouter", "openai/gpt-6-luna"),           # replaces dead openai/gpt-4o-mini
     ("openrouter", "google/gemini-3.8-flash"),
     ("openrouter", "anthropic/claude-sonnet-5.5"),  # new -- stronger fallback before the weakest tier
     ("openrouter", "deepseek/deepseek-v4.1-flash"),
     ("openrouter", "qwen/qwen3.8-omni-flash"),      # replaces dead qwen/qwen3.8-flash
 ]
-STAGGER_DELAY = 3   # seconds to wait before trying the NEXT tier concurrently -- must be well under PER_TIER_TIMEOUT or tiers never actually overlap
-PER_TIER_TIMEOUT = 6
+STAGGER_DELAY = 5   # seconds to wait before trying the NEXT tier concurrently -- must be well under PER_TIER_TIMEOUT or tiers never actually overlap
+PER_TIER_TIMEOUT = 20
 _TIER_FAIL_STREAK: Dict[str, int] = collections.defaultdict(int)
 _TIER_COOLDOWN_UNTIL: Dict[str, float] = {}
 TIER_COOLDOWN_SECONDS = 120
-FAILURE_THRESHOLD = 1   # one failure is enough -- with several LLM calls stacking per dark-turn request (primary + tactic check + possible retry), waiting for a 2nd confirmation means the first two calls in a request both eat the full dead-tier walk before cooldown ever helps
+FAILURE_THRESHOLD = 1   # unchanged: fine now that timeouts no longer count as failures (see the `attempt` change)
 
 def _tier_available(provider, model_name) -> bool:
     until = _TIER_COOLDOWN_UNTIL.get(f"{provider}:{model_name}")
@@ -84,12 +88,12 @@ def get_structured_llm(schema, temperature: float = 0.7):
         if provider == "gemini":
             return ChatGoogleGenerativeAI(
                 model=model_name, temperature=temperature,
-                google_api_key=os.environ["GOOGLE_API_KEY"], timeout=10,
+                google_api_key=os.environ["GOOGLE_API_KEY"], timeout=10, max_retries=0,
             ).with_structured_output(schema)
         return ChatOpenAI(
             model=model_name, temperature=temperature,
             api_key=os.environ["OPENROUTER_API_KEY"],
-            base_url="https://openrouter.ai/api/v1",
+            base_url="https://openrouter.ai/api/v1", max_retries=0,
         ).with_structured_output(schema)
 
     async def attempt(provider, model_name, inputs):
