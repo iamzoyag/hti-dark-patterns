@@ -61,6 +61,12 @@ let shadowHistory = [];
 let darkTurnCounter = 0; // advances on every send/proactive fire; forms part of the research pattern_id, not a gate on anything
 let darkDeliveredThisTrial = false;
 
+// Mirrors every addMessage() call (not shadowHistory, which stores the LLM-facing decoy
+// text) so a reload can replay exactly what the participant actually saw. Persists across
+// segments within a task (reset only in advanceToNextTask), same lifecycle as shadowHistory.
+let displayedMessages = [];
+let isReplayingMessages = false; // guards addMessage() from re-recording while replaying on resume
+
 let lastAiMessageTime = null; // when the most recent AI message landed — used to measure how long the participant sat with it before acting
 let messageDwellTelemetry = {}; // patternId -> { totalVisibleMs, visibleSince, firstVisibleAt } — actual time each AI bubble spent visible, not just "was sent"
 let dwellObserver = null;
@@ -729,6 +735,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setupModality();
     if (!sessionData.tutorialCompleted) {
         startTutorial();
+    } else if (sessionData.liveTrialState) {
+        resumeSegment(sessionData.liveTrialState);
     } else {
         startSegment(1);
     }
@@ -771,6 +779,8 @@ function advanceToNextTask() {
     sessionData.droppedCategoryIndex = nextAssignment.dropped_category_index;
     currentTrial = 1;
     shadowHistory = [];
+    displayedMessages = [];
+    sessionData.liveTrialState = null;
     clearChatDisplay();
 
     logEvent('task_transition', { next_task: nextTask, task_position: sessionData.currentTaskIndex });
@@ -1237,7 +1247,8 @@ function startSegment(segmentIndex) {
     scheduleNotifications(loadLevel, isTimedSegment ? TRIAL_TIME_LIMIT_MS[category][loadLevel] : UNTIMED_NOTIFICATION_WINDOW_MS);
     startDividedAttentionTask(loadLevel);
 
-    logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) }); 
+    logEvent('trial_started', { trial: segmentIndex, load_level: loadLevel, starting_plan_state: JSON.parse(JSON.stringify(currentPlanState)) });
+    persistLiveTrialState();
 
     if (!sessionData.group.includes("Transcript")) {
         setTimeout(() => {
@@ -1264,6 +1275,120 @@ function stopTrialTimer() {
     trialTimerDeadline = null;
     const el = document.getElementById('trialTimerDisplay');
     if (el) el.className = 'trial-timer';
+}
+
+// Resumes a timer against an already-fixed absolute deadline instead of computing a fresh
+// one from Date.now() -- the deadline survived the reload (wall-clock time), so the
+// remaining time must NOT be reset.
+function resumeTrialTimer(deadline, onExpire) {
+    stopTrialTimer();
+    trialTimerDeadline = deadline;
+    updateTrialTimerDisplay();
+    trialTimerInterval = setInterval(() => {
+        const remaining = trialTimerDeadline - Date.now();
+        if (remaining <= 0) { stopTrialTimer(); onExpire(); return; }
+        updateTrialTimerDisplay(remaining);
+    }, 250);
+}
+
+// Snapshot of everything needed to resume the CURRENT trial after a reload -- called after
+// every state-changing checkpoint (fresh segment start, a completed chat turn, a completed
+// proactive fire). Piggybacks on logEvent's existing localStorage.setItem, but writes it
+// directly too so a persist isn't skipped if a caller doesn't happen to log an event first.
+function persistLiveTrialState() {
+    sessionData.liveTrialState = {
+        currentTrial,
+        currentPlanState,
+        startOfTrialPlanState,
+        shadowHistory,
+        disclosedIdsSoFar,
+        revealedFactsThisSegment,
+        darkDeliveredThisTrial,
+        darkTurnCounter,
+        turnsInTrial,
+        hasInteractedThisTrial,
+        submitAttemptsThisTrial,
+        currentTargetItem,
+        currentLoadLevel,
+        trialTimerDeadline,
+        displayedMessages
+    };
+    localStorage.setItem('hti_session', JSON.stringify(sessionData));
+}
+
+// Reload/crash recovery -- rebuilds the in-memory state AND the visible chat log from the
+// last persisted checkpoint instead of restarting the trial (what startSegment() does).
+// Never resets plan state, disclosure progress, or the dark-delivered flag: those are exactly
+// what must NOT be re-rolled, or a dark tactic could fire twice in one trial and the plan
+// state sent to the LLM would silently disagree with what's really on the board.
+function resumeSegment(state) {
+    const category = getCategory();
+    const meta = CATEGORY_META[category];
+    const loadLevel = sessionData.trialSequence[state.currentTrial - 1];
+
+    currentTrial = state.currentTrial;
+    currentPlanState = state.currentPlanState;
+    startOfTrialPlanState = state.startOfTrialPlanState;
+    shadowHistory = state.shadowHistory || [];
+    disclosedIdsSoFar = state.disclosedIdsSoFar || [];
+    revealedFactsThisSegment = state.revealedFactsThisSegment || [];
+    darkDeliveredThisTrial = !!state.darkDeliveredThisTrial;
+    darkTurnCounter = state.darkTurnCounter || 0;
+    turnsInTrial = state.turnsInTrial || 0;
+    hasInteractedThisTrial = !!state.hasInteractedThisTrial;
+    submitAttemptsThisTrial = state.submitAttemptsThisTrial || 0;
+    currentTargetItem = state.currentTargetItem || null;
+    currentLoadLevel = loadLevel;
+
+    const chatNameEl = document.querySelector('.chat-ai-name');
+    if (chatNameEl) chatNameEl.innerText = meta.advisorName;
+    document.title = meta.pageTitle;
+    const chatInputEl = document.getElementById('chatInput');
+    if (chatInputEl) chatInputEl.placeholder = meta.placeholder;
+
+    segmentEpoch++;
+    isAiRequestInFlight = false;
+    document.getElementById('currentTyping')?.remove();
+    const sendBtnReset = document.querySelector('.send-btn');
+    if (sendBtnReset) sendBtnReset.disabled = false;
+
+    document.getElementById('docTitle').innerText = `${meta.pageTitle} — Week ${state.currentTrial} of 4`;
+    updateDoc();
+
+    taskStartTime = Date.now();
+    window.lastTurnTimestamp = Date.now();
+    telemetry = { keystrokes: [], scrollEvents: [], backspaces: 0 };
+    messageDwellTelemetry = {};
+    resetProactiveState();
+
+    clearChatDisplay();
+    isReplayingMessages = true;
+    displayedMessages = state.displayedMessages || [];
+    displayedMessages.forEach(m => addMessage(m.text, m.sender, m.patternId, m.isDark, m.category));
+    isReplayingMessages = false;
+
+    renderPlanMirror();
+
+    const isTimedSegment = TIMED_SEGMENTS[state.currentTrial];
+    if (isTimedSegment && state.trialTimerDeadline && (state.trialTimerDeadline - Date.now()) > 0) {
+        resumeTrialTimer(state.trialTimerDeadline, handleTrialTimeout);
+    } else if (isTimedSegment) {
+        // Timer deadline already passed while the page was gone (or was never captured) --
+        // submit whatever's on the board, same as a normal in-session timeout.
+        stopTrialTimer();
+        setTimeout(() => handleTrialTimeout(), 0);
+        return;
+    } else {
+        stopTrialTimer();
+        const timerEl = document.getElementById('trialTimerDisplay');
+        if (timerEl) { timerEl.innerText = 'Untimed'; timerEl.className = 'trial-timer'; }
+    }
+
+    scheduleProactiveCheck();
+    scheduleNotifications(loadLevel, isTimedSegment ? TRIAL_TIME_LIMIT_MS[category][loadLevel] : UNTIMED_NOTIFICATION_WINDOW_MS);
+    startDividedAttentionTask(loadLevel);
+
+    logEvent('trial_resumed', { trial: state.currentTrial, load_level: loadLevel });
 }
 
 function updateTrialTimerDisplay(remainingMsOverride) {
@@ -1437,17 +1562,26 @@ async function sendMessage() {
 
             nudgePerfScore(Math.random() < 0.75 ? (3 + Math.random() * 5) : -(2 + Math.random() * 4));
             hasInteractedThisTrial = true;
+            persistLiveTrialState();
         } else {
             console.error("Chat request returned non-success status:", data);
-            addScriptedLine("Sorry — something went wrong on that last message. Please try rephrasing it.");
+            addScriptedLine("Sorry — something went wrong on that last message. Please try again — your message has been restored below.");
             logEvent('ai_error', { text, error: data.message || 'non-success status' });
+            inputEl.value = text;
+            darkTurnCounter--;
+            turnsInTrial--;
+            sessionData.metrics.turnsElapsed--;
         }
     } catch (error) {
         if (myEpoch !== segmentEpoch) return;
         document.getElementById('currentTyping')?.remove();
         console.error("Chat error:", error);
-        addScriptedLine("Sorry — the advisor couldn't be reached. Please try sending that again.");
+        addScriptedLine("Sorry — the advisor couldn't be reached (this can happen during a brief server update). Please try again — your message has been restored below.");
         logEvent('ai_error', { text, error: String(error) });
+        inputEl.value = text;
+        darkTurnCounter--;
+        turnsInTrial--;
+        sessionData.metrics.turnsElapsed--;
     } finally {
         if (myEpoch === segmentEpoch) {
             isAiRequestInFlight = false;
@@ -1619,6 +1753,7 @@ async function triggerProactiveAdvisorNote() {
         }
 
         hasInteractedThisTrial = true;
+        persistLiveTrialState();
     } catch (error) {
         if (myEpoch !== segmentEpoch) return;
         document.getElementById('currentTyping')?.remove();
@@ -1711,6 +1846,7 @@ function clearChatDisplay() {
 
 function addMessage(text, sender, patternId = null, isDark = false, category = null) {
     if (sender === 'ai' && !text?.trim()) return; // never render a blank AI bubble
+    if (!isReplayingMessages) displayedMessages.push({ text, sender, patternId, isDark, category });
     const chatContainer = document.getElementById('chatMessages');
     if (!chatContainer) return;
 
