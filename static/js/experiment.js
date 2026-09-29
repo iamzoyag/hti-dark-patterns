@@ -119,6 +119,13 @@ const NOTIFICATION_BANK = [
     { id: "n16", text: "🔔 Fire alarm test scheduled in North Hall at 1pm — no action needed" },
 ];
 
+window.addEventListener('beforeunload', (e) => {
+    if (sessionData && sessionData.tutorialCompleted) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+});
+
 function clearNotificationTimers() {
     notificationTimers.forEach(t => clearTimeout(t));
     notificationTimers = [];

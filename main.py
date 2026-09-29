@@ -1240,8 +1240,6 @@ def describe_visible_facts_B(segment_key: str, load_level: str) -> str:
             f"Elective pool: {pool_str('elective')}.")
 
 def describe_requirement_status_B(segment_key: str, plan_state: dict, load_level: str, disclosed_ids=()) -> str:
-    """Ground truth pass/fail per bucket + cap, computed server-side -- the advisor has
-    no reliable way to do this arithmetic itself, so it should trust this over its own math."""
     seg = TASK_DATA_B[segment_key]
     selections = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
     def status(bucket):
