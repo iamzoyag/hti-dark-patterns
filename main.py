@@ -22,6 +22,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
 from itertools import combinations, permutations
 import asyncio
+import collections
 from datetime import datetime
 from dotenv import load_dotenv
 import uvicorn
@@ -58,6 +59,24 @@ FALLBACK_CHAIN = [
 ]
 STAGGER_DELAY = 8   # seconds to wait before trying the NEXT tier concurrently
 PER_TIER_TIMEOUT = 8
+_TIER_FAIL_STREAK: Dict[str, int] = collections.defaultdict(int)
+_TIER_COOLDOWN_UNTIL: Dict[str, float] = {}
+TIER_COOLDOWN_SECONDS = 120
+FAILURE_THRESHOLD = 2
+
+def _tier_available(provider, model_name) -> bool:
+    until = _TIER_COOLDOWN_UNTIL.get(f"{provider}:{model_name}")
+    return until is None or time.monotonic() >= until
+
+def _record_tier_result(provider, model_name, success: bool):
+    key = f"{provider}:{model_name}"
+    if success:
+        _TIER_FAIL_STREAK[key] = 0
+        _TIER_COOLDOWN_UNTIL.pop(key, None)
+    else:
+        _TIER_FAIL_STREAK[key] += 1
+        if _TIER_FAIL_STREAK[key] >= FAILURE_THRESHOLD:
+            _TIER_COOLDOWN_UNTIL[key] = time.monotonic() + TIER_COOLDOWN_SECONDS
 
 def get_structured_llm(schema, temperature: float = 0.7):
     def make_model(provider, model_name):
@@ -75,12 +94,17 @@ def get_structured_llm(schema, temperature: float = 0.7):
     async def attempt(provider, model_name, inputs):
         t0 = time.monotonic()
         print(f"[LLM] → {provider}:{model_name}")
-        result = await asyncio.wait_for(make_model(provider, model_name).ainvoke(inputs), timeout=PER_TIER_TIMEOUT)
-        print(f"[LLM] ✓ {provider}:{model_name} served it in {time.monotonic() - t0:.2f}s")
-        return result
+        try:
+            result = await asyncio.wait_for(make_model(provider, model_name).ainvoke(inputs), timeout=PER_TIER_TIMEOUT)
+            print(f"[LLM] ✓ {provider}:{model_name} served it in {time.monotonic() - t0:.2f}s")
+            _record_tier_result(provider, model_name, True)
+            return result
+        except Exception:
+            _record_tier_result(provider, model_name, False)
+            raise
 
     async def call(inputs):
-        chain = list(FALLBACK_CHAIN)
+        chain = [t for t in FALLBACK_CHAIN if _tier_available(*t)] or list(FALLBACK_CHAIN)
         pending = {asyncio.ensure_future(attempt(*chain.pop(0), inputs))}
         last_err = None
         while pending or chain:
