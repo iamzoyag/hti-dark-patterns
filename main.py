@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+from sheet_logger import report_session
 import smtplib
 from email.message import EmailMessage
 from fastapi.responses import HTMLResponse
@@ -2121,6 +2122,7 @@ def _write_save_seq(participant_id: str, seq: int) -> None:
     with open(f"data/.saveseq_{participant_id}", "w") as f:
         f.write(str(seq))
 
+_LAST_REPORTED: Dict[str, str] = {}
 @app.post("/api/save_data")
 async def save_data(payload: Dict[str, Any]):
     os.makedirs("data", exist_ok=True)
@@ -2260,6 +2262,15 @@ async def save_data(payload: Dict[str, Any]):
         # Email dispatch happens AFTER the file is closed/flushed, and is fire-and-forget --
         # a slow or unreachable mail server must never delay this response.
         is_complete = any(e.get("type") == "recognition_test_submitted" for e in payload.get("events", []))
+
+        # Completion-sheet reporting (only fires when the stage changes)
+        if participant_id != "UNKNOWN":
+            trials_seen = [e["global_trial"] for e in payload.get("events", []) if isinstance(e.get("global_trial"), int)]
+            stage = "debrief_done" if is_complete else f"trial_{max(trials_seen, default=0)}_of_{TOTAL_TRIALS}"
+            if _LAST_REPORTED.get(participant_id) != stage:
+                _LAST_REPORTED[participant_id] = stage
+                report_session(participant_id, "complete" if is_complete else "progress", stage=stage)
+
         if is_complete and not os.path.exists(f"data/.emailed_{participant_id}"):
             async def _send_and_mark():
                 await asyncio.to_thread(send_completion_email, participant_id, filename, csv_buffer.getvalue().encode("utf-8"))
@@ -2304,6 +2315,7 @@ async def register_participant(req: ParticipantRegistration):
         if is_new:
             writer.writerow(["Participant_ID", "Name", "Email", "Registered_Timestamp"])
         writer.writerow([req.participant_id, req.name, req.email, datetime.utcnow().isoformat() + "Z"])
+    report_session(req.participant_id, "start", stage="intake", email=req.email)
     return {"status": "registered"}
 
 if __name__ == "__main__":
