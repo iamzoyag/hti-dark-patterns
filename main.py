@@ -83,8 +83,11 @@ def get_structured_llm(schema, temperature: float = 0.7):
         chain = list(FALLBACK_CHAIN)
         pending = {asyncio.ensure_future(attempt(*chain.pop(0), inputs))}
         last_err = None
-        while pending:
-            done, pending = await asyncio.wait(pending, timeout=STAGGER_DELAY, return_when=asyncio.FIRST_COMPLETED)
+        while pending or chain:
+            if pending:
+                done, pending = await asyncio.wait(pending, timeout=STAGGER_DELAY, return_when=asyncio.FIRST_COMPLETED)
+            else:
+                done = set()
             for task in done:
                 try:
                     result = task.result()
@@ -92,8 +95,8 @@ def get_structured_llm(schema, temperature: float = 0.7):
                     return result
                 except Exception as e:
                     last_err = e
-                    print(f"[LLM] ✗ a tier failed ({e})")
-            if not done and chain:
+                    print(f"[LLM] ✗ a tier failed ({type(e).__name__}: {e})")
+            if chain:
                 pending.add(asyncio.ensure_future(attempt(*chain.pop(0), inputs)))
         raise last_err or RuntimeError("All LLM tiers failed")
 
