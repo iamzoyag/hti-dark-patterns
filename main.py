@@ -47,11 +47,12 @@ def resolve_item_id(item: str, canonical_ids, labels: dict) -> str:
     matches = [cid for cid in canonical_ids if norm_item in _normalize(labels.get(cid, cid))]
     return matches[0] if len(matches) == 1 else item
 
+GEMINI_KEY_ENV = {"gemini": "GOOGLE_API_KEY", "gemini2": "GOOGLE_API_KEY_2", "gemini3": "GOOGLE_API_KEY_3"}
+
 FALLBACK_CHAIN = [
     ("gemini", "gemini-3.1-flash-lite"),
-    ("gemini", "gemini-3.5-flash"),
-    ("gemini", "gemini-2.5-flash"),
-    ("gemini", "gemini-2.5-flash-lite"),
+    ("gemini2", "gemini-3.1-flash-lite"),
+    ("gemini3", "gemini-3.1-flash-lite"),
     # ("openrouter", "stealth/space-bunny-alpha"), 
     ("openrouter", "google/gemini-3.1-flash-lite"), 
     ("openrouter", "google/gemini-2.5-flash"),
@@ -85,10 +86,10 @@ def _record_tier_result(provider, model_name, success: bool):
 
 def get_structured_llm(schema, temperature: float = 0.7):
     def make_model(provider, model_name):
-        if provider == "gemini":
+        if provider in GEMINI_KEY_ENV:
             return ChatGoogleGenerativeAI(
                 model=model_name, temperature=temperature,
-                google_api_key=os.environ["GOOGLE_API_KEY"], timeout=10, max_retries=0,
+                google_api_key=os.environ[GEMINI_KEY_ENV[provider]], timeout=10, max_retries=0,
             ).with_structured_output(schema)
         return ChatOpenAI(
             model=model_name, temperature=temperature,
