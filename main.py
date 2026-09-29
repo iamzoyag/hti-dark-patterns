@@ -1068,6 +1068,18 @@ def describe_visible_facts_A(segment_key: str, load_level: str) -> str:
     items_str = ", ".join(ITEM_LABELS_A[i] for i in seg["items"])
     return f"Weekly hour cap is {seg['cap'][load_level]} hours, split across: {items_str}."
 
+def describe_requirement_status_A(segment_key: str, plan_state: dict, load_level: str) -> str:
+    seg = TASK_DATA_A[segment_key]
+    hours = plan_state.get("hours", {})
+    total = sum(hours.get(i, 0) for i in seg["items"])
+    cap = seg["cap"][load_level]
+    remaining = cap - total
+    return (f"Hours currently allocated across all items: {total} of the {cap}-hour weekly cap -- "
+            f"{remaining} hour(s) of headroom remain right now. Cap status: "
+            f"{'WITHIN the cap' if total <= cap else 'OVER the cap'}. Never claim that raising or adding an "
+            f"item's hours would exceed the cap unless the size of that change is MORE than the headroom stated "
+            f"here -- do not add up the individual item hours yourself.")
+
 def describe_visible_facts_B(segment_key: str, load_level: str) -> str:
     seg = TASK_DATA_B[segment_key]
     def pool_str(bucket):
@@ -1087,7 +1099,9 @@ def describe_requirement_status_B(segment_key: str, plan_state: dict, load_level
         met = _credits_for_bucket_B(seg, selections, bucket) >= seg["minimums"][bucket]
         return "MET" if met else "NOT yet met"
     total_credits = sum(COURSE_CREDITS_B.get(cid, 0) for b in selections.values() for cid in b)
-    cap_status = "within the cap" if total_credits <= seg["cap"][load_level] else "OVER the cap"
+    cap = seg["cap"][load_level]
+    remaining = cap - total_credits
+    cap_status = f"within the cap ({remaining} credit(s) of headroom remain)" if total_credits <= cap else f"OVER the cap by {-remaining} credit(s)"
     all_ids = [cid for b in selections.values() for cid in b]
     missing = [(cid, pre) for cid in all_ids for pre in PREREQ_RULES_B.get(cid, []) if pre not in all_ids]
     if not missing:
@@ -1100,7 +1114,8 @@ def describe_requirement_status_B(segment_key: str, plan_state: dict, load_level
             f"Elective minimum: {status('elective')}. Per-term cap: {cap_status}. "
             f"Prerequisites: {prereq_status}. "
             f"Meeting-time conflicts: {'none' if conflict_ok else 'at least one CONFLICT'}. "
-            f"Never tell the participant their plan meets all requirements unless every item in this line is MET / within / satisfied / none.")
+            f"Never tell the participant their plan meets all requirements unless every item in this line is MET / within / satisfied / none. "
+            f"Never claim that adding a course would exceed the cap unless that course's own credit value is more than the stated headroom -- do not add up the individual course credits yourself.")
 
 def describe_visible_facts_C(segment_key: str, load_level: str) -> str:
     seg = TASK_DATA_C[segment_key]
@@ -1112,9 +1127,14 @@ def describe_visible_status_C(plan_state: dict, segment_key: str, load_level: st
     chosen = plan_state.get("selections", [])
     cats = sorted({CLUB_CATEGORY_C[c] for c in chosen if c in CLUB_CATEGORY_C})
     listed = sum(CLUB_BASE_HOURS_C.get(c, 0) for c in chosen)
+    cap = TASK_DATA_C[segment_key]['cap'][load_level]
+    remaining = cap - listed
     return (f"Interest categories covered: {len(cats)} of 4 ({', '.join(cats) or 'none'}) -- the 3-of-4 goal is "
             f"{'MET' if len(cats) >= 3 else 'NOT met'}. Listed sign-up-board hours for the current picks: {listed} "
-            f"of the {TASK_DATA_C[segment_key]['cap'][load_level]}-hour cap.")
+            f"of the {cap}-hour cap -- {remaining} hour(s) of headroom remain right now. Cap status: "
+            f"{'WITHIN the cap' if listed <= cap else 'OVER the cap'}. Never claim that adding a new activity "
+            f"would exceed the cap unless that activity's own listed hours (from the roster above) are MORE than "
+            f"the headroom stated here -- do not do your own subtraction across the conversation history.")
 
 def describe_locked_facts_A(segment_key: str, load_level: str) -> List[Dict[str, str]]:
     """Facts NOT on the catalog card -- only ever surfaced via the conditional-disclosure
@@ -1203,7 +1223,7 @@ def _fact_is_about(fact_id: str, target: str) -> bool:
     kind, _, rest = fact_id.partition("_")
     return rest == target if kind in ("item", "hours", "prereq") else target in rest.split("_")
 
-def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_key: str) -> List["PlanAction"]:
+def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_key: str, plan_state: dict) -> List["PlanAction"]:
     valid = []
     if task_key == "A":
         items = set(TASK_DATA_A[segment_key]["items"])
@@ -1217,15 +1237,21 @@ def validate_plan_actions(actions: List["PlanAction"], task_key: str, segment_ke
             or (a.op in ("increase", "decrease") and a.value is not None and a.value > 0))]
     elif task_key == "B":
         pools = TASK_DATA_B[segment_key]["pools"]
+        current = plan_state.get("selections", {"major": [], "minor": [], "elective": []})
         for a in actions:
             if a.slot in pools:
                 a.item = resolve_item_id(a.item, set(pools[a.slot]), COURSE_LABELS_B)
-        valid = [a for a in actions if a.op in ("assign", "remove") and a.slot in pools and a.item in pools[a.slot]]
+        valid = [a for a in actions if a.op in ("assign", "remove") and a.slot in pools and a.item in pools[a.slot] and (
+            (a.op == "remove" and a.item in current.get(a.slot, []))
+            or (a.op == "assign" and a.item not in current.get(a.slot, [])))]
     else:
         roster = set(TASK_DATA_C[segment_key]["roster"])
+        current = set(plan_state.get("selections", []))
         for a in actions:
             a.item = resolve_item_id(a.item, roster, CLUB_LABELS_C)
-        valid = [a for a in actions if a.op in ("assign", "remove") and a.slot == "selections" and a.item in roster]
+        valid = [a for a in actions if a.op in ("assign", "remove") and a.slot == "selections" and a.item in roster and (
+            (a.op == "remove" and a.item in current)
+            or (a.op == "assign" and a.item not in current))]
     return valid
 
 PROSPECTIVE_TACTIC_OVERRIDES = {
@@ -1270,6 +1296,7 @@ async def handle_chat(chat_data: ChatMessage):
         target_desc = ITEM_LABELS_A[target_param]
         plan_state_str = describe_plan_state_A(chat_data.plan_state, segment_key)
         visible_facts_str = describe_visible_facts_A(segment_key, load_level)
+        requirement_status_line = f"- CURRENT VISIBLE STATUS (computed for you -- trust this over your own counting): {describe_requirement_status_A(segment_key, chat_data.plan_state, load_level)}"
         locked_facts = describe_locked_facts_A(segment_key, load_level)
         tactics = TACTICS_A
         advisor_desc = f"AI Academic Advisor helping plan this week's workload (Week {trial_num} of 4)"
@@ -1543,7 +1570,7 @@ async def handle_chat(chat_data: ChatMessage):
         disclosure_ok = bool(valid_locked_ids) and not chat_data.is_proactive
         revealed_fact_ids = list(set(response_data.disclosed_fact_ids or []) & valid_locked_ids) if disclosure_ok else []
 
-        safe_actions = validate_plan_actions(response_data.actions, task_key, segment_key)
+        safe_actions = validate_plan_actions(response_data.actions, task_key, segment_key, chat_data.plan_state)
         if len(safe_actions) != len(response_data.actions):
             print(f"[action_dropped] {chat_data.user_id} {task_key} trial{trial_num}: claimed actions {[a.dict() for a in response_data.actions]}, kept {[a.dict() for a in safe_actions]}")
 
