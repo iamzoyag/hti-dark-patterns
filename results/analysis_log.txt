@@ -1,5 +1,0 @@
-repo ground truth loaded from .
-13 files, 13 participants, 6575 events
--- dropped 4 data-shifted participant(s): ['PMUMQER6JZK', 'PMUMQG3HEY4', 'PMUMQHFT3NI', 'PMUMQR075XD']  (use --keep-shifted to keep them)
--- dropped 24 unfinished / ai_error trial(s) from trial-level analyses
-   separation in `target_fact_after_dark ~ high + C(cat)`: refit without constant-outcome tasks (['C'])
