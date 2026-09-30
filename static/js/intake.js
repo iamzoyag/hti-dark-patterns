@@ -107,6 +107,13 @@ document.addEventListener('DOMContentLoaded', () => {
     renderPersonalityScale();
 });
 
+function enterFullscreenOnce() {
+    const el = document.documentElement;
+    if (document.fullscreenElement || !el.requestFullscreen) return;
+    el.requestFullscreen().catch(() => {});
+}
+document.addEventListener('pointerdown', enterFullscreenOnce, { once: true });
+
 // --- 4. START EXPERIMENT & SAVE DATA ---
 async function startExperiment() {
     // Disable the button to prevent double-clicking while waiting for the server

@@ -1,0 +1,9 @@
+pid,p_accept_low,p_accept_high,diff,class
+PMUL4FSOP85,0.5,0.0,-0.5,more compliant under LOW
+PMUL4HI166V,0.0,0.3333333333333333,0.3333333333333333,more compliant under HIGH
+PMUL4HNZO6H,0.75,0.25,-0.5,more compliant under LOW
+PMUMDQ3OED4,0.0,1.0,1.0,more compliant under HIGH
+PMUMDROVABW,0.5,0.0,-0.5,more compliant under LOW
+PMUMUFGT3F9,0.5,0.16666666666666666,-0.33333333333333337,more compliant under LOW
+PMUMUGJUDPL,0.3333333333333333,0.3333333333333333,0.0,no difference
+PMUMURSLQW9,0.5,0.5,0.0,no difference

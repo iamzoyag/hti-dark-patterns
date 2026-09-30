@@ -750,6 +750,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+function enterFullscreenOnce() {
+    const el = document.documentElement;
+    if (document.fullscreenElement || !el.requestFullscreen) return;
+    el.requestFullscreen().catch(() => {});
+}
+document.addEventListener('pointerdown', enterFullscreenOnce, { once: true });
+
+document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) logEvent('fullscreen_exit', {});
+});
+
 function setupModality() {
     const isTranscript = sessionData.group.includes("Transcript");
 
