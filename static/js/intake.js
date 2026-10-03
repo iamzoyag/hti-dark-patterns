@@ -114,6 +114,25 @@ function enterFullscreenOnce() {
 }
 document.addEventListener('pointerdown', enterFullscreenOnce, { once: true });
 
+async function registerParticipant(payload) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const res = await fetch('/api/register_participant', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                keepalive: true
+            });
+            if (res.ok) return true;
+            console.error("Registration got HTTP", res.status);
+        } catch (err) {
+            console.error("Participant registration failed:", err);
+        }
+        await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+    }
+    return false;
+}
+
 // --- 4. START EXPERIMENT & SAVE DATA ---
 async function startExperiment() {
     // Disable the button to prevent double-clicking while waiting for the server
@@ -131,11 +150,7 @@ async function startExperiment() {
     // contacts log, never folded into the behavioral session data or its CSV.
     const participantName = document.getElementById('participantName').value.trim();
     const participantEmail = document.getElementById('participantEmail').value.trim();
-    fetch('/api/register_participant', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ participant_id: participantId, name: participantName, email: participantEmail })
-    }).catch(err => console.error("Participant registration failed:", err));
+    const registrationPromise = registerParticipant({ participant_id: participantId, name: participantName, email: participantEmail });
 
     // Gather Demographics
     const demoData = {
@@ -201,8 +216,9 @@ async function startExperiment() {
         }
     };
 
-    // Save to localStorage so the /experiment page can pick it up
     localStorage.setItem('hti_session', JSON.stringify(sessionData));
+
+    await registrationPromise; // retries up to 3x; if it still fails the participant proceeds anyway
 
     window.location.href = "/experiment";
 }
